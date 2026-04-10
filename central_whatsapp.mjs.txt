@@ -1,0 +1,116 @@
+import makeWASocket, { useMultiFileAuthState, fetchLatestBaileysVersion } from '@whiskeysockets/baileys'
+import P from 'pino'
+import express from 'express'
+import qrcode from 'qrcode-terminal'
+
+const app = express()
+app.use(express.json())
+
+let sock = null
+
+async function start() {
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys')
+    const { version } = await fetchLatestBaileysVersion()
+
+    sock = makeWASocket({
+        version,
+        auth: state,
+        logger: P({ level: 'silent' }),
+        browser: ['Ubuntu', 'Chrome', '22.04']
+    })
+
+    sock.ev.on('creds.update', saveCreds)
+
+    sock.ev.on('connection.update', ({ connection, qr }) => {
+        if (qr) {
+            console.log('ESCANEIE O QR')
+            qrcode.generate(qr, { small: true })
+        }
+
+        if (connection === 'open') {
+            console.log('CONECTADO ESTAVEL')
+        }
+
+        if (connection === 'close') {
+            console.log('DESCONECTOU')
+        }
+    })
+
+    // 🔥 INBOUND CORRETO (DENTRO DO START)
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        try {
+            if (type !== 'notify') return
+
+            const msg = messages[0]
+            if (!msg || !msg.message) return
+
+            const text =
+                msg.message.conversation ||
+                msg.message.extendedTextMessage?.text ||
+                ""
+
+            if (!text) return
+
+            const phone = msg.key.remoteJid.replace('@s.whatsapp.net', '')
+
+            console.log('[DEBUG_INBOUND]', phone, text)
+
+            await fetch('http://127.0.0.1:5000/inbox', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    phone: phone,
+                    message: text
+                })
+            })
+
+            console.log('[INBOUND_ENVIADO]', phone)
+
+        } catch (e) {
+            console.log('[ERRO_INBOUND]', e.message)
+        }
+    })
+}
+
+// ===== STATUS =====
+app.get('/status', (req, res) => {
+    res.json({
+        status: sock ? 'online' : 'offline',
+        connected: sock?.ws?.isOpen || false,
+        session_valid: true
+    })
+})
+
+// ===== ENVIO =====
+app.post('/send', async (req, res) => {
+    try {
+        const { number, text } = req.body
+        const jid = number + '@s.whatsapp.net'
+
+        const check = await sock.onWhatsApp(number)
+
+        if (!check || check.length === 0) {
+            console.log('❌ SEM WHATSAPP:', number)
+            return res.json({ status: 'invalid' })
+        }
+
+        console.log('✅ VALIDO:', number)
+
+        await sock.sendMessage(jid, { text })
+
+        console.log('📤 ENVIADO REAL:', number)
+
+        res.json({ status: 'sent' })
+
+    } catch (e) {
+        console.log('ERRO:', e.message)
+        res.status(500).json({ error: e.message })
+    }
+})
+
+// ===== SERVER =====
+app.listen(3000, () => {
+    console.log('API BAILEYS ON: http://127.0.0.1:3000')
+})
+
+start()

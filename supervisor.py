@@ -1,0 +1,2160 @@
+import atexit
+import json
+import logging
+import os
+import random
+import re
+import signal
+import socket
+import subprocess
+import sys
+import time
+import threading
+import unicodedata
+from datetime import datetime, timedelta
+from pathlib import Path
+from urllib.parse import urlparse
+
+import requests
+
+try:
+    import flask  # type: ignore
+except ImportError:
+    print("[AUTO_INSTALL] Instalando Flask...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "flask"])
+    print("[AUTO_INSTALL_OK]")
+
+from crm.pipedrive_client import PipedriveClient
+from crm.crm_orchestrator import CRMEnrichmentLoop
+from logic.whatsapp_pitch_engine import WhatsAppPitchEngine
+from services.whatsapp_service import WhatsAppService
+
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+LOGS_DIR = BASE_DIR / "logs"
+BLOCKLIST_FILE = str(LOGS_DIR / "whatsapp_manual_blocklist.json")
+HISTORY_FILE = str(LOGS_DIR / "whatsapp_message_history.json")
+LOCK_FILE = str(BASE_DIR / "sdr_process.lock")
+SEND_PROGRESS_FILE = str(DATA_DIR / "send_progress.json")
+INBOUND_RECOVERY_FILE = str(DATA_DIR / "inbound_recovery_state.json")
+ACTIVITY_DEAL_STATE_FILE = str(DATA_DIR / "activity_deal_state.json")
+MAX_BATCH_SIZE = 10
+MAX_DEAL_AGE_DAYS = 30
+PIPELINE_ID = 2
+DAILY_SUCCESS_LIMIT = 50
+MAX_DEALS_DIA = 50
+CADENCE_MAX_STEP = 5
+CADENCE_GAP_DAYS = 7
+ARCHIVE_AFTER_CADENCE_STEP = 5
+EMAIL_DELAY_MIN_SEC = 60
+EMAIL_DELAY_MAX_SEC = 120
+ENABLE_EMAIL_CADENCE = True
+ENRICHMENT_MODE = "off"
+MAX_ENRICH_PER_CYCLE = 5
+LIGHT_ENRICH_FETCH_LIMIT = 25
+LIGHT_ENRICH_TTL_SEC = 24 * 60 * 60
+LIGHT_ENRICH_INTERVAL_MIN_SEC = 60
+LIGHT_ENRICH_INTERVAL_MAX_SEC = 120
+BOT_PRIORITY = True
+SUPER_MINAS_REENTRY = True
+ENRICHMENT_BATCH_SIZE = 20
+ENRICHMENT_AFTER_MESSAGES = 5
+SUPER_MINAS_LABEL_IDS = {"175", "162"}
+SUPER_MINAS_LABEL_NAMES = {"SUPER_MINAS", "SUPER MINAS", "SUPERMINAS"}
+OUTBOUND_BLOCKED_LABEL_IDS = {"173", "193"}
+OUTBOUND_BLOCKED_LABEL_NAMES = {"INDICACAO_CAROL_EVENTO", "INDICAÇÃO_CAROL_EVENTO", "LEAD_TRÁFEGO", "LEAD_TRAFEGO"}
+BOOT_CHILDREN = []
+N8N_EMAIL_WEBHOOK_PATH = "sdr-email"
+N8N_EMAIL_WEBHOOK_URL = f"http://127.0.0.1:5678/webhook/{N8N_EMAIL_WEBHOOK_PATH}"
+N8N_HEALTH_URL = "http://127.0.0.1:5678"
+N8N_START_BAT = r"C:\Users\Asus\start_n8n.bat"
+VPS_HOST = "127.0.0.1"
+VPS_PORT = 8001
+VPS_BASE_URL = str(os.getenv("VPS_URL", "http://127.0.0.1:8001")).rstrip("/")
+VPS_HEALTH_URL = f"{VPS_BASE_URL}/"
+VPS_FILA_URL = f"{VPS_BASE_URL}/fila"
+VPS_ACK_URL = f"{VPS_BASE_URL}/ack"
+VPS_PENDING_URL = f"{VPS_BASE_URL}/pending"
+VPS_HTTP_TIMEOUT_SEC = 40
+WA2_ENABLED = False
+WA2_AUTH_DIR = str(Path(os.getenv("WA2_AUTH_DIR") or (BASE_DIR / "auth_info_baileys_wa2")).resolve())
+WHATSAPP_SEND_GAP_MIN_SEC = 260
+WHATSAPP_SEND_GAP_MAX_SEC = 300
+FAST_QUEUE_BUILD = True
+STACK_RECOVERY_COOLDOWN_SEC = 5
+STACK_RECOVERY_MAX_ATTEMPTS = 3
+WATCHDOG_STALL_SECONDS = 60
+BOOT_SERVICE_TIMEOUT_SEC = 10
+BOOT_IDLE_SLEEP_SEC = 3
+BOOT_BUSY_SLEEP_SEC = 1
+BOOT_FAST_WINDOW_SEC = 60
+FAST_START_DEAL_FETCH_LIMIT = 1000
+RUNTIME_DEAL_FETCH_LIMIT = 1000
+INBOUND_RECOVERY_LOOKBACK_HOURS = 24
+INBOUND_RECOVERY_MAX_PER_CYCLE = 10
+FORA_HORARIO_STATUS = "aguardando_horario"
+
+
+def _is_local_vps_url():
+    try:
+        parsed = urlparse(VPS_BASE_URL)
+        host = str(parsed.hostname or "").strip().lower()
+    except Exception:
+        host = ""
+    return host in {"127.0.0.1", "localhost"}
+
+
+def check_lock():
+    if os.path.exists(LOCK_FILE):
+        try:
+            lock_pid = 0
+            try:
+                with open(LOCK_FILE, "r", encoding="utf-8") as existing_lock:
+                    lock_pid = int((existing_lock.read() or "0").strip() or "0")
+            except Exception:
+                lock_pid = 0
+            file_age = time.time() - os.path.getmtime(LOCK_FILE)
+            if lock_pid and is_pid_running(lock_pid):
+                print(f"[ERRO] Outro loop SDR ativo. pid={lock_pid}. Abortando.")
+                sys.exit(0)
+            if file_age < 600:
+                print(f"[AVISO] Lock recente sem processo ativo detectado. pid={lock_pid or 0}. Sobrescrevendo...")
+            else:
+                print("[AVISO] Lock antigo detectado (>10min). Sobrescrevendo...")
+        except Exception:
+            pass
+    with open(LOCK_FILE, "w", encoding="utf-8") as f:
+        f.write(str(os.getpid()))
+
+
+def release_lock():
+    if os.path.exists(LOCK_FILE):
+        try:
+            os.remove(LOCK_FILE)
+        except Exception:
+            pass
+
+
+def _today_str():
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def dentro_do_horario():
+    agora = datetime.now()
+    if agora.weekday() <= 4:
+        return agora.hour < 17 or (agora.hour == 17 and agora.minute <= 30)
+    return False
+
+
+def _default_send_progress():
+    return {
+        "date": _today_str(),
+        "enviados_hoje": 0,
+        "meta": int(MAX_DEALS_DIA),
+        "ultima_execucao": datetime.now().isoformat(),
+    }
+
+
+def _default_activity_deal_state():
+    return {
+        "date": _today_str(),
+        "cleaned": False,
+        "geracao_concluida": False,
+        "deals_com_atividade": [],
+        "ultima_execucao": datetime.now().isoformat(),
+    }
+
+
+def _load_inbound_recovery_state():
+    try:
+        if os.path.exists(INBOUND_RECOVERY_FILE):
+            with open(INBOUND_RECOVERY_FILE, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+                if isinstance(payload, dict):
+                    handled = payload.get("handled") or []
+                    return {"handled": list(handled) if isinstance(handled, list) else []}
+    except Exception:
+        pass
+    return {"handled": []}
+
+
+def _save_inbound_recovery_state(payload):
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(INBOUND_RECOVERY_FILE, "w", encoding="utf-8") as fh:
+            json.dump(payload if isinstance(payload, dict) else {"handled": []}, fh, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def append_history(phone, direction, message, step=0):
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    history = {}
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    history = loaded
+        except Exception:
+            history = {}
+    items = history.get(phone, [])
+    items.append({
+        "direction": direction,
+        "message": str(message or "").strip(),
+        "step": int(step or 0),
+        "created_at": datetime.now().isoformat(),
+    })
+    history[phone] = items[-30:]
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f)
+
+
+def read_history():
+    if not os.path.exists(HISTORY_FILE):
+        return {}
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+            return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def resolver_email_webhook_url():
+    n8n_root = Path.home() / ".n8n"
+    for candidate in (n8n_root / "database.sqlite-wal", n8n_root / "database.sqlite"):
+        try:
+            content = candidate.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        if N8N_EMAIL_WEBHOOK_PATH in content and "n8n-nodes-base.gmail" in content:
+            return N8N_EMAIL_WEBHOOK_URL
+    return N8N_EMAIL_WEBHOOK_URL
+
+
+def http_ok(url, timeout=2):
+    try:
+        response = requests.get(url, timeout=timeout)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
+def get_whatsapp_status(timeout=5):
+    try:
+        response = requests.get("http://127.0.0.1:3000/status", timeout=timeout)
+        if response.status_code != 200:
+            print("[WA_OFFLINE]")
+            return {"connected": False, "session_invalid": False, "needs_qr": False, "mode": "offline"}
+        payload = response.json() if response.content else {}
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        print("[WA_OFFLINE]")
+    return {"connected": False, "session_invalid": False, "needs_qr": False, "mode": "offline"}
+
+
+def wait_for_http(url, timeout=90):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if http_ok(url):
+            return True
+        time.sleep(2)
+    return False
+
+
+def wait_for_port(port, timeout=10):
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            with socket.create_connection(("127.0.0.1", int(port)), timeout=2):
+                return True
+        except Exception:
+            time.sleep(1)
+    return False
+
+
+def is_port_in_use(port, host="127.0.0.1"):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(1)
+    try:
+        return sock.connect_ex((str(host), int(port))) == 0
+    except Exception:
+        return False
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def is_pid_running(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def read_pid_lock(lock_name):
+    path = Path(lock_name)
+    if not path.exists():
+        return 0
+    try:
+        return int(path.read_text(encoding="utf-8").strip() or "0")
+    except Exception:
+        return 0
+
+
+def cleanup_children():
+    for proc in list(BOOT_CHILDREN):
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+        except Exception:
+            pass
+
+
+def handle_exit(_signum=None, _frame=None):
+    cleanup_children()
+    release_lock()
+    raise SystemExit(0)
+
+
+def spawn_if_needed(name, command, health_url, timeout=90, env=None):
+    if http_ok(health_url):
+        print(f"[{name}_JA_ATIVO]")
+        return
+    print(f"[SUBINDO_{name}] {' '.join(command)}")
+    try:
+        proc = subprocess.Popen(command, cwd=str(BASE_DIR), env=env)
+    except Exception as exc:
+        if str(name).upper() == "N8N":
+            print(f"[N8N_OFFLINE] erro_spawn={exc}")
+            return
+        raise
+    if str(name).upper() != "WHATSAPP":
+        BOOT_CHILDREN.append(proc)
+    upper_name = str(name).upper()
+    lock_file = ""
+    if upper_name == "WHATSAPP":
+        lock_file = "baileys.wa1.lock"
+    elif upper_name == "WHATSAPP2":
+        lock_file = "baileys.wa2.lock"
+    if upper_name in {"WHATSAPP", "WHATSAPP2"}:
+        time.sleep(2)
+        if http_ok(health_url):
+            print(f"[{name}_OK]")
+            return
+        if proc.poll() == 0:
+            lock_pid = read_pid_lock(lock_file)
+            if lock_pid and is_pid_running(lock_pid):
+                print(f"[{name}_LOCK_ATIVO_PID] {lock_pid}")
+                return
+    if not wait_for_http(health_url, timeout=timeout):
+        if upper_name in {"WHATSAPP", "WHATSAPP2"}:
+            print("[WA_OFFLINE]")
+            return
+        if upper_name == "N8N":
+            print("[N8N_OFFLINE]")
+            return
+        raise RuntimeError(f"{name} nao iniciou")
+    print(f"[{name}_OK]")
+
+
+def start_inbound_with_retry():
+    if wait_for_port(5000, timeout=2) and http_ok("http://127.0.0.1:5000/"):
+        print("[INBOUND_OK]")
+        return
+
+    inbound_command = [r"C:\Users\Asus\Python311\python.exe", "-u", "inbox_handler.py"]
+    for attempt in range(1, 4):
+        print("[INBOUND_START]")
+        proc = subprocess.Popen(inbound_command, cwd=str(BASE_DIR))
+        BOOT_CHILDREN.append(proc)
+        if wait_for_port(5000, timeout=10) and wait_for_http("http://127.0.0.1:5000/", timeout=10):
+            print("[INBOUND_OK]")
+            return
+        print("[ERRO_INBOUND] Falha ao iniciar inbound, tentando novamente...")
+        if attempt < 3:
+            print(f"[INBOUND_RETRY] tentativa={attempt + 1}")
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+            except Exception:
+                pass
+            time.sleep(2)
+
+    print("[ERRO_INBOUND] Falha ao iniciar inbound, tentando novamente...")
+
+
+def start_vps_with_retry():
+    if not _is_local_vps_url():
+        print(f"[VPS_START] modo=remoto url={VPS_BASE_URL}")
+        if wait_for_http(VPS_HEALTH_URL, timeout=30):
+            print("[VPS_BIND_OK]")
+            print("[VPS_OK]")
+        else:
+            print("[VPS_ERRO_PORTA] remote_healthcheck_fail")
+        return
+
+    if is_port_in_use(VPS_PORT, VPS_HOST):
+        print("[VPS_JA_EM_EXECUCAO]")
+        if http_ok(VPS_HEALTH_URL):
+            print("[VPS_BIND_OK]")
+            print("[VPS_OK]")
+        else:
+            print("[VPS_ERRO_PORTA] porta_em_uso_sem_healthcheck")
+        return
+
+    print("[VPS_START]")
+    if not wait_for_port(VPS_PORT, timeout=30):
+        print("[VPS_ERRO_PORTA] timeout_aguardando_bind_pm2")
+        return
+
+    print("[VPS_BIND_OK]")
+    if wait_for_http(VPS_HEALTH_URL, timeout=30):
+        print("[VPS_OK]")
+        return
+
+    print("[VPS_ERRO_PORTA] bind_sem_resposta_http")
+
+
+def start_stack():
+    start_vps_with_retry()
+    spawn_if_needed("WHATSAPP", ["node", "central_whatsapp.mjs"], "http://127.0.0.1:3000/status", timeout=120)
+    if WA2_ENABLED:
+        wa2_env = os.environ.copy()
+        wa2_env.update({"PORT": "3001", "WA_INSTANCE": "WA2", "WA_AUTH_DIR": WA2_AUTH_DIR})
+        spawn_if_needed("WHATSAPP2", ["node", "central_whatsapp.mjs"], "http://127.0.0.1:3001/status", timeout=120, env=wa2_env)
+    start_inbound_with_retry()
+    if ENABLE_EMAIL_CADENCE and os.path.exists(N8N_START_BAT):
+        spawn_if_needed("N8N", ["cmd", "/c", N8N_START_BAT], N8N_HEALTH_URL, timeout=120)
+    elif ENABLE_EMAIL_CADENCE:
+        print("[N8N_STARTER_AUSENTE]")
+    else:
+        print("[EMAIL_DESATIVADO]")
+
+
+def _boot_worker(name, fn):
+    started_at = time.time()
+    try:
+        fn()
+    except Exception as exc:
+        elapsed = time.time() - started_at
+        if elapsed >= BOOT_SERVICE_TIMEOUT_SEC:
+            print(f"[STARTUP_TIMEOUT_SKIP] servico={name} segundos={int(elapsed)}")
+            return
+        print(f"[STARTUP_TIMEOUT_SKIP] servico={name} erro={exc}")
+
+
+def start_stack_fast():
+    print("[BOOT_START]")
+    print("[BOOT_FAST_MODE]")
+    try:
+        wa_status = get_whatsapp_status(timeout=1)
+        if bool(wa_status.get("connected")):
+            print("[WHATSAPP_JA_ATIVO]")
+    except Exception:
+        pass
+
+    workers = [
+        ("VPS", start_vps_with_retry),
+        ("WHATSAPP", lambda: spawn_if_needed("WHATSAPP", ["node", "central_whatsapp.mjs"], "http://127.0.0.1:3000/status", timeout=BOOT_SERVICE_TIMEOUT_SEC)),
+        ("INBOUND", start_inbound_with_retry),
+    ]
+    if WA2_ENABLED:
+        wa2_env = os.environ.copy()
+        wa2_env.update({"PORT": "3001", "WA_INSTANCE": "WA2", "WA_AUTH_DIR": WA2_AUTH_DIR})
+        workers.insert(1, ("WHATSAPP2", lambda env=wa2_env: spawn_if_needed("WHATSAPP2", ["node", "central_whatsapp.mjs"], "http://127.0.0.1:3001/status", timeout=BOOT_SERVICE_TIMEOUT_SEC, env=env)))
+    if ENABLE_EMAIL_CADENCE and os.path.exists(N8N_START_BAT):
+        workers.append(("N8N", lambda: spawn_if_needed("N8N", ["cmd", "/c", N8N_START_BAT], N8N_HEALTH_URL, timeout=BOOT_SERVICE_TIMEOUT_SEC)))
+    elif ENABLE_EMAIL_CADENCE:
+        print("[N8N_STARTER_AUSENTE]")
+    else:
+        print("[EMAIL_DESATIVADO]")
+
+    for name, fn in workers:
+        thread = threading.Thread(target=_boot_worker, args=(name, fn), daemon=True)
+        thread.start()
+
+
+atexit.register(cleanup_children)
+signal.signal(signal.SIGINT, handle_exit)
+signal.signal(signal.SIGTERM, handle_exit)
+
+
+class SDRSupervisor:
+    def __init__(self):
+        self.boot_started_at = time.time()
+        self.whatsapp = WhatsAppService()
+        self.pitch = WhatsAppPitchEngine(config=None)
+        self.crm = PipedriveClient()
+        cadence_labels = ["cad1", "respondido"] + [f"WHATSAPP_CAD{step}" for step in range(1, 6)] + [f"EMAIL_CAD{step}" for step in range(1, 6)]
+        self.crm.ensure_deal_labels(cadence_labels)
+        self.blocklist = self.load_blocklist()
+        self.deal_label_options = self.crm.get_deal_labels()
+        self.logger = logging.getLogger("sdr_supervisor")
+        self.background_enrichment = CRMEnrichmentLoop(self.crm, self.logger, BASE_DIR)
+        self.background_enrichment.FETCH_LIMIT = ENRICHMENT_BATCH_SIZE
+        self.background_enrichment.MAX_EMPRESAS = ENRICHMENT_BATCH_SIZE
+        self.background_enrichment.TURBO_WORKERS = 1
+        self.pending_email_queue = []
+        self.pending_whatsapp_queue = []
+        self.next_whatsapp_send_at = 0.0
+        self.light_enrichment_cache = {}
+        self.next_light_enrichment_at = 0.0
+        self._archived_stage_id = 0
+        self._stage_cache = {}
+        self._next_stack_recovery_at = 0.0
+        self._stack_recovery_attempts = 0
+        self._send_progress_cache = None
+        self._last_wa_heartbeat_at = 0.0
+        self._inbound_recovery_state = _load_inbound_recovery_state()
+        self._last_progress_at = time.time()
+        self._activity_deal_state_cache = None
+
+    def _startup_window_active(self):
+        return (time.time() - float(self.boot_started_at or 0.0)) < BOOT_FAST_WINDOW_SEC
+
+    def _deal_fetch_limit(self):
+        if self._startup_window_active():
+            return FAST_START_DEAL_FETCH_LIMIT
+        return RUNTIME_DEAL_FETCH_LIMIT
+
+    def load_blocklist(self):
+        try:
+            if os.path.exists(BLOCKLIST_FILE):
+                with open(BLOCKLIST_FILE, "r", encoding="utf-8-sig") as f:
+                    data = json.load(f)
+                    return {
+                        self.whatsapp.normalize_phone(item["telefone"])
+                        for item in data
+                        if isinstance(item, dict) and item.get("telefone")
+                    }
+        except Exception:
+            pass
+        return set()
+
+    def _extract_person_id(self, deal):
+        person = deal.get("person_id")
+        if isinstance(person, dict):
+            return person.get("value") or person.get("id") or 0
+        return person or 0
+
+    @staticmethod
+    def _extract_entity_id(field):
+        if isinstance(field, dict):
+            for key in ("value", "id"):
+                try:
+                    value = int(field.get(key) or 0)
+                except Exception:
+                    value = 0
+                if value > 0:
+                    return value
+            return 0
+        try:
+            return int(field or 0)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _embedded_person(deal):
+        person = (deal or {}).get("person_id")
+        return person if isinstance(person, dict) else {}
+
+    def _is_recent_deal(self, deal):
+        now = datetime.now()
+        for field_name in ("update_time", "add_time"):
+            raw = str(deal.get(field_name) or "").strip()
+            if not raw:
+                continue
+            normalized = raw.replace("Z", "+00:00")
+            try:
+                parsed = datetime.fromisoformat(normalized)
+            except ValueError:
+                try:
+                    parsed = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    continue
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone().replace(tzinfo=None)
+            if now - parsed <= timedelta(days=MAX_DEAL_AGE_DAYS):
+                return True
+        return False
+
+    def _deal_tokens(self, deal):
+        return self.crm.resolve_label_tokens(deal.get("label"), self.deal_label_options)
+
+    def _raw_label_ids(self, deal):
+        labels = deal.get("label")
+        if isinstance(labels, list):
+            values = labels
+        else:
+            values = [labels]
+        results = set()
+        for item in values:
+            if isinstance(item, dict):
+                for candidate in (item.get("id"), item.get("value"), item.get("label"), item.get("name")):
+                    token = str(candidate or "").strip()
+                    if token:
+                        results.add(token)
+            else:
+                token = str(item or "").strip()
+                if token:
+                    if "," in token:
+                        results.update(part.strip() for part in token.split(",") if part.strip())
+                    else:
+                        results.add(token)
+        return results
+
+    def _is_super_minas(self, deal):
+        tokens = {token.upper() for token in self._deal_tokens(deal)}
+        if tokens & SUPER_MINAS_LABEL_NAMES:
+            return True
+        if self._raw_label_ids(deal) & SUPER_MINAS_LABEL_IDS:
+            return True
+        return False
+
+    def _is_outbound_blocked_label(self, deal):
+        tokens = {token.upper() for token in self._deal_tokens(deal)}
+        if tokens & OUTBOUND_BLOCKED_LABEL_NAMES:
+            return True
+        if self._raw_label_ids(deal) & OUTBOUND_BLOCKED_LABEL_IDS:
+            return True
+        return False
+
+    def _daily_success_count(self):
+        progress = self._load_send_progress(reset_if_new_day=True)
+        return int(progress.get("enviados_hoje") or 0)
+
+    def _sent_today_from_history(self):
+        today = _today_str()
+        data = self.whatsapp._load_json(self.whatsapp.sent_file, {})
+        sent_today = data.get(f"DEAL_{today}", [])
+        if not isinstance(sent_today, list):
+            return 0
+        normalized = set()
+        for item in sent_today:
+            token = str(item or "").strip()
+            if token:
+                normalized.add(token)
+        return len(normalized)
+
+    def _load_activity_deal_state(self, reset_if_new_day=False, force=False):
+        if not force and isinstance(getattr(self, "_activity_deal_state_cache", None), dict):
+            cached = dict(self._activity_deal_state_cache)
+            if not reset_if_new_day or str(cached.get("date") or "") == _today_str():
+                return cached
+        payload = _default_activity_deal_state()
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            if os.path.exists(ACTIVITY_DEAL_STATE_FILE):
+                with open(ACTIVITY_DEAL_STATE_FILE, "r", encoding="utf-8") as fh:
+                    loaded = json.load(fh)
+                    if isinstance(loaded, dict):
+                        payload.update(loaded)
+        except Exception:
+            pass
+        if reset_if_new_day and str(payload.get("date") or "") != _today_str():
+            payload = _default_activity_deal_state()
+        payload["date"] = _today_str()
+        payload["cleaned"] = bool(payload.get("cleaned"))
+        payload["geracao_concluida"] = bool(payload.get("geracao_concluida"))
+        payload["deals_com_atividade"] = [int(item) for item in list(payload.get("deals_com_atividade") or []) if int(item or 0) > 0]
+        if len(payload["deals_com_atividade"]) >= MAX_DEALS_DIA:
+            payload["geracao_concluida"] = True
+        payload["ultima_execucao"] = datetime.now().isoformat()
+        return self._save_activity_deal_state(payload)
+
+    def _save_activity_deal_state(self, payload):
+        state = dict(payload or {})
+        state["date"] = _today_str()
+        state["cleaned"] = bool(state.get("cleaned"))
+        state["geracao_concluida"] = bool(state.get("geracao_concluida"))
+        state["deals_com_atividade"] = sorted({int(item) for item in list(state.get("deals_com_atividade") or []) if int(item or 0) > 0})
+        if len(state["deals_com_atividade"]) >= MAX_DEALS_DIA:
+            state["geracao_concluida"] = True
+        state["ultima_execucao"] = datetime.now().isoformat()
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(ACTIVITY_DEAL_STATE_FILE, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, ensure_ascii=False, indent=2)
+        self._activity_deal_state_cache = dict(state)
+        return dict(state)
+
+    def _activity_generation_locked_today(self):
+        state = self._load_activity_deal_state(reset_if_new_day=True)
+        return bool(state.get("geracao_concluida"))
+
+    def _deal_has_activity_today(self, deal_id):
+        target_id = int(deal_id or 0)
+        if target_id <= 0:
+            return False
+        state = self._load_activity_deal_state(reset_if_new_day=True)
+        return target_id in {int(item) for item in list(state.get("deals_com_atividade") or [])}
+
+    def _mark_deal_activity_today(self, deal_id):
+        target_id = int(deal_id or 0)
+        if target_id <= 0:
+            return False
+        state = self._load_activity_deal_state(reset_if_new_day=True, force=True)
+        deals = set(int(item) for item in list(state.get("deals_com_atividade") or []))
+        already = target_id in deals
+        deals.add(target_id)
+        state["deals_com_atividade"] = sorted(deals)
+        if len(state["deals_com_atividade"]) >= MAX_DEALS_DIA:
+            state["geracao_concluida"] = True
+        self._save_activity_deal_state(state)
+        return not already
+
+    def _cleanup_today_call_activities_once(self):
+        state = self._load_activity_deal_state(reset_if_new_day=True)
+        if bool(state.get("cleaned")):
+            return 0
+        total = 0
+        try:
+            total = int(self.crm.cleanup_bot_call_activities_for_date(_today_str()) or 0)
+        except Exception:
+            total = 0
+        state["cleaned"] = True
+        state["geracao_concluida"] = False
+        state["deals_com_atividade"] = []
+        self._save_activity_deal_state(state)
+        print(f"[CRM_LIMPEZA_ATIVIDADES] total={total}")
+        return total
+
+    def _load_send_progress(self, reset_if_new_day=False, force=False):
+        if not force and isinstance(getattr(self, "_send_progress_cache", None), dict):
+            cached = dict(self._send_progress_cache)
+            if not reset_if_new_day or str(cached.get("date") or "") == _today_str():
+                return cached
+        progress = _default_send_progress()
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            if os.path.exists(SEND_PROGRESS_FILE):
+                with open(SEND_PROGRESS_FILE, "r", encoding="utf-8") as fh:
+                    loaded = json.load(fh)
+                    if isinstance(loaded, dict):
+                        progress.update(loaded)
+        except Exception:
+            pass
+        if reset_if_new_day and str(progress.get("date") or "") != _today_str():
+            progress = _default_send_progress()
+        progress["date"] = _today_str()
+        progress["meta"] = int(progress.get("meta") or MAX_DEALS_DIA)
+        progress["enviados_hoje"] = max(
+            int(progress.get("enviados_hoje") or 0),
+            int(self._sent_today_from_history()),
+        )
+        progress["ultima_execucao"] = datetime.now().isoformat()
+        self._save_send_progress(progress)
+        return dict(progress)
+
+    def _save_send_progress(self, progress):
+        payload = dict(progress or {})
+        payload["date"] = _today_str()
+        payload["meta"] = int(payload.get("meta") or MAX_DEALS_DIA)
+        payload["enviados_hoje"] = max(0, int(payload.get("enviados_hoje") or 0))
+        payload["ultima_execucao"] = datetime.now().isoformat()
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(SEND_PROGRESS_FILE, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+        self._send_progress_cache = dict(payload)
+        return dict(payload)
+
+    def _increment_send_progress(self):
+        progress = self._load_send_progress(reset_if_new_day=True, force=True)
+        progress["enviados_hoje"] = max(0, int(progress.get("enviados_hoje") or 0) + 1)
+        saved = self._save_send_progress(progress)
+        print(f"[CONTADOR] enviados={int(saved['enviados_hoje'])}/{int(saved['meta'])}")
+        return int(saved["enviados_hoje"])
+
+    def _extract_phone(self, person):
+        phones = self._extract_phones(person)
+        return phones[0] if phones else ""
+
+    def _extract_phones(self, person):
+        phones = []
+        seen = set()
+        for item in person.get("phone") or []:
+            value = item.get("value") if isinstance(item, dict) else item
+            normalized = self.whatsapp.normalize_phone(value)
+            if not self.whatsapp.is_valid_phone(normalized):
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            phones.append(normalized)
+        return phones
+
+    @staticmethod
+    def _extract_email(person):
+        for item in person.get("email") or []:
+            value = item.get("value") if isinstance(item, dict) else item
+            normalized = str(value or "").strip().lower()
+            if normalized and re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", normalized):
+                return normalized
+        return ""
+
+    @staticmethod
+    def _first_name(value):
+        raw = str(value or "").strip()
+        return raw.split()[0].strip() if raw else ""
+
+    @staticmethod
+    def _cadence_step(lead=None):
+        try:
+            return max(1, min(10, int((lead or {}).get("cadence_step") or 1)))
+        except Exception:
+            return 1
+
+    @staticmethod
+    def _normalize_stage_text(value):
+        text = unicodedata.normalize("NFKD", str(value or ""))
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        text = re.sub(r"[^a-zA-Z0-9]+", " ", text).strip().lower()
+        return re.sub(r"\s+", " ", text)
+
+    @staticmethod
+    def _next_super_minas_cadence_step(tokens):
+        if not SUPER_MINAS_REENTRY:
+            return 0
+        normalized = {str(token or "").strip().upper() for token in list(tokens or [])}
+        if "RESPONDIDO" in normalized:
+            return 0
+        steps = []
+        for token in normalized:
+            match = re.fullmatch(r"(?:WHATSAPP_)?CAD([1-9]|10)", token)
+            if match:
+                steps.append(int(match.group(1)))
+        if not steps:
+            return 1
+        last_step = max(steps)
+        if last_step >= CADENCE_MAX_STEP:
+            return 0
+        return last_step + 1
+
+    def _next_cadence_step(self, tokens):
+        normalized = {str(token or "").strip().upper() for token in list(tokens or [])}
+        if "RESPONDIDO" in normalized:
+            return 0
+        steps = []
+        for token in normalized:
+            match = re.fullmatch(r"(?:WHATSAPP_)?CAD([1-9]|10)", token)
+            if match:
+                steps.append(int(match.group(1)))
+        if not steps:
+            return 1
+        last_step = max(steps)
+        if last_step >= CADENCE_MAX_STEP:
+            return 0
+        return last_step + 1
+
+    def _can_send_lead_phone(self, phone, *, is_super_minas=False, cadence_step=1):
+        if int(cadence_step or 1) > 1:
+            return self.whatsapp.can_send_followup(phone)
+        return self.whatsapp.can_send(phone)
+
+    def _phone_has_outbound_history(self, phone):
+        normalized = self.whatsapp.normalize_phone(phone)
+        if not normalized:
+            return False
+        history = read_history()
+        items = history.get(normalized, [])
+        if not isinstance(items, list):
+            return False
+        return any(str(item.get("direction") or "").strip().lower() == "out" for item in items if isinstance(item, dict))
+
+    def _phone_has_inbound_history(self, phone):
+        normalized = self.whatsapp.normalize_phone(phone)
+        if not normalized:
+            return False
+        history = read_history()
+        items = history.get(normalized, [])
+        if not isinstance(items, list):
+            return False
+        return any(str(item.get("direction") or "").strip().lower() == "in" for item in items if isinstance(item, dict))
+
+    def _last_outbound_at(self, phone):
+        normalized = self.whatsapp.normalize_phone(phone)
+        if not normalized:
+            return None
+        history = read_history()
+        items = history.get(normalized, [])
+        if not isinstance(items, list):
+            return None
+        for item in reversed(items):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("direction") or "").strip().lower() != "out":
+                continue
+            raw = str(item.get("created_at") or "").strip()
+            if not raw:
+                return datetime.now()
+            try:
+                return datetime.fromisoformat(raw)
+            except Exception:
+                return datetime.now()
+        return None
+
+    def _lead_phones(self, lead):
+        raw_phones = list((lead or {}).get("phones") or (lead or {}).get("telefones") or [])
+        if not raw_phones and (lead or {}).get("phone"):
+            raw_phones = [(lead or {}).get("phone")]
+        phones = []
+        for raw in raw_phones:
+            normalized = self.whatsapp.normalize_phone(raw)
+            if normalized and normalized not in phones:
+                phones.append(normalized)
+        return phones
+
+    def _lead_has_inbound_history(self, lead):
+        return any(self._phone_has_inbound_history(phone) for phone in self._lead_phones(lead))
+
+    def _lead_has_outbound_history(self, lead):
+        return any(self._phone_has_outbound_history(phone) for phone in self._lead_phones(lead))
+
+    @staticmethod
+    def _next_business_due_at(last_out):
+        due_at = last_out + timedelta(days=CADENCE_GAP_DAYS)
+        while due_at.weekday() >= 5:
+            due_at += timedelta(days=1)
+        return due_at
+
+    def _last_channel_outbound_at(self, channel, lead):
+        history = read_history()
+        items = history.get(self._lead_history_key(channel, lead), [])
+        if isinstance(items, list):
+            for item in reversed(items):
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("direction") or "").strip().lower() != "out":
+                    continue
+                raw = str(item.get("created_at") or "").strip()
+                if not raw:
+                    return datetime.now()
+                try:
+                    return datetime.fromisoformat(raw)
+                except Exception:
+                    return datetime.now()
+        if str(channel or "").strip().lower() == "whatsapp":
+            candidates = [self._last_outbound_at(phone) for phone in self._lead_phones(lead)]
+            candidates = [item for item in candidates if item is not None]
+            if candidates:
+                return max(candidates)
+        return None
+
+    def _cadence_due(self, lead, cadence_step, channel="whatsapp"):
+        step = int(cadence_step or 1)
+        if step <= 1:
+            return True
+        last_out = self._last_channel_outbound_at(channel, lead)
+        if last_out is None:
+            return False
+        return datetime.now() >= self._next_business_due_at(last_out)
+
+    def _whatsapp_tag(self, lead=None):
+        return f"WHATSAPP_CAD{self._cadence_step(lead)}"
+
+    def _email_tag(self, lead=None):
+        return f"EMAIL_CAD{self._cadence_step(lead)}"
+
+    def _append_deal_note(self, deal_id, content):
+        if not int(deal_id or 0) or not str(content or "").strip():
+            return False
+        ok = False
+        try:
+            ok = bool(self.crm.add_note(deal_id=int(deal_id), content=str(content).strip()))
+        except Exception:
+            ok = False
+        if ok:
+            print(f"[NOTA_CRM] deal={int(deal_id)}")
+        return ok
+
+    @staticmethod
+    def _today_local_date():
+        return datetime.now().strftime("%Y-%m-%d")
+
+    def _create_call_activity_for_lead(self, lead):
+        lead = lead or {}
+        deal_id = int(lead.get("id") or 0)
+        if deal_id <= 0:
+            return False
+        if self._activity_generation_locked_today() and not self._deal_has_activity_today(deal_id):
+            print(f"[CRM_ATIVIDADE_IGNORADA_DUPLICADA] deal={deal_id}")
+            return False
+        if self._deal_has_activity_today(deal_id):
+            print(f"[CRM_ATIVIDADE_IGNORADA_DUPLICADA] deal={deal_id}")
+            return False
+        phones = self._lead_phones(lead)
+        if not phones:
+            return False
+        company_name = self.pitch._resolve_short_company_name(lead) or self._extract_company_name(lead)
+        subject = f"Ligar - {company_name} [DEAL {deal_id}]".strip()
+        if self.crm.has_open_activity_today(deal_id=deal_id, activity_type="call", subject=subject):
+            self._mark_deal_activity_today(deal_id)
+            print(f"[CRM_ATIVIDADE_IGNORADA_DUPLICADA] deal={deal_id}")
+            return False
+        best_phone = phones[0]
+        note_lines = [f"Melhor numero: {best_phone}", "", "Telefones priorizados:"]
+        for index, phone in enumerate(phones, start=1):
+            marker = " (melhor)" if phone == best_phone else ""
+            note_lines.append(f"{index}. {phone}{marker}")
+        payload = {
+            "subject": subject,
+            "type": "call",
+            "deal_id": deal_id,
+            "person_id": int(lead.get("person_id") or 0),
+            "due_date": self._today_local_date(),
+            "due_time": "09:00",
+            "note": "\n".join(note_lines).strip(),
+            "done": 0,
+        }
+        ok = self.crm.create_activity(**payload)
+        if ok:
+            self._mark_deal_activity_today(deal_id)
+            print(f"[CRM_ATIVIDADE_CRIADA] deal={deal_id}")
+        return ok
+
+    def _resolve_archived_stage_id(self):
+        if int(self._archived_stage_id or 0) > 0:
+            return int(self._archived_stage_id)
+        try:
+            stages = self.crm.get_stages()
+        except Exception:
+            stages = []
+        for stage in list(stages or []):
+            if not isinstance(stage, dict):
+                continue
+            try:
+                pipeline_id = int(stage.get("pipeline_id") or 0)
+            except Exception:
+                pipeline_id = 0
+            stage_name = str(stage.get("name") or "").strip().lower()
+            if pipeline_id == int(PIPELINE_ID) and ("arquiv" in stage_name or "falta" in stage_name):
+                self._archived_stage_id = int(stage.get("id") or 0)
+                break
+        return int(self._archived_stage_id or 0)
+
+    def _archive_no_contact(self, deal_id):
+        archived_stage_id = self._resolve_archived_stage_id()
+        if not archived_stage_id:
+            print(f"[ARQUIVO_FALHA] deal={int(deal_id or 0)} motivo=stage_nao_encontrado")
+            return False
+        try:
+            ok = bool(self.crm.update_stage(deal_id=int(deal_id), stage_id=archived_stage_id))
+        except Exception as exc:
+            print(f"[ARQUIVO_FALHA] deal={int(deal_id or 0)} erro={exc}")
+            return False
+        if ok:
+            print(f"[ARQUIVADO_FALTA_CONTATO] deal={int(deal_id)} stage={archived_stage_id}")
+            self._append_deal_note(deal_id, "Arquivado automaticamente por falta de contato apos CAD5 sem resposta.")
+        return ok
+
+    def _resolve_stage_by_keywords(self, *keyword_groups):
+        cache_key = "|".join(",".join(group) for group in keyword_groups)
+        if cache_key in self._stage_cache:
+            return int(self._stage_cache.get(cache_key) or 0)
+        try:
+            stages = self.crm.get_stages()
+        except Exception:
+            stages = []
+        for stage in list(stages or []):
+            if not isinstance(stage, dict):
+                continue
+            try:
+                pipeline_id = int(stage.get("pipeline_id") or 0)
+            except Exception:
+                pipeline_id = 0
+            if pipeline_id != int(PIPELINE_ID):
+                continue
+            stage_name = self._normalize_stage_text(stage.get("name"))
+            for keywords in keyword_groups:
+                if all(str(keyword or "").strip().lower() in stage_name for keyword in keywords):
+                    stage_id = int(stage.get("id") or 0)
+                    self._stage_cache[cache_key] = stage_id
+                    return stage_id
+        self._stage_cache[cache_key] = 0
+        return 0
+
+    def _move_deal_to_cadence_stage(self, deal_id, cadence_step):
+        step = int(cadence_step or 0)
+        if step <= 0:
+            return False
+        stage_id = self._resolve_stage_by_keywords((f"contato {step}",), ("contato", str(step)))
+        if not stage_id:
+            print(f"[STAGE_CAD_FALHA] deal={int(deal_id or 0)} cadencia={step} motivo=stage_nao_encontrado")
+            return False
+        try:
+            ok = bool(self.crm.update_stage(deal_id=int(deal_id), stage_id=stage_id))
+        except Exception as exc:
+            print(f"[STAGE_CAD_FALHA] deal={int(deal_id or 0)} cadencia={step} erro={exc}")
+            return False
+        if ok:
+            print(f"[STAGE_CAD_OK] deal={int(deal_id)} cadencia={step} stage={stage_id}")
+        return ok
+
+    def _deal_people(self, deal, primary_person_id, embedded_person):
+        people = []
+        seen = set()
+
+        def add_person(person):
+            if not isinstance(person, dict):
+                return
+            person_id = self._extract_entity_id(person.get("id") or person.get("value"))
+            key = person_id or str(person.get("name") or "") + "|" + str(person.get("phone") or "")
+            if not key or key in seen:
+                return
+            seen.add(key)
+            people.append(dict(person))
+
+        if embedded_person:
+            add_person(embedded_person)
+        if int(primary_person_id or 0) and int(primary_person_id or 0) not in seen:
+            try:
+                add_person(self.crm.get_person(int(primary_person_id)))
+            except Exception as exc:
+                print(f"[SKIP_PERSON_FETCH] deal={int((deal or {}).get('id') or 0)} person={int(primary_person_id or 0)} erro={exc}")
+
+        if FAST_QUEUE_BUILD and people:
+            return people
+
+        deal_id = int((deal or {}).get("id") or 0)
+        if deal_id:
+            try:
+                for item in self.crm.get_deal_persons(deal_id, limit=100):
+                    add_person(item)
+            except Exception as exc:
+                print(f"[SKIP_DEAL_PERSONS] deal={deal_id} erro={exc}")
+            try:
+                for participant in self.crm.get_deal_participants(deal_id, limit=100):
+                    participant_person_id = self._extract_entity_id(participant.get("person_id"))
+                    if participant_person_id and participant_person_id not in seen:
+                        try:
+                            add_person(self.crm.get_person(participant_person_id))
+                        except Exception as exc:
+                            print(f"[SKIP_PARTICIPANT_FETCH] deal={deal_id} person={participant_person_id} erro={exc}")
+            except Exception as exc:
+                print(f"[SKIP_PARTICIPANTS] deal={deal_id} erro={exc}")
+        return people
+
+    def _lead_history_key(self, channel, lead):
+        deal_id = int((lead or {}).get("id") or 0)
+        return f"{channel}:deal={deal_id}"
+
+    def _phone_has_send_record(self, phone):
+        try:
+            return bool(self.whatsapp.has_any_send_record(phone))
+        except Exception:
+            return False
+
+    def _recent_unanswered_inbound_candidates(self):
+        history = read_history()
+        if not isinstance(history, dict):
+            return []
+        handled = set(str(item or "") for item in (self._inbound_recovery_state.get("handled") or []))
+        now = datetime.now()
+        candidates = []
+        for phone, items in history.items():
+            normalized_phone = self.whatsapp.normalize_phone(phone)
+            if not normalized_phone or str(phone).startswith("whatsapp:") or str(phone).startswith("email:"):
+                continue
+            if not isinstance(items, list) or not items:
+                continue
+            last_inbound = None
+            last_inbound_message = ""
+            for item in reversed(items):
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("direction") or "").strip().lower() != "in":
+                    continue
+                raw = str(item.get("created_at") or "").strip()
+                try:
+                    inbound_at = datetime.fromisoformat(raw) if raw else now
+                except Exception:
+                    inbound_at = now
+                if (now - inbound_at).total_seconds() > INBOUND_RECOVERY_LOOKBACK_HOURS * 3600:
+                    break
+                last_inbound = inbound_at
+                last_inbound_message = str(item.get("message") or "").strip()
+                break
+            if last_inbound is None or not last_inbound_message or last_inbound_message.upper() == "[MENSAGEM_SEM_TEXTO]":
+                continue
+            recovery_key = f"{normalized_phone}|{last_inbound.isoformat()}|{last_inbound_message}"
+            if recovery_key in handled:
+                continue
+            has_outbound_after = False
+            for item in reversed(items):
+                if not isinstance(item, dict):
+                    continue
+                raw = str(item.get("created_at") or "").strip()
+                try:
+                    created_at = datetime.fromisoformat(raw) if raw else now
+                except Exception:
+                    created_at = now
+                if created_at < last_inbound:
+                    break
+                if str(item.get("direction") or "").strip().lower() == "out":
+                    has_outbound_after = True
+                    break
+            if has_outbound_after:
+                continue
+            candidates.append({
+                "phone": normalized_phone,
+                "message": last_inbound_message,
+                "created_at": last_inbound,
+                "recovery_key": recovery_key,
+            })
+        candidates.sort(key=lambda item: item["created_at"])
+        return candidates[:INBOUND_RECOVERY_MAX_PER_CYCLE]
+
+    def _recover_pending_inbounds(self):
+        candidates = self._recent_unanswered_inbound_candidates()
+        if not candidates:
+            return 0
+        recovered = 0
+        handled = list(self._inbound_recovery_state.get("handled") or [])
+        for candidate in candidates:
+            phone = str(candidate.get("phone") or "").strip()
+            message = str(candidate.get("message") or "").strip()
+            recovery_key = str(candidate.get("recovery_key") or "").strip()
+            if not phone or not message or not recovery_key:
+                continue
+            payload = {
+                "phone": phone,
+                "text": message,
+                "messageId": f"recovery:{abs(hash(recovery_key))}",
+                "source": "recovery",
+            }
+            try:
+                response = requests.post("http://127.0.0.1:5000/inbound", json=payload, timeout=10)
+                if int(response.status_code or 0) != 200:
+                    continue
+            except Exception:
+                continue
+            handled.append(recovery_key)
+            recovered += 1
+            print(f"[INBOUND_PRIORITARIO] telefone={phone}")
+        if recovered:
+            self._inbound_recovery_state["handled"] = handled[-5000:]
+            _save_inbound_recovery_state(self._inbound_recovery_state)
+        return recovered
+
+    def _load_vps_pending_queue(self):
+        try:
+            response = requests.get(VPS_FILA_URL, timeout=VPS_HTTP_TIMEOUT_SEC)
+            if int(response.status_code or 0) != 200:
+                return []
+            payload = response.json() if response.content else {}
+            items = payload.get("items") if isinstance(payload, dict) else []
+            if not isinstance(items, list):
+                return []
+            print(f"[FILA_VPS_CARREGADA] total={len(items)}")
+            return items
+        except Exception as exc:
+            print(f"[FILA_VPS_FALHOU] erro={exc}")
+            return []
+
+    def _ack_vps_message(self, msg_id):
+        try:
+            response = requests.post(VPS_ACK_URL, json={"id": str(msg_id or "")}, timeout=VPS_HTTP_TIMEOUT_SEC)
+            if int(response.status_code or 0) != 200:
+                return False
+            payload = response.json() if response.content else {}
+            if isinstance(payload, dict) and payload.get("ok") is True:
+                print(f"[FILA_VPS_ACK] msg_id={msg_id}")
+                return True
+        except Exception as exc:
+            print(f"[FILA_VPS_ACK_FALHOU] msg_id={msg_id} erro={exc}")
+        return False
+
+    def _return_vps_message_to_pending(self, msg_id):
+        try:
+            response = requests.post(VPS_PENDING_URL, json={"id": str(msg_id or "")}, timeout=VPS_HTTP_TIMEOUT_SEC)
+            if int(response.status_code or 0) != 200:
+                return False
+            payload = response.json() if response.content else {}
+            if isinstance(payload, dict) and payload.get("ok") is True:
+                print(f"[FILA_VPS_RETORNO_PENDING] msg_id={msg_id}")
+                return True
+        except Exception as exc:
+            print(f"[FILA_VPS_RETORNO_PENDING_FALHOU] msg_id={msg_id} erro={exc}")
+        return False
+
+    def _resume_after_hours_pending(self):
+        if not dentro_do_horario():
+            return 0
+        today = _today_str()
+        if self.whatsapp.get_after_hours_resume_date() == today:
+            return 0
+        pending_items = self.whatsapp.list_after_hours_pending()
+        if not pending_items:
+            self.whatsapp.mark_after_hours_resumed_today(today)
+            return 0
+
+        resumed = 0
+        for item in pending_items:
+            phone = self.whatsapp.normalize_phone(item.get("phone"))
+            message = str(item.get("message") or "").strip()
+            if not phone or not message:
+                continue
+            payload = {
+                "phone": phone,
+                "text": message,
+                "messageId": f"after-hours-resume-{today}-{phone}",
+                "source": "after_hours_resume",
+                "timestamp": item.get("last_message_at") or item.get("updated_at"),
+            }
+            try:
+                response = requests.post("http://127.0.0.1:5000/inbound", json=payload, timeout=VPS_HTTP_TIMEOUT_SEC)
+                if int(response.status_code or 0) != 200:
+                    continue
+                body = response.json() if response.content else {}
+                if not (isinstance(body, dict) and body.get("ok") is True and body.get("confirmed") is not False):
+                    continue
+            except Exception as exc:
+                print(f"[RETOMADA_DIA_UTIL] telefone={phone} erro={exc}")
+                continue
+            self.whatsapp.clear_after_hours_pending(phone)
+            resumed += 1
+
+        remaining = self.whatsapp.list_after_hours_pending()
+        if resumed:
+            print(f"[RETOMADA_DIA_UTIL] total={resumed}")
+        if not remaining:
+            self.whatsapp.mark_after_hours_resumed_today(today)
+        return resumed
+
+    def _process_vps_pending_inbounds(self):
+        items = self._load_vps_pending_queue()
+        if not items:
+            return 0
+        processed = 0
+        for item in items:
+            msg_id = str(item.get("id") or item.get("msg_id") or "").strip()
+            phone = self.whatsapp.normalize_phone(item.get("phone"))
+            text = str(item.get("text") or "").strip()
+            if not msg_id or not phone or not text:
+                continue
+            print(f"[FILA_VPS_PROCESSANDO] telefone={phone} msg_id={msg_id}")
+            payload = {
+                "phone": phone,
+                "text": text,
+                "messageId": msg_id,
+                "source": "vps",
+                "timestamp": item.get("timestamp"),
+            }
+            try:
+                response = requests.post("http://127.0.0.1:5000/inbound", json=payload, timeout=VPS_HTTP_TIMEOUT_SEC)
+                if int(response.status_code or 0) != 200:
+                    self._return_vps_message_to_pending(msg_id)
+                    continue
+                body = response.json() if response.content else {}
+                if not (isinstance(body, dict) and body.get("ok") is True and body.get("confirmed") is not False):
+                    self._return_vps_message_to_pending(msg_id)
+                    continue
+            except Exception as exc:
+                print(f"[FILA_VPS_PROCESSAMENTO_FALHOU] msg_id={msg_id} erro={exc}")
+                self._return_vps_message_to_pending(msg_id)
+                continue
+            if self._ack_vps_message(msg_id):
+                processed += 1
+            else:
+                self._return_vps_message_to_pending(msg_id)
+        return processed
+
+    def _channel_already_sent(self, channel, lead):
+        if str(channel or "").strip().lower() == "whatsapp":
+            return False
+        history = read_history()
+        key = self._lead_history_key(channel, lead)
+        items = history.get(key, [])
+        if not isinstance(items, list):
+            return False
+        cadence_step = self._cadence_step(lead)
+        if cadence_step <= 1:
+            return any(str(item.get("direction") or "").strip().lower() == "out" for item in items if isinstance(item, dict))
+        return any(
+            str(item.get("direction") or "").strip().lower() == "out"
+            and int(item.get("step") or 0) == cadence_step
+            for item in items
+            if isinstance(item, dict)
+        )
+
+    def _mark_channel_sent(self, channel, lead, message):
+        append_history(self._lead_history_key(channel, lead), "out", message, step=self._cadence_step(lead))
+
+    def _recent_outbound_message_seen(self, phone, message, within_seconds=180):
+        normalized = self.whatsapp.normalize_phone(phone)
+        target = str(message or "").strip()
+        if not normalized or not target:
+            return False
+        history = read_history()
+        items = history.get(normalized, [])
+        if not isinstance(items, list):
+            return False
+        now = datetime.now()
+        for item in reversed(items):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("direction") or "").strip().lower() != "out":
+                continue
+            if str(item.get("message") or "").strip() != target:
+                continue
+            created_at = str(item.get("created_at") or "").strip()
+            if not created_at:
+                return True
+            try:
+                created = datetime.fromisoformat(created_at)
+            except Exception:
+                return True
+            if (now - created).total_seconds() <= within_seconds:
+                return True
+        return False
+
+    def _send_email(self, lead):
+        if not ENABLE_EMAIL_CADENCE:
+            deal_id = int((lead or {}).get("id") or 0)
+            print(f"[SKIP_EMAIL] deal={deal_id} motivo=email_desativado")
+            return False
+        email = str((lead or {}).get("email") or "").strip().lower()
+        deal_id = int((lead or {}).get("id") or 0)
+        if not email:
+            print(f"[SKIP_EMAIL] deal={deal_id} motivo=sem_email")
+            return False
+        if self._channel_already_sent("email", lead):
+            print(f"[SKIP_DUPLICADO] canal=email deal={deal_id} email={email}")
+            return False
+        cadence_step = self._cadence_step(lead)
+        payload = {
+            "email": email,
+            "nome": self._first_name((lead or {}).get("nome")) or "contato",
+            "empresa": self.pitch._resolve_short_company_name(lead),
+            "cadencia_step": cadence_step,
+            "cadencia_tag": self._email_tag(lead),
+            "deal_id": deal_id,
+            "person_id": int((lead or {}).get("person_id") or 0),
+            "origem": "supervisor",
+            "canal": "email",
+        }
+        try:
+            response = requests.post(resolver_email_webhook_url(), json=payload, timeout=30)
+            if int(response.status_code or 0) != 200:
+                print(f"[SKIP_EMAIL] deal={deal_id} motivo=webhook_status status={int(response.status_code or 0)}")
+                return False
+        except Exception as exc:
+            print(f"[SKIP_EMAIL] deal={deal_id} motivo=erro_envio erro={exc}")
+            return False
+
+        self._mark_channel_sent("email", lead, f"EMAIL_CAD_{cadence_step}")
+        print(f"[N8N_TRIGGER] deal={deal_id} email={email}")
+        print(f"[EMAIL_CAD_{cadence_step}] deal={deal_id} email={email}")
+        self.crm.add_tag("deal", deal_id, self._email_tag(lead))
+        try:
+            self._append_deal_note(deal_id, f"Email CAD_{cadence_step} disparado via n8n.")
+        except Exception:
+            pass
+        return True
+
+    def _queue_email_after_whatsapp(self, lead):
+        if not ENABLE_EMAIL_CADENCE:
+            return
+        email = str((lead or {}).get("email") or "").strip().lower()
+        deal_id = int((lead or {}).get("id") or 0)
+        if not email:
+            print(f"[SKIP_EMAIL] deal={deal_id} motivo=sem_email")
+            return
+        if self._channel_already_sent("email", lead):
+            print(f"[SKIP_DUPLICADO] canal=email deal={deal_id} email={email}")
+            return
+        for item in list(self.pending_email_queue):
+            if int(item.get("id") or 0) == deal_id and str(item.get("email") or "").strip().lower() == email:
+                print(f"[SKIP_DUPLICADO] canal=email_queue deal={deal_id} email={email}")
+                return
+        queued = dict(lead or {})
+        delay_seconds = random.randint(EMAIL_DELAY_MIN_SEC, EMAIL_DELAY_MAX_SEC)
+        queued["due_at"] = time.time() + delay_seconds
+        self.pending_email_queue.append(queued)
+        print(f"[DELAY_EMAIL] deal={deal_id} segundos={delay_seconds}")
+
+    def _process_pending_emails(self):
+        if not ENABLE_EMAIL_CADENCE:
+            self.pending_email_queue = []
+            return
+        if not self.pending_email_queue:
+            return
+        now = time.time()
+        ready = [item for item in list(self.pending_email_queue) if float(item.get("due_at") or 0) <= now]
+        self.pending_email_queue = [item for item in list(self.pending_email_queue) if float(item.get("due_at") or 0) > now]
+        for lead in ready:
+            self._send_email(lead)
+
+    @staticmethod
+    def _extract_company_name(deal):
+        org = deal.get("org_id")
+        if isinstance(org, dict):
+            name = str(org.get("name") or "").strip()
+            if name:
+                return name
+        return str(deal.get("org_name") or deal.get("title") or deal.get("name") or "a empresa").strip() or "a empresa"
+
+    def buscar(self):
+        leads = []
+        super_skip = {"cad": 0, "sem_person": 0, "sem_phone": 0, "bloqueado": 0}
+        print("[BUSCA_CRM_INICIO]")
+        if not self._activity_generation_locked_today():
+            self._cleanup_today_call_activities_once()
+        fetch_limit = self._deal_fetch_limit()
+        deals = self.crm.get_deals(status="open", limit=fetch_limit, pipeline_id=PIPELINE_ID)
+        print(f"[BUSCA_DEALS_OK] total={len(deals)}")
+        for deal in deals:
+            if len(leads) >= MAX_DEALS_DIA:
+                print(f"[CAP_DEALS_ATINGIDO] total={MAX_DEALS_DIA}")
+                break
+            if self._is_outbound_blocked_label(deal):
+                continue
+            tokens = set(self._deal_tokens(deal))
+            is_super_minas = self._is_super_minas(deal)
+            cadence_step = self._next_cadence_step(tokens)
+            if cadence_step <= 0:
+                if is_super_minas:
+                    super_skip["cad"] += 1
+                continue
+            if not is_super_minas and cadence_step == 1 and not self._is_recent_deal(deal):
+                continue
+            lead_stub = {
+                "id": int(deal.get("id") or 0),
+                "cadence_step": cadence_step,
+            }
+            deal_due = self._cadence_due(lead_stub, cadence_step, channel="whatsapp")
+
+            person_id = self._extract_person_id(deal)
+            if not person_id:
+                if is_super_minas:
+                    super_skip["sem_person"] += 1
+                continue
+
+            people = self._deal_people(deal, person_id, self._embedded_person(deal))
+            if not people:
+                if is_super_minas:
+                    super_skip["sem_person"] += 1
+                continue
+
+            deal_added = 0
+            deal_phones = []
+            primary_name = ""
+            primary_email = ""
+            primary_person_id = 0
+            for person in people:
+                person_cadence_step = cadence_step
+                person_phones = self._extract_phones(person)
+                if not person_phones:
+                    if is_super_minas:
+                        super_skip["sem_phone"] += 1
+                    raw_phone = ""
+                    phone_list = person.get("phone") or []
+                    if phone_list:
+                        first = phone_list[0]
+                        raw_phone = first.get("value") if isinstance(first, dict) else first
+                    if raw_phone:
+                        self.whatsapp.mark_invalid(raw_phone, "invalid_phone_outbound")
+                    continue
+                valid_person_phones = []
+                for normalized in person_phones:
+                    if self._phone_has_inbound_history(normalized):
+                        continue
+                    if person_cadence_step > 1 and not deal_due:
+                        continue
+                    if not self._can_send_lead_phone(
+                        normalized,
+                        is_super_minas=is_super_minas,
+                        cadence_step=person_cadence_step,
+                    ):
+                        continue
+                    valid_person_phones.append(normalized)
+                if not valid_person_phones:
+                    if is_super_minas:
+                        super_skip["bloqueado"] += 1
+                    continue
+                if not primary_name:
+                    primary_name = person.get("name") or ""
+                    primary_email = self._extract_email(person)
+                    primary_person_id = int(self._extract_entity_id(person.get("id")) or person_id or 0)
+                for normalized in valid_person_phones:
+                    if normalized not in deal_phones:
+                        deal_phones.append(normalized)
+                person_cadence_step = min(person_cadence_step, cadence_step)
+                deal_added += len(valid_person_phones)
+            if deal_phones:
+                lead_payload = {
+                    "id": int(deal.get("id") or 0),
+                    "nome": primary_name,
+                    "empresa": self._extract_company_name(deal),
+                    "phone": deal_phones[0],
+                    "phones": deal_phones,
+                    "telefones": deal_phones,
+                    "email": primary_email,
+                    "person_id": primary_person_id,
+                    "super_minas": is_super_minas,
+                    "cadence_step": cadence_step,
+                    "deal_cadence_step": cadence_step,
+                    "tentativas": 0,
+                }
+                leads.append(lead_payload)
+                self._create_call_activity_for_lead(lead_payload)
+                print(f"[DEAL_ENFILEIRADO] deal={int(deal.get('id') or 0)} telefones={len(deal_phones)}")
+
+        super_minas = [lead for lead in leads if lead["super_minas"]]
+        normal = [lead for lead in leads if not lead["super_minas"]]
+        print(f"[LEADS_ELEGIVEIS] total={len(super_minas) + len(normal)} super_minas={len(super_minas)} normal={len(normal)}")
+        print(
+            "[SUPER_MINAS_SKIP] "
+            f"cad={super_skip['cad']} sem_person={super_skip['sem_person']} "
+            f"sem_phone={super_skip['sem_phone']} bloqueado={super_skip['bloqueado']}"
+        )
+        if BOT_PRIORITY:
+            return super_minas + normal
+        return leads
+
+    def _run_background_enrichment(self):
+        if ENRICHMENT_MODE == "off":
+            print("[ENRICHMENT_DESATIVADO]")
+            return
+        if self._startup_window_active():
+            print("[ENRICHMENT_STARTUP_SKIP]")
+            return
+        if self.pending_whatsapp_queue:
+            print(f"[ENRICHMENT_IDLE_SKIP] fila_whatsapp={len(self.pending_whatsapp_queue)}")
+            return
+        if ENRICHMENT_MODE == "light":
+            self._run_light_enrichment()
+            return
+        if self._should_pause_enrichment():
+            return
+        try:
+            print("[ENRICHMENT_BACKGROUND] start")
+            counters = self.background_enrichment.run_cycle()
+            print(
+                f"[FINALIZADO_CICLO] enrichment_processed={int(counters.get('processed') or 0)} "
+                f"cnpj_encontrado={int(counters.get('cnpj_encontrado') or 0)}"
+            )
+        except Exception as exc:
+            print(f"[PIPEDRIVE_SKIP_CICLO] erro_enrichment_background={exc}")
+
+    def _whatsapp_status(self):
+        return get_whatsapp_status(timeout=5)
+
+    def _heartbeat_whatsapp(self):
+        now = time.time()
+        if now - float(self._last_wa_heartbeat_at or 0.0) < 10:
+            return
+        self._last_wa_heartbeat_at = now
+        try:
+            self.whatsapp.heartbeat()
+        except Exception:
+            print("[WA_OFFLINE]")
+
+    def _touch_progress(self):
+        self._last_progress_at = time.time()
+
+    def _watchdog_maybe_reset(self):
+        if not self.pending_whatsapp_queue:
+            self._touch_progress()
+            return
+        if time.time() - float(self._last_progress_at or 0.0) < WATCHDOG_STALL_SECONDS:
+            return
+        wa_status = self._whatsapp_status()
+        if bool(wa_status.get("needs_qr")) or bool(wa_status.get("session_invalid")):
+            return
+        print("[WATCHDOG_RESET]")
+        self._touch_progress()
+        self._recover_stack_if_needed(reason="watchdog")
+
+    def _recover_stack_if_needed(self, reason="runtime"):
+        now = time.time()
+        if now < float(self._next_stack_recovery_at or 0):
+            remaining = max(0, int(float(self._next_stack_recovery_at or 0) - now))
+            print(f"[STACK_RECOVERY_AGUARDANDO] motivo={reason} segundos_restantes={remaining}")
+            return False
+        if self._stack_recovery_attempts >= STACK_RECOVERY_MAX_ATTEMPTS:
+            print(f"[STACK_RECOVERY_MAX] motivo={reason} tentativas={self._stack_recovery_attempts}")
+            return False
+        self._next_stack_recovery_at = now + STACK_RECOVERY_COOLDOWN_SEC
+        self._stack_recovery_attempts += 1
+        print(f"[STACK_RECOVERY] motivo={reason}")
+        try:
+            start_stack_fast()
+            wa_status = get_whatsapp_status(timeout=1)
+            if bool(wa_status.get("connected")):
+                self._stack_recovery_attempts = 0
+                return True
+            print("[WA_OFFLINE]")
+            return False
+        except Exception as exc:
+            print(f"[STACK_RECOVERY_FALHOU] motivo={reason} erro={exc}")
+            return False
+
+    def _should_pause_enrichment(self):
+        wa_status = self._whatsapp_status()
+        mode = str(wa_status.get("mode") or "").strip().lower()
+        session_invalid = bool(wa_status.get("session_invalid"))
+        needs_qr = bool(wa_status.get("needs_qr"))
+        if session_invalid or needs_qr or mode in {"reconnecting", "booting", "awaiting_qr"}:
+            print(f"[ENRICHMENT_PAUSADO] motivo=whatsapp_status mode={mode or 'offline'}")
+            return True
+
+        thread_count = threading.active_count()
+        if thread_count >= 40:
+            self.background_enrichment.TURBO_WORKERS = max(1, min(int(self.background_enrichment.TURBO_WORKERS or 1), 2))
+            print(f"[ENRICHMENT_PAUSADO] motivo=sobrecarga threads={thread_count}")
+            return True
+
+        if hasattr(os, "getloadavg"):
+            try:
+                load_avg = os.getloadavg()[0]
+                cpu_count = max(1, os.cpu_count() or 1)
+                if load_avg >= cpu_count * 1.5:
+                    self.background_enrichment.TURBO_WORKERS = max(1, min(int(self.background_enrichment.TURBO_WORKERS or 1), 2))
+                    print(f"[ENRICHMENT_PAUSADO] motivo=sobrecarga load={load_avg:.2f} cpu={cpu_count}")
+                    return True
+            except Exception:
+                pass
+
+        return False
+
+    def _light_enrichment_delay(self):
+        return random.randint(LIGHT_ENRICH_INTERVAL_MIN_SEC, LIGHT_ENRICH_INTERVAL_MAX_SEC)
+
+    @staticmethod
+    def _org_or_deal_name(deal):
+        org = (deal or {}).get("org_id") or {}
+        if isinstance(org, dict):
+            name = str(org.get("name") or "").strip()
+            if name:
+                return name
+        return str((deal or {}).get("org_name") or (deal or {}).get("title") or "").strip()
+
+    def _is_generic_company_name(self, name):
+        clean = str(name or "").strip()
+        if not clean:
+            return True
+        if self.background_enrichment._is_generic_org_name(clean):
+            return True
+        lowered = clean.lower()
+        generic_terms = ("supermercado", "empresa", "comercio", "comércio", "servicos", "serviços")
+        return lowered in generic_terms
+
+    def _light_cache_valid(self, org_id):
+        ts = float(self.light_enrichment_cache.get(int(org_id or 0)) or 0)
+        return ts > 0 and (time.time() - ts) < LIGHT_ENRICH_TTL_SEC
+
+    def _mark_light_cache(self, org_id):
+        if int(org_id or 0) > 0:
+            self.light_enrichment_cache[int(org_id)] = time.time()
+
+    def _light_enrichment_candidates(self):
+        deals = self.crm.get_deals(status="open", limit=LIGHT_ENRICH_FETCH_LIMIT, pipeline_id=PIPELINE_ID)
+        candidates = []
+        seen_orgs = set()
+        for deal in deals:
+            if not isinstance(deal, dict):
+                continue
+            if self.background_enrichment._is_archived_deal(deal):
+                continue
+            org = deal.get("org_id") or {}
+            org_id = self.background_enrichment._extract_id(org)
+            if not org_id or org_id in seen_orgs or self._light_cache_valid(org_id):
+                continue
+            seen_orgs.add(org_id)
+            organization = self.crm.get_organization(org_id)
+            person_id = self._extract_person_id(deal)
+            person = self.crm.get_person(int(person_id)) if person_id else {}
+            cnpj = self.crm.extract_cnpj(organization)
+            phone = self._extract_phone(person)
+            name = self._org_or_deal_name(deal)
+            reasons = []
+            priority = 99
+            if not cnpj:
+                reasons.append("missing_cnpj")
+                priority = min(priority, 1)
+            if not phone:
+                reasons.append("missing_phone")
+                priority = min(priority, 2)
+            if self._is_generic_company_name(name):
+                reasons.append("generic_name")
+                priority = min(priority, 3)
+            if not reasons:
+                print(f"[ENRICHMENT_SKIP_COMPLETO] deal={int(deal.get('id') or 0)} org={org_id}")
+                self._mark_light_cache(org_id)
+                continue
+            candidates.append({
+                "deal": deal,
+                "org_id": org_id,
+                "organization": organization,
+                "cnpj": cnpj,
+                "reasons": reasons,
+                "priority": priority,
+            })
+        candidates.sort(key=lambda item: (int(item["priority"]), int((item["deal"] or {}).get("id") or 0)))
+        print(
+            f"[ENRICHMENT_CANDIDATOS] total={len(candidates)} "
+            f"fetch_limit={LIGHT_ENRICH_FETCH_LIMIT} max_por_ciclo={MAX_ENRICH_PER_CYCLE}"
+        )
+        for item in candidates[:5]:
+            deal = item.get("deal") or {}
+            print(
+                f"[ENRICHMENT_CANDIDATO] deal={int(deal.get('id') or 0)} "
+                f"org={int(item.get('org_id') or 0)} "
+                f"motivos={','.join(item.get('reasons') or [])} "
+                f"empresa={self._org_or_deal_name(deal)}"
+            )
+        return candidates[:MAX_ENRICH_PER_CYCLE]
+
+    def _run_light_enrichment(self):
+        print("[ENRICHMENT_LIGHT_MODE]")
+        if self._should_pause_enrichment():
+            return
+        now = time.time()
+        if now < float(self.next_light_enrichment_at or 0):
+            remaining = max(0, int(float(self.next_light_enrichment_at or 0) - now))
+            print(f"[ENRICHMENT_AGUARDANDO_JANELA] segundos_restantes={remaining}")
+            return
+        delay = self._light_enrichment_delay()
+        self.next_light_enrichment_at = now + delay
+        print(f"[ENRICHMENT_JANELA_ABERTA] proximo_ciclo_em={delay}s")
+        candidates = self._light_enrichment_candidates()
+        if not candidates:
+            print("[ENRICHMENT_SEM_CANDIDATOS]")
+            return
+        for item in candidates:
+            deal = item["deal"]
+            org_id = int(item["org_id"] or 0)
+            reasons = list(item["reasons"] or [])
+            try:
+                executed = False
+                if "missing_phone" in reasons:
+                    print(
+                        f"[ENRICHMENT_PROCESSANDO] deal={int((deal or {}).get('id') or 0)} "
+                        f"org={org_id} motivos={','.join(reasons)}"
+                    )
+                    self.background_enrichment.process_light_high_quality_deal(deal)
+                    executed = True
+                else:
+                    print(
+                        f"[ENRICHMENT_CANDIDATO_SEM_ACAO] deal={int((deal or {}).get('id') or 0)} "
+                        f"org={org_id} motivos={','.join(reasons)}"
+                    )
+                self._mark_light_cache(org_id)
+                if executed:
+                    print(
+                        f"[ENRICHMENT_EXECUTADO] deal={int((deal or {}).get('id') or 0)} "
+                        f"org={org_id} motivos={','.join(reasons)}"
+                    )
+            except Exception as exc:
+                self._mark_light_cache(org_id)
+                print(f"[PIPEDRIVE_SKIP_CICLO] erro_enrichment_light={exc}")
+
+    def _lead_queue_key(self, lead):
+        lead = lead or {}
+        return (
+            0 if BOT_PRIORITY and bool(lead.get("super_minas")) else 1,
+            int(lead.get("id") or 0),
+            self._cadence_step(lead),
+        )
+
+    def _queue_has_lead(self, lead):
+        target_id = int((lead or {}).get("id") or 0)
+        return any(int((item or {}).get("id") or 0) == target_id for item in self.pending_whatsapp_queue)
+
+    def _lead_runtime_ready(self, lead):
+        lead = lead or {}
+        lead_phones = self._lead_phones(lead)
+        num = next((phone for phone in lead_phones if phone not in self.blocklist), lead_phones[0] if lead_phones else "")
+        cadence_step = self._cadence_step(lead)
+        if not num:
+            return False, "invalid"
+        if self._lead_has_inbound_history(lead):
+            return False, "ja_respondeu"
+        if bool(lead.get("super_minas")) and cadence_step == 1 and (
+            self._lead_has_outbound_history(lead) or any(self._phone_has_send_record(phone) for phone in lead_phones)
+        ):
+            return False, "telefone_ja_contatado"
+        if cadence_step > 1 and not self._cadence_due(lead, cadence_step, channel="whatsapp"):
+            return False, "cadencia_ainda_no_cooldown"
+        return True, "ok"
+
+    def _enqueue_whatsapp_leads(self, leads, target_size=None):
+        added = 0
+        skip_blocked = 0
+        skip_duplicate = 0
+        skip_queue = 0
+        skip_runtime = 0
+        max_size = max(0, int(target_size or 0)) if target_size is not None else 0
+        for lead in leads:
+            if max_size and len(self.pending_whatsapp_queue) >= max_size:
+                break
+            lead_phones = self._lead_phones(lead)
+            available_phones = [phone for phone in lead_phones if phone not in self.blocklist]
+            num = available_phones[0] if available_phones else (lead_phones[0] if lead_phones else "")
+            if not available_phones:
+                skip_blocked += 1
+                continue
+            if self._channel_already_sent("whatsapp", lead):
+                skip_duplicate += 1
+                continue
+            if self._queue_has_lead(lead):
+                skip_queue += 1
+                continue
+            runtime_ready, runtime_reason = self._lead_runtime_ready(lead)
+            if not runtime_ready:
+                skip_runtime += 1
+                print(
+                    f"[QUEUE_SKIP_RUNTIME] deal={int((lead or {}).get('id') or 0)} "
+                    f"telefone={num} motivo={runtime_reason}"
+                )
+                continue
+            self.pending_whatsapp_queue.append(dict(lead))
+            added += 1
+        self.pending_whatsapp_queue.sort(key=self._lead_queue_key)
+        print(
+            f"[QUEUE_PREFILTER] alvo={max_size or len(self.pending_whatsapp_queue)} adicionados={added} "
+            f"skip_bloqueado={skip_blocked} skip_duplicado={skip_duplicate} "
+            f"skip_fila={skip_queue} skip_runtime={skip_runtime}"
+        )
+        return added
+
+    def _next_whatsapp_delay(self):
+        return random.randint(WHATSAPP_SEND_GAP_MIN_SEC, WHATSAPP_SEND_GAP_MAX_SEC)
+
+    def run(self):
+        check_lock()
+        try:
+            self._process_pending_emails()
+            if BOT_PRIORITY:
+                print("[BOT_PRIORITY]")
+            print("[BOT_ATIVO]")
+            print("[BOT_READY]")
+            self._watchdog_maybe_reset()
+            sent_today = self._daily_success_count()
+            print(f"[CONTADOR] enviados={sent_today}/{MAX_DEALS_DIA}")
+            resumed_after_hours = self._resume_after_hours_pending()
+            if resumed_after_hours:
+                self._touch_progress()
+                self._process_pending_emails()
+                return
+            vps_processed = self._process_vps_pending_inbounds()
+            if vps_processed:
+                self._touch_progress()
+                self._process_pending_emails()
+                return
+            recovered_inbounds = self._recover_pending_inbounds()
+            if recovered_inbounds:
+                print(f"[INBOUND_PRIORIDADE] recuperados={recovered_inbounds}")
+                self._process_pending_emails()
+                return
+            if not dentro_do_horario():
+                print("[FORA_HORARIO_BLOQUEADO] contexto=whatsapp_cadence")
+                self._process_pending_emails()
+                return
+
+            leads = []
+            added_to_queue = 0
+            if not self.pending_whatsapp_queue:
+                leads = self.buscar()
+                added_to_queue = self._enqueue_whatsapp_leads(leads, target_size=len(leads))
+            super_minas_count = sum(1 for lead in self.pending_whatsapp_queue if lead["super_minas"])
+            print(
+                f"[PIPELINE] total={len(leads) if leads else len(self.pending_whatsapp_queue)} super_minas={super_minas_count} "
+                f"fila_whatsapp={len(self.pending_whatsapp_queue)} novos={added_to_queue} enviados_hoje={sent_today}"
+            )
+            print(f"[QUEUE_READY] fila_whatsapp={len(self.pending_whatsapp_queue)}")
+            print(f"[QUEUE_FULL_READY] deals={len(self.pending_whatsapp_queue)}")
+            if self.pending_whatsapp_queue:
+                print("[ENVIO_INICIADO]")
+            sent_this_run = 0
+
+            while self.pending_whatsapp_queue:
+                if not dentro_do_horario():
+                    print("[FORA_HORARIO_BLOQUEADO] contexto=whatsapp_envio")
+                    break
+                if time.time() < float(self.next_whatsapp_send_at or 0):
+                    break
+
+                lead = self.pending_whatsapp_queue.pop(0)
+
+                nome = lead["nome"]
+                empresa = lead.get("empresa") or "a empresa"
+                deal_id = lead["id"]
+                prioridade = "SUPER_MINAS" if lead["super_minas"] else "CRM"
+                cadence_step = self._cadence_step(lead)
+                lead_phones = list(lead.get("phones") or lead.get("telefones") or [])
+
+                try:
+                    deal_actual = self.crm.get_deal_details(deal_id)
+                    actual_tokens = set(self._deal_tokens(deal_actual))
+                    if "RESPONDIDO" in actual_tokens:
+                        print(f"[RACE_CONDITION] deal={deal_id} ja_tagueado")
+                        continue
+                except Exception:
+                    continue
+
+                wa_status = self.whatsapp.status_payload()
+                if bool(wa_status.get("needs_qr")) or bool(wa_status.get("session_invalid")):
+                    print(
+                        f"[WA_BLOQUEADO_SEM_SESSAO] mode={str(wa_status.get('mode') or 'offline')} "
+                        f"needs_qr={bool(wa_status.get('needs_qr'))} "
+                        f"session_invalid={bool(wa_status.get('session_invalid'))}"
+                    )
+                    self.pending_whatsapp_queue.insert(0, lead)
+                    self.next_whatsapp_send_at = time.time() + 5
+                    break
+                if not bool(wa_status.get("connected")):
+                    print(
+                        f"[WA_OFFLINE] mode={str(wa_status.get('mode') or 'offline')} "
+                        f"needs_qr={bool(wa_status.get('needs_qr'))} "
+                        f"session_invalid={bool(wa_status.get('session_invalid'))}"
+                    )
+                    self.pending_whatsapp_queue.insert(0, lead)
+                    self.next_whatsapp_send_at = time.time() + 5
+                    self._recover_stack_if_needed(reason="whatsapp_offline")
+                    break
+
+                sent_phones = []
+                blocked_by_session = False
+                blocked_by_offline = False
+                for num in lead_phones:
+                    num = self.whatsapp.normalize_phone(num)
+                    if not num or num in self.blocklist:
+                        print(f"[BLOQUEADO] deal={deal_id} telefone={num}")
+                        continue
+                    reserved = (
+                        self.whatsapp.reserve_followup_send(num)
+                        if cadence_step > 1
+                        else self.whatsapp.reserve_send(num)
+                    )
+                    if not reserved:
+                        print(f"[DUPLICIDADE_BLOQUEADA] deal={deal_id} telefone={num}")
+                        continue
+
+                    msg = self.pitch.get_cadence_message(
+                        cadence_step,
+                        lead={"nome": nome, "empresa": empresa, "telefone": num},
+                    )
+                    print(f"[PROCESSANDO] origem={prioridade} deal={deal_id} telefone={num} cadencia={cadence_step}")
+                    print(f"[WHATSAPP_ENVIO] deal={deal_id} telefone={num} cadencia={cadence_step}")
+                    ok = self.whatsapp.send_message(num, msg, cadence_step=cadence_step, deal_id=deal_id)
+                    if ok:
+                        confirmed = self.whatsapp.wait_for_outbound_sync(num, msg, timeout_seconds=8, poll_seconds=0.5)
+                        if not confirmed and self._recent_outbound_message_seen(num, msg, within_seconds=180):
+                            print(f"[ENVIO_CONFIRMADO_POR_HISTORICO] deal={deal_id} telefone={num}")
+                            confirmed = True
+                        if not confirmed:
+                            self.whatsapp.release_send_slot(num)
+                            print(f"[ENVIO_SEM_CONFIRMACAO] deal={deal_id} telefone={num}")
+                            continue
+                        self.whatsapp.mark_sent(num)
+                        sent_phones.append(num)
+                        self._touch_progress()
+                        continue
+
+                    if self.whatsapp.last_send_state == "timeout":
+                        self.whatsapp.release_send_slot(num)
+                        print(f"[WHATSAPP_TIMEOUT] deal={deal_id} telefone={num}")
+                    elif self.whatsapp.last_send_state == "session_blocked":
+                        self.whatsapp.release_send_slot(num)
+                        print(f"[WA_BLOQUEADO_SEM_SESSAO] deal={deal_id} telefone={num}")
+                        blocked_by_session = True
+                        break
+                    elif self.whatsapp.last_send_state == "offline":
+                        self.whatsapp.release_send_slot(num)
+                        print(f"[WA_OFFLINE] deal={deal_id} telefone={num}")
+                        blocked_by_offline = True
+                        break
+                    elif self.whatsapp.last_send_state == "invalid":
+                        self.whatsapp.mark_invalid(num, "invalid_phone_outbound")
+                        print(f"[SEM_WHATSAPP] deal={deal_id} telefone={num}")
+                    else:
+                        self.whatsapp.release_send_slot(num)
+                        print(f"[FALHA_ENVIO] deal={deal_id} telefone={num}")
+
+                if blocked_by_session or blocked_by_offline:
+                    self.pending_whatsapp_queue.insert(0, lead)
+                    self.next_whatsapp_send_at = time.time() + 5
+                    if blocked_by_offline:
+                        self._recover_stack_if_needed(reason="whatsapp_offline")
+                    break
+
+                if not sent_phones:
+                    print(f"[ENVIO_FALHOU_DEAL] deal={deal_id}")
+                    self.next_whatsapp_send_at = time.time() + 1
+                    continue
+
+                self.whatsapp.mark_deal_sent(deal_id)
+                self._mark_channel_sent("whatsapp", lead, f"WHATSAPP_CAD_{cadence_step}")
+                for successful_phone in sent_phones:
+                    print(f"[WHATSAPP_ENVIADO] deal={deal_id} telefone={successful_phone}")
+                    print(f"[ENVIADO_REAL] deal={deal_id} telefone={successful_phone}")
+                try:
+                    whatsapp_tag = self._whatsapp_tag(lead)
+                    tag_ok = self.crm.add_tag("deal", deal_id, whatsapp_tag)
+                    if tag_ok:
+                        print(f"[TAG_APLICADA] deal={deal_id} tag={whatsapp_tag}")
+                    else:
+                        print(f"[TAG_FALHA] deal={deal_id} tag={whatsapp_tag}")
+                except Exception:
+                    print(f"[TAG_FALHA] deal={deal_id} tag={self._whatsapp_tag(lead)}")
+                if cadence_step == 1:
+                    try:
+                        self.crm.add_tag("deal", deal_id, "cad1")
+                    except Exception:
+                        pass
+                if str(self.crm.STATUS_BOT_FIELD or "").strip() not in {"", "status_bot"}:
+                    try:
+                        self.crm.update_deal(deal_id, {self.crm.STATUS_BOT_FIELD: "contato_iniciado"})
+                    except Exception:
+                        pass
+                self._append_deal_note(deal_id, f"WhatsApp CAD_{cadence_step} enviado.")
+                stage_step = max(cadence_step, int(lead.get("deal_cadence_step") or cadence_step))
+                self._move_deal_to_cadence_stage(deal_id, stage_step)
+                if cadence_step >= ARCHIVE_AFTER_CADENCE_STEP and not any(self._phone_has_inbound_history(phone) for phone in sent_phones):
+                    self._archive_no_contact(deal_id)
+                self._queue_email_after_whatsapp(lead)
+                self._process_pending_emails()
+                sent_this_run += 1
+                sent_today = self._increment_send_progress()
+                self.next_whatsapp_send_at = time.time() + self._next_whatsapp_delay()
+            if sent_this_run == 0 and not self.pending_whatsapp_queue:
+                self._run_background_enrichment()
+            self._process_pending_emails()
+        finally:
+            release_lock()
+
+    def start(self):
+        while True:
+            self._heartbeat_whatsapp()
+            self._watchdog_maybe_reset()
+            wa_status = self._whatsapp_status()
+            if bool(wa_status.get("needs_qr")) or bool(wa_status.get("session_invalid")):
+                print(
+                    f"[WA_BLOQUEADO_SEM_SESSAO] mode={str(wa_status.get('mode') or 'offline')} "
+                    f"needs_qr={bool(wa_status.get('needs_qr'))} session_invalid={bool(wa_status.get('session_invalid'))}"
+                )
+            elif not bool(wa_status.get("connected")):
+                self._recover_stack_if_needed(reason="pre_run_whatsapp_offline")
+            self.run()
+            time.sleep(BOOT_BUSY_SLEEP_SEC if self.pending_whatsapp_queue else BOOT_IDLE_SLEEP_SEC)
+
+
+if __name__ == "__main__":
+    run_all = any(str(arg).strip().lower() in {"--all", "all"} for arg in sys.argv[1:])
+    reset_progress = any(str(arg).strip().lower() in {"--reset-progress", "reset-progress"} for arg in sys.argv[1:])
+    if reset_progress:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(SEND_PROGRESS_FILE, "w", encoding="utf-8") as fh:
+            json.dump(_default_send_progress(), fh, ensure_ascii=False, indent=2)
+        print("[CONTADOR_RESET]")
+    if run_all:
+        start_stack_fast()
+    SDRSupervisor().start()

@@ -1,0 +1,1103 @@
+[
+  {
+    "lead_id": "pd-376-p-1592",
+    "deal_id": 376,
+    "person_id": 1592,
+    "nome": "Contato SUPER E SUPLEMENTOS ALIMENTARES LTDA negócio",
+    "empresa": "",
+    "telefone": "5511988887777",
+    "email": "",
+    "source": "pipedrive_cache",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 8,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "",
+    "phones": [
+      "5511988887777"
+    ],
+    "emails": [],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_deal": {
+      "id": 376,
+      "creator_user_id": {
+        "id": 14415611,
+        "name": "Vasco",
+        "email": "vasco@manddigital.com.br",
+        "has_pic": 0,
+        "pic_hash": null,
+        "active_flag": true,
+        "value": 14415611
+      },
+      "user_id": {
+        "id": 25681240,
+        "name": "Ana Carolina",
+        "email": "ana@manddigital.com.br",
+        "has_pic": 1,
+        "pic_hash": "f5ef82eef0c558d6614a23f17e66df42",
+        "active_flag": true,
+        "value": 25681240
+      },
+      "person_id": {
+        "active_flag": true,
+        "name": "SUPER E SUPLEMENTOS ALIMENTARES LTDA",
+        "email": [
+          {
+            "value": "",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "work",
+            "value": "5511999999999",
+            "primary": true
+          }
+        ],
+        "owner_id": 14415611,
+        "company_id": 10606974,
+        "value": 386
+      },
+      "org_id": null,
+      "stage_id": 8,
+      "title": "SUPER E SUPLEMENTOS ALIMENTARES LTDA negócio [ENRIQUECIDO]",
+      "value": 0,
+      "acv": null,
+      "mrr": null,
+      "arr": null,
+      "currency": "BRL",
+      "add_time": "2023-10-17 20:43:48",
+      "update_time": "2026-03-26 11:45:54",
+      "stage_change_time": "2026-03-20 04:37:24",
+      "active": true,
+      "deleted": false,
+      "status": "open",
+      "probability": null,
+      "next_activity_date": null,
+      "next_activity_time": null,
+      "next_activity_id": null,
+      "last_activity_id": null,
+      "last_activity_date": null,
+      "lost_reason": null,
+      "visible_to": "3",
+      "close_time": null,
+      "pipeline_id": 2,
+      "won_time": null,
+      "first_won_time": null,
+      "lost_time": null,
+      "products_count": 0,
+      "files_count": 0,
+      "notes_count": 6,
+      "followers_count": 3,
+      "email_messages_count": 0,
+      "activities_count": 0,
+      "done_activities_count": 0,
+      "undone_activities_count": 0,
+      "participants_count": 4,
+      "expected_close_date": null,
+      "last_incoming_mail_time": null,
+      "last_outgoing_mail_time": null,
+      "label": null,
+      "local_won_date": null,
+      "local_lost_date": null,
+      "local_close_date": null,
+      "origin": "Import",
+      "origin_id": null,
+      "channel": null,
+      "channel_id": null,
+      "is_archived": false,
+      "archive_time": null,
+      "sequence_enrollment": null,
+      "source_lead_id": null,
+      "stage_order_nr": 1,
+      "person_name": "SUPER E SUPLEMENTOS ALIMENTARES LTDA",
+      "org_name": null,
+      "next_activity_subject": null,
+      "next_activity_type": null,
+      "next_activity_duration": null,
+      "next_activity_note": null,
+      "formatted_value": "R$ 0",
+      "weighted_value": 0,
+      "formatted_weighted_value": "R$ 0",
+      "weighted_value_currency": "BRL",
+      "rotten_time": "2026-04-25 11:45:54",
+      "acv_currency": null,
+      "mrr_currency": null,
+      "arr_currency": null,
+      "owner_name": "Ana Carolina",
+      "cc_email": "manddigital+deal376@pipedrivemail.com",
+      "fea112dd7d3e661ec873dda3ed9eefd1fa0077e7": null,
+      "3be949d9c25ac217a6666d5afc527b3f0eff8f75": "130",
+      "ccdd04a82a12acb692268504d8fb421d49c3329a": null,
+      "org_hidden": false,
+      "person_hidden": false,
+      "average_time_to_won": {
+        "y": 0,
+        "m": 0,
+        "d": 0,
+        "h": 0,
+        "i": 0,
+        "s": 0,
+        "total_seconds": 0
+      },
+      "average_stage_progress": 0,
+      "age": {
+        "y": 2,
+        "m": 5,
+        "d": 12,
+        "h": 17,
+        "i": 3,
+        "s": 44,
+        "total_seconds": 77303024
+      },
+      "stay_in_pipeline_stages": {
+        "times_in_stages": {
+          "1": 3974,
+          "8": 13556144,
+          "9": 50599147
+        },
+        "order_of_stages": [
+          1,
+          8,
+          9
+        ]
+      },
+      "last_activity": null,
+      "next_activity": null
+    },
+    "crm_person": {
+      "id": 1592,
+      "owner_id": {
+        "id": 25681240,
+        "name": "Ana Carolina",
+        "email": "ana@manddigital.com.br",
+        "has_pic": 1,
+        "pic_hash": "f5ef82eef0c558d6614a23f17e66df42",
+        "active_flag": true,
+        "value": 25681240
+      },
+      "org_id": null,
+      "name": "Contato SUPER E SUPLEMENTOS ALIMENTARES LTDA negócio",
+      "first_name": "Contato SUPER E SUPLEMENTOS ALIMENTARES LTDA",
+      "last_name": "negócio",
+      "open_deals_count": 0,
+      "related_open_deals_count": 0,
+      "closed_deals_count": 0,
+      "related_closed_deals_count": 0,
+      "participant_open_deals_count": 1,
+      "participant_closed_deals_count": 0,
+      "email_messages_count": 0,
+      "activities_count": 0,
+      "done_activities_count": 0,
+      "undone_activities_count": 0,
+      "files_count": 0,
+      "notes_count": 0,
+      "followers_count": 1,
+      "won_deals_count": 0,
+      "related_won_deals_count": 0,
+      "lost_deals_count": 0,
+      "related_lost_deals_count": 0,
+      "active_flag": true,
+      "phone": [
+        {
+          "label": "mobile",
+          "value": "11988887777",
+          "primary": true
+        }
+      ],
+      "email": [
+        {
+          "value": "",
+          "primary": true
+        }
+      ],
+      "first_char": "c",
+      "update_time": "2026-03-27 04:03:26",
+      "delete_time": null,
+      "add_time": "2026-03-16 15:54:38",
+      "visible_to": "3",
+      "picture_id": null,
+      "next_activity_date": null,
+      "next_activity_time": null,
+      "next_activity_id": null,
+      "last_activity_id": null,
+      "last_activity_date": null,
+      "last_incoming_mail_time": null,
+      "last_outgoing_mail_time": null,
+      "label": null,
+      "label_ids": [],
+      "im": [
+        {
+          "value": "",
+          "primary": true
+        }
+      ],
+      "postal_address": null,
+      "postal_address_lat": null,
+      "postal_address_long": null,
+      "postal_address_subpremise": null,
+      "postal_address_street_number": null,
+      "postal_address_route": null,
+      "postal_address_sublocality": null,
+      "postal_address_locality": null,
+      "postal_address_admin_area_level_1": null,
+      "postal_address_admin_area_level_2": null,
+      "postal_address_country": null,
+      "postal_address_postal_code": null,
+      "postal_address_formatted_address": null,
+      "notes": null,
+      "birthday": null,
+      "job_title": null,
+      "org_name": null,
+      "cc_email": "manddigital@pipedrivemail.com",
+      "primary_email": null,
+      "owner_name": "Ana Carolina",
+      "30095481c7c698ee34ba8d85c8c3ede6783efd24": null,
+      "56a8827b133e76ca3c7f8dd1147a7d40a83d90c5": null,
+      "53c12fa4210510d55fec447cfb583cc0559362b5": null,
+      "0800bf2d36f49f1f4f6586e1bf3b62a0cf5068a8": null,
+      "834546cd1a48649651942cea08eca4057395e865": null,
+      "61626fda6dd45381947163d2d56acd1647ec8f93": null,
+      "243f6852d0af0fa5bf759fdc7c65447dcbfa30af": null,
+      "6294d580a1e941bb87596b976568f0fb90fc1bde": null,
+      "dd1556f241ac4c6d82cb23c79e7383927d41cde8": null,
+      "a67247dbdd3ce5c7f53ab0da0a9cc6b0157d91f0": null,
+      "company_id": 10606974
+    },
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-559932122733",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "A. S. DE MOURA SOBRINHO & CIA LTDA",
+    "empresa": "A. S. DE MOURA SOBRINHO & CIA LTDA",
+    "telefone": "559932122733",
+    "email": "farmaciacidadao7@gmail.com",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "04162242000132",
+    "phones": [
+      "559932122733",
+      "5586988147816"
+    ],
+    "emails": [
+      "farmaciacidadao7@gmail.com"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-551231326029",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "A.CMENTE PARTICIPACOES LTDA",
+    "empresa": "A.CMENTE PARTICIPACOES LTDA",
+    "telefone": "551231326029",
+    "email": "carolinaarrudabrasscafe@gmail.com",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "39536819000103",
+    "phones": [
+      "551231326029",
+      "5511981131857"
+    ],
+    "emails": [
+      "carolinaarrudabrasscafe@gmail.com"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-5535461212",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "ASSOCIACAO HOSPITAL DE CARIDADE DE ALECRIM",
+    "empresa": "ASSOCIACAO HOSPITAL DE CARIDADE DE ALECRIM",
+    "telefone": "551135461212",
+    "email": "nerisava@yahoo.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "90863366000187",
+    "phones": [
+      "5535461212",
+      "55999016257"
+    ],
+    "emails": [
+      "nerisava@yahoo.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-551159033866",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "AXOM SUPLEMENTOS ALIMENTARES LTDA",
+    "empresa": "AXOM SUPLEMENTOS ALIMENTARES LTDA",
+    "telefone": "551159033866",
+    "email": "brenopedra@grupopodpeople.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "55646812000109",
+    "phones": [
+      "551159033866",
+      "5531998403122"
+    ],
+    "emails": [
+      "brenopedra@grupopodpeople.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-558432112507",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "BIOWELL AMERICA LTDA",
+    "empresa": "BIOWELL AMERICA LTDA",
+    "telefone": "558432112507",
+    "email": "geyza@fdc.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "40809626000168",
+    "phones": [
+      "558432112507",
+      "5584988630319"
+    ],
+    "emails": [
+      "geyza@fdc.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-554130945625",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "CAVALCANTE E REZENDE COMERCIO DE MEDICAMENTOS LTDA",
+    "empresa": "CAVALCANTE E REZENDE COMERCIO DE MEDICAMENTOS LTDA",
+    "telefone": "554130945625",
+    "email": "administrativo@opifarma.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "19860247000106",
+    "phones": [
+      "554130945625",
+      "5541992294090"
+    ],
+    "emails": [
+      "administrativo@opifarma.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-5548988100020",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "CLICKSUPER S.A",
+    "empresa": "CLICKSUPER S.A",
+    "telefone": "5548988100020",
+    "email": "financeiro@clicksuper.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "44289206000159",
+    "phones": [
+      "5548988100020",
+      "554830351475"
+    ],
+    "emails": [
+      "financeiro@clicksuper.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-554836323333",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "CRIOBRAS AR GAS LTDA",
+    "empresa": "CRIOBRAS AR GAS LTDA",
+    "telefone": "554836323333",
+    "email": "atendimento@criobras.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "01666621000171",
+    "phones": [
+      "554836323333",
+      "5548996247159"
+    ],
+    "emails": [
+      "atendimento@criobras.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-554730337038",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "DANG - COMERCIAL IMPORTADORA E EXPORTADORA LTDA",
+    "empresa": "DANG - COMERCIAL IMPORTADORA E EXPORTADORA LTDA",
+    "telefone": "554730337038",
+    "email": "financeiro8ngimportados@gmail.com",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "09482237000120",
+    "phones": [
+      "554730337038",
+      "5547991492573"
+    ],
+    "emails": [
+      "financeiro8ngimportados@gmail.com"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-5519985521463",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "DE MARCHI DROGARIA LTDA",
+    "empresa": "DE MARCHI DROGARIA LTDA",
+    "telefone": "5519985521463",
+    "email": "juridico@bemtefaz.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "03196294000167",
+    "phones": [
+      "5519985521463",
+      "551937201811"
+    ],
+    "emails": [
+      "juridico@bemtefaz.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-551832113221",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "DROGARIA DROGAOESTE LTDA",
+    "empresa": "DROGARIA DROGAOESTE LTDA",
+    "telefone": "551832113221",
+    "email": "bansi@multidrogasbirigui.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "04298156000151",
+    "phones": [
+      "551832113221",
+      "5518997367362"
+    ],
+    "emails": [
+      "bansi@multidrogasbirigui.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-5521964198705",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "DROGARIA E PERFUMARIA EMANUEL LTDA",
+    "empresa": "DROGARIA E PERFUMARIA EMANUEL LTDA",
+    "telefone": "5521964198705",
+    "email": "angelica.fuly@emanuelcenter.com",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "10534290000107",
+    "phones": [
+      "5521964198705",
+      "552124170647"
+    ],
+    "emails": [
+      "angelica.fuly@emanuelcenter.com"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-553837211799",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "DROGARIA E PERFUMARIA MEDIC MINAS LTDA",
+    "empresa": "DROGARIA E PERFUMARIA MEDIC MINAS LTDA",
+    "telefone": "553837211799",
+    "email": "admmatriz@drogariamarcelino.com",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "10704665000130",
+    "phones": [
+      "553837211799",
+      "5538998341799"
+    ],
+    "emails": [
+      "admmatriz@drogariamarcelino.com"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-551832113201",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "DROGARIA IVONINHA LTDA",
+    "empresa": "DROGARIA IVONINHA LTDA",
+    "telefone": "551832113201",
+    "email": "bansi@multidrogasbirigui.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "08079309000120",
+    "phones": [
+      "551832113201",
+      "5518981271616"
+    ],
+    "emails": [
+      "bansi@multidrogasbirigui.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-554132138241",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "FARMACIA E DROGARIA NISSEI S.A",
+    "empresa": "FARMACIA E DROGARIA NISSEI S.A",
+    "telefone": "554132138241",
+    "email": "documentacaolegal@nisseisa.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "79430682000122",
+    "phones": [
+      "554132138241",
+      "5541996579221"
+    ],
+    "emails": [
+      "documentacaolegal@nisseisa.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-5511992281435",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "GUIAS COMERCIO E LOGISTICA LTDA",
+    "empresa": "GUIAS COMERCIO E LOGISTICA LTDA",
+    "telefone": "5511992281435",
+    "email": "guiasindustrial@hotmail.com",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "28787543000110",
+    "phones": [
+      "5511992281435",
+      "551122814352"
+    ],
+    "emails": [
+      "guiasindustrial@hotmail.com"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-556734881133",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "HOSPITAL E MATERNIDADE SANTA LUZIA",
+    "empresa": "HOSPITAL E MATERNIDADE SANTA LUZIA",
+    "telefone": "556734881133",
+    "email": "hospitalematernidadesantaluzia@gmail.com",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "52541718000199",
+    "phones": [
+      "556734881133",
+      "5567999098759"
+    ],
+    "emails": [
+      "hospitalematernidadesantaluzia@gmail.com"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-555435311252",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "HOSPITAL SANTA TEREZINHA",
+    "empresa": "HOSPITAL SANTA TEREZINHA",
+    "telefone": "555435311252",
+    "email": "hstpaimfilho@gmail.com",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "91272732000196",
+    "phones": [
+      "555435311252",
+      "5554984372705"
+    ],
+    "emails": [
+      "hstpaimfilho@gmail.com"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-554632232976",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "INSTITUTO TRABALHO E CIDADANIA",
+    "empresa": "INSTITUTO TRABALHO E CIDADANIA",
+    "telefone": "554632232976",
+    "email": "lorita.novack@hotmail.com",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "36204241000108",
+    "phones": [
+      "554632232976",
+      "5546991054908"
+    ],
+    "emails": [
+      "lorita.novack@hotmail.com"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-559832467002",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "MSI COMERCIO DE MATERIAIS E EQUIPAMENTOS HOSPITALARES LTDA",
+    "empresa": "MSI COMERCIO DE MATERIAIS E EQUIPAMENTOS HOSPITALARES LTDA",
+    "telefone": "559832467002",
+    "email": "msihospitalar@gmail.com",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "29544048000142",
+    "phones": [
+      "559832467002",
+      "5598991822004"
+    ],
+    "emails": [
+      "msihospitalar@gmail.com"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-5554999964000",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "NELI BEDIN TRANSPORTES LTDA",
+    "empresa": "NELI BEDIN TRANSPORTES LTDA",
+    "telefone": "5554999964000",
+    "email": "aquiles@mksnet.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "16710941000159",
+    "phones": [
+      "5554999964000",
+      "555433642140"
+    ],
+    "emails": [
+      "aquiles@mksnet.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-5581995220101",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "PAJEU NORDESTE LTDA",
+    "empresa": "PAJEU NORDESTE LTDA",
+    "telefone": "5581995220101",
+    "email": "junior.ferreira@grupopajeu.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "02814573000184",
+    "phones": [
+      "5581995220101",
+      "558132528300"
+    ],
+    "emails": [
+      "junior.ferreira@grupopajeu.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-556635446070",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "Park Shopping Sorriso",
+    "empresa": "Park Shopping Sorriso",
+    "telefone": "556635446070",
+    "email": "n/a",
+    "source": "sheet_sales",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "07697064000132",
+    "phones": [
+      "556635446070"
+    ],
+    "emails": [],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-5511992330662",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "REMEDIOWEB COMERCIO E DISTRIBUICAO DE PRODUTOS FARMACEUTICOS LTDA",
+    "empresa": "REMEDIOWEB COMERCIO E DISTRIBUICAO DE PRODUTOS FARMACEUTICOS LTDA",
+    "telefone": "5511992330662",
+    "email": "argus.martins@remedioweb.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "05312323000134",
+    "phones": [
+      "5511992330662",
+      "551140369800"
+    ],
+    "emails": [
+      "argus.martins@remedioweb.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-551126674253",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "RIOSKIN MEDICAL COMERCIO E SERVICO EMPRESARIAL LTDA",
+    "empresa": "RIOSKIN MEDICAL COMERCIO E SERVICO EMPRESARIAL LTDA",
+    "telefone": "551126674253",
+    "email": "vlassios.med@hotmail.com",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "37499689000150",
+    "phones": [
+      "551126674253",
+      "5511974744437"
+    ],
+    "emails": [
+      "vlassios.med@hotmail.com"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-5514981814442",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "RRGA FARMA DROGARIA LTDA",
+    "empresa": "RRGA FARMA DROGARIA LTDA",
+    "telefone": "5514981814442",
+    "email": "glaucia.mininel@rrgadrogarias.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "45385429000182",
+    "phones": [
+      "5514981814442",
+      "551441414442"
+    ],
+    "emails": [
+      "glaucia.mininel@rrgadrogarias.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-5541999053125",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "SAN GERMANN COMMODITIES PRODUTOS ALIMENTICIOS E ENERGIA LTDA",
+    "empresa": "SAN GERMANN COMMODITIES PRODUTOS ALIMENTICIOS E ENERGIA LTDA",
+    "telefone": "5541999053125",
+    "email": "riberclebersilva@gmail.com",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "03759047000121",
+    "phones": [
+      "5541999053125",
+      "554141010701"
+    ],
+    "emails": [
+      "riberclebersilva@gmail.com"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-551131467000",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "Senai",
+    "empresa": "Senai",
+    "telefone": "551131467000",
+    "email": "n/a",
+    "source": "sheet_sales",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "03774819000102",
+    "phones": [
+      "551131467000"
+    ],
+    "emails": [],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-551138729911",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "TRANSPHARMA DELIVERY LTDA.",
+    "empresa": "TRANSPHARMA DELIVERY LTDA.",
+    "telefone": "551138729911",
+    "email": "ruthlisboa@collectpharm.com",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "19846733000170",
+    "phones": [
+      "551138729911",
+      "5511999863977"
+    ],
+    "emails": [
+      "ruthlisboa@collectpharm.com"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-5565992352346",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "VLM COMERCIO DE MEDICAMENTOS LTDA",
+    "empresa": "VLM COMERCIO DE MEDICAMENTOS LTDA",
+    "telefone": "5565992352346",
+    "email": "financeiro@drogariasbigmaster.com.br",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "32864855000157",
+    "phones": [
+      "5565992352346",
+      "556530272525"
+    ],
+    "emails": [
+      "financeiro@drogariasbigmaster.com.br"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  },
+  {
+    "lead_id": "local-551933460855",
+    "deal_id": 0,
+    "person_id": 0,
+    "nome": "VP DROGARIA LTDA",
+    "empresa": "VP DROGARIA LTDA",
+    "telefone": "551933460855",
+    "email": "drogariaflorianopolis2021@gmail.com",
+    "source": "sheet_cnpj",
+    "tags": [],
+    "status_bot": "",
+    "stage_id": 0,
+    "sheet_day": "1",
+    "origem_oficial": "",
+    "cnpj": "25320138000107",
+    "phones": [
+      "551933460855",
+      "5519994396481"
+    ],
+    "emails": [
+      "drogariaflorianopolis2021@gmail.com"
+    ],
+    "super_minas": false,
+    "blacklisted": false,
+    "blacklist_reason": "",
+    "crm_tags": []
+  }
+]

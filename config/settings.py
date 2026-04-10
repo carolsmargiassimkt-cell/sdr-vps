@@ -1,0 +1,42 @@
+# --- CREDENCIAIS (PLACEHOLDERS) ---
+# Nenhuma chave real deve ser inserida aqui diretamente.
+# Os valores agora são buscados dinamicamente via config_loader para evitar importação circular.
+
+def get_setting(key, default):
+    from config.config_loader import get_config_value
+    return get_config_value(key, default)
+
+# --- CONFIGURAÇÕES DE EMAIL (SMTP) ---
+MAX_EMAILS_DAY1 = 5
+MAX_EMAILS_DAY2 = 8
+MAX_EMAILS_DAY3 = 12
+MAX_EMAILS_DAY4 = 20
+MAX_EMAILS_DAY5 = 30
+
+# --- DELAYS E RITMO ---
+MIN_DELAY_SECONDS = 15
+MAX_DELAY_SECONDS = 40
+DRY_RUN = False
+
+# --- LIMITES OPERACIONAIS INICIAIS (PRODUÇÃO CONTROLADA) ---
+MAX_EMAILS_PER_DAY = 3
+MAX_WHATSAPP_PER_DAY = 3
+MAX_LINKEDIN_PER_DAY = 7
+LINKEDIN_FOLLOW_LIMIT = 3
+LINKEDIN_MESSAGE_LIMIT = 3
+LINKEDIN_COMMENT_LIMIT = 1
+WHATSAPP_LIMIT = 3
+EMAIL_LIMIT = 3
+
+# --- DELAYS DE LINKEDIN ---
+LINKEDIN_FOLLOW_DELAY_MIN_SECONDS = 30
+LINKEDIN_FOLLOW_DELAY_MAX_SECONDS = 90
+LINKEDIN_MESSAGE_DELAY_MIN_SECONDS = 45
+LINKEDIN_MESSAGE_DELAY_MAX_SECONDS = 120
+LINKEDIN_COMMENT_DELAY_MIN_SECONDS = 60
+LINKEDIN_COMMENT_DELAY_MAX_SECONDS = 120
+
+# --- CONFIGURAÇÕES DE SCHEDULER ---
+CHECK_INTERVAL_SECONDS = 300  # 5 minutos entre verificações de novos leads
+HUMAN_DELAY_MIN = 30          # segundos
+HUMAN_DELAY_MAX = 90          # segundos

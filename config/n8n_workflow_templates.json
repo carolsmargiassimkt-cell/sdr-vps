@@ -1,0 +1,47 @@
+{
+  "timezone": "America/Sao_Paulo",
+  "workflows": [
+    {
+      "name": "Mand | Daily CRM Sync",
+      "trigger": {
+        "type": "schedule",
+        "cron": "30 17 * * 1-5"
+      },
+      "nodes": [
+        {
+          "type": "executeCommand",
+          "name": "daily_crm_sync",
+          "command": "C:\\Users\\Asus\\Python311\\python.exe C:\\Users\\Asus\\legacy\\bot_sdr_ai\\tools\\daily_crm_sync.py"
+        }
+      ]
+    },
+    {
+      "name": "Mand | Weekly Base Enrichment",
+      "trigger": {
+        "type": "schedule",
+        "cron": "0 12 * * 6"
+      },
+      "nodes": [
+        {
+          "type": "executeCommand",
+          "name": "run_weekly_base_pipeline",
+          "command": "C:\\Users\\Asus\\Python311\\python.exe C:\\Users\\Asus\\legacy\\bot_sdr_ai\\tools\\run_weekly_base_pipeline.py"
+        }
+      ]
+    },
+    {
+      "name": "Mand | Weekly CRM Replay + Cleanup",
+      "trigger": {
+        "type": "schedule",
+        "cron": "0 13 * * 6"
+      },
+      "nodes": [
+        {
+          "type": "executeCommand",
+          "name": "weekly_crm_maintenance",
+          "command": "C:\\Users\\Asus\\Python311\\python.exe C:\\Users\\Asus\\legacy\\bot_sdr_ai\\tools\\run_weekly_crm_maintenance.py"
+        }
+      ]
+    }
+  ]
+}

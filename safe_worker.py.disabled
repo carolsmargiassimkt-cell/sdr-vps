@@ -1,0 +1,655 @@
+﻿from __future__ import annotations
+
+import hashlib
+import os
+import random
+import re
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+import requests
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from runtime.process_lock import ProcessAlreadyRunningError, ProcessLock
+from utils.safe_json import safe_read_json, safe_write_json
+
+TOKEN = os.getenv("PIPEDRIVE_TOKEN", "").strip()
+BAILEYS_BASE = os.getenv("BAILEYS_BASE", "http://localhost:3000").strip() or "http://localhost:3000"
+HISTORY_FILE = PROJECT_ROOT / "logs" / "whatsapp_message_history.json"
+STATE_FILE = PROJECT_ROOT / "logs" / "whatsapp_conversation_state.json"
+BLOCKLIST_FILE = PROJECT_ROOT / "logs" / "whatsapp_manual_blocklist.json"
+CHANNEL_STATE_FILE = PROJECT_ROOT / "logs" / "whatsapp_channel_state.json"
+WORKER_LOCK_NAME = "safe_worker_main"
+SEND_LOCK_NAME = "whatsapp_send_global"
+MAX_LOOP_DEALS = 120
+LOOP_SLEEP_SEC = 6
+CRITICAL_BLOCKED_PHONES = {"5511982395467"}
+
+CADENCE_TAGS = {f"cad{i}" for i in range(1, 8)}
+CADENCE_TAGS.update({"wpp_enviado", "wpp_cad1", "wpp_cad2", "wpp_cad3", "wpp_cad4", "wpp_cad5"})
+
+STAGE_TAG = {
+    1: "cad1",
+    2: "cad2",
+    3: "cad3",
+    4: "cad4",
+    5: "cad5",
+    6: "cad6",
+    7: "cad7",
+}
+
+FLOW_TEXT = {
+    1: "{saudacao} {nome}, tudo bem?\n\nAqui e a Carol da Mand Digital.\n\nPoderia me direcionar com a pessoa responsavel por marketing e vendas da {empresa}?",
+    2: "Perfeito!\n\nSo pra contextualizar:\n\nCom a Copa do Mundo chegando, muitas empresas comecam a rodar campanhas promocionais para aproveitar o aumento de demanda.\n\nMas a maioria nao consegue capturar dados reais nem transformar isso em vendas depois.\n\nPosso te fazer uma pergunta rapida?",
+    3: "Hoje voces ja fazem alguma acao ou campanha para gerar vendas ou captar dados dos clientes?",
+    4: "Entendi.\n\nO que temos visto e muita empresa investindo nesse momento, mas sem conseguir medir resultado ou aproveitar depois.\n\nIsso acontece com voces tambem?",
+    5: "Sem esses dados, fica dificil crescer de forma previsivel, principalmente em momentos de alta como a Copa.",
+    6: "Foi por isso que criamos as campanhas gamificadas da Mand.\n\nElas aumentam engajamento, capturam dados reais e ajudam a transformar esse pico de demanda em vendas estruturadas.",
+    7: "Faz sentido olhar isso com mais detalhe para a {empresa}.\n\nQual o melhor email para eu te enviar um convite e te mostrar alguns exemplos praticos?",
+}
+
+NEGATIVE_TOKENS = (
+    "nao tenho interesse",
+    "nao quero",
+    "sem interesse",
+    "nao precisa",
+    "nao precisamos",
+    "nao me chama",
+    "pare",
+)
+INTEREST_TOKENS = (
+    "sim",
+    "tenho interesse",
+    "quero",
+    "pode",
+    "faz sentido",
+    "manda",
+    "podemos conversar",
+    "vamos falar",
+)
+BOT_TOKENS = (
+    "transferir seu atendimento",
+    "atendimento automatico",
+    "digite uma opcao",
+    "menu",
+    "sac",
+    "assistente virtual",
+)
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_phone(value: Any) -> str:
+    digits = re.sub(r"\D+", "", str(value or ""))
+    if not digits:
+        return ""
+    if not digits.startswith("55"):
+        digits = f"55{digits}"
+    return digits
+
+
+def normalize_phone_core(value: Any) -> str:
+    digits = re.sub(r"\D+", "", str(value or ""))
+    if digits.startswith("55"):
+        digits = digits[2:]
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+def phone_match(a: Any, b: Any) -> bool:
+    return normalize_phone_core(a) and normalize_phone_core(a) == normalize_phone_core(b)
+
+
+def ensure_files() -> None:
+    for path, default in (
+        (HISTORY_FILE, []),
+        (STATE_FILE, {"leads": {}, "processed_inbox": []}),
+        (BLOCKLIST_FILE, []),
+        (
+            CHANNEL_STATE_FILE,
+            {
+                "connected": False,
+                "mode": "unknown",
+                "rest_until": "",
+                "updated_at": "",
+                "last_error": "",
+            },
+        ),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            safe_write_json(path, default)
+
+
+def load_history() -> List[Dict[str, Any]]:
+    payload = safe_read_json(HISTORY_FILE)
+    return payload if isinstance(payload, list) else []
+
+
+def save_history(history: List[Dict[str, Any]]) -> None:
+    safe_write_json(HISTORY_FILE, history)
+
+
+def load_state() -> Dict[str, Any]:
+    payload = safe_read_json(STATE_FILE)
+    if not isinstance(payload, dict):
+        return {"leads": {}, "processed_inbox": []}
+    payload.setdefault("leads", {})
+    payload.setdefault("processed_inbox", [])
+    if not isinstance(payload["leads"], dict):
+        payload["leads"] = {}
+    if not isinstance(payload["processed_inbox"], list):
+        payload["processed_inbox"] = []
+    return payload
+
+
+def save_state(state: Dict[str, Any]) -> None:
+    processed = state.get("processed_inbox", [])
+    if isinstance(processed, list) and len(processed) > 3000:
+        state["processed_inbox"] = processed[-3000:]
+    safe_write_json(STATE_FILE, state)
+
+
+def load_blocklist() -> set[str]:
+    payload = safe_read_json(BLOCKLIST_FILE)
+    values: set[str] = set()
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                phone = normalize_phone(item.get("telefone") or item.get("phone"))
+            else:
+                phone = normalize_phone(item)
+            if phone:
+                values.add(phone)
+    values.update(CRITICAL_BLOCKED_PHONES)
+    return values
+
+
+def append_blocklist(phone: str, reason: str) -> None:
+    normalized = normalize_phone(phone)
+    if not normalized:
+        return
+    payload = safe_read_json(BLOCKLIST_FILE)
+    items = payload if isinstance(payload, list) else []
+    for item in items:
+        if isinstance(item, dict) and normalize_phone(item.get("telefone") or item.get("phone")) == normalized:
+            return
+    items.append({"telefone": normalized, "reason": reason, "tag": "blocked_manual"})
+    safe_write_json(BLOCKLIST_FILE, items)
+
+
+def load_channel_state() -> Dict[str, Any]:
+    payload = safe_read_json(CHANNEL_STATE_FILE)
+    return payload if isinstance(payload, dict) else {}
+
+
+def parse_iso(raw: Any) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def channel_resting() -> tuple[bool, Dict[str, Any]]:
+    state = load_channel_state()
+    mode = str(state.get("mode", "")).strip().lower()
+    if mode != "resting":
+        return False, state
+    rest_until = parse_iso(state.get("rest_until"))
+    if rest_until is None:
+        return True, state
+    return datetime.now(timezone.utc) < rest_until, state
+
+
+def channel_session_invalid() -> tuple[bool, Dict[str, Any]]:
+    state = load_channel_state()
+    last_error = str(state.get("last_error", "")).strip().lower()
+    last_code = str(state.get("last_disconnect_code", "")).strip()
+    qr_blocked = bool(state.get("qr_blocked"))
+    invalid_tokens = (
+        "qr_requested",
+        "sessao_inexistente_ou_invalida",
+        "sessao_invalida",
+        "connection_closed",
+        "logged out",
+        "device_removed",
+    )
+    if qr_blocked or last_code == "401" or any(token in last_error for token in invalid_tokens):
+        return True, state
+    return False, state
+
+
+def request(method: str, url: str, **kwargs) -> Dict[str, Any]:
+    try:
+        response = requests.request(method, url, timeout=12, **kwargs)
+        data = response.json() if response.content else {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def fetch_deals() -> List[Dict[str, Any]]:
+    if not TOKEN:
+        return []
+    url = f"https://api.pipedrive.com/v1/deals?status=open&limit={MAX_LOOP_DEALS}&api_token={TOKEN}"
+    return request("GET", url).get("data") or []
+
+
+def get_person(person_id: int) -> Dict[str, Any]:
+    if not TOKEN or not int(person_id or 0):
+        return {}
+    url = f"https://api.pipedrive.com/v1/persons/{int(person_id)}?api_token={TOKEN}"
+    return request("GET", url).get("data") or {}
+
+
+def parse_person_id(deal: Dict[str, Any]) -> int:
+    raw = deal.get("person_id")
+    if isinstance(raw, dict):
+        return int(raw.get("value") or 0)
+    return int(raw or 0)
+
+
+def extract_phone(person: Dict[str, Any]) -> str:
+    for item in person.get("phone") or []:
+        phone = normalize_phone(item.get("value"))
+        if phone:
+            return phone
+    return ""
+
+
+def extract_company(deal: Dict[str, Any], person: Dict[str, Any]) -> str:
+    org = deal.get("org_name")
+    if isinstance(org, str) and org.strip():
+        return org.strip()
+    return str(person.get("name") or "empresa").strip() or "empresa"
+
+
+def extract_name(person: Dict[str, Any]) -> str:
+    return str(person.get("name") or "").strip() or "pessoal"
+
+
+def normalize_label_tokens(value: Any) -> set[str]:
+    tokens: set[str] = set()
+    if isinstance(value, list):
+        for item in value:
+            token = str(item or "").strip().lower()
+            if token:
+                tokens.add(token)
+        return tokens
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return tokens
+    for chunk in re.split(r"[,\s;|]+", raw):
+        chunk = chunk.strip()
+        if chunk:
+            tokens.add(chunk)
+    return tokens
+
+
+def has_cadence_tag(deal: Dict[str, Any], person: Dict[str, Any]) -> bool:
+    deal_tokens = normalize_label_tokens(deal.get("label"))
+    person_tokens = normalize_label_tokens(person.get("label"))
+    return bool((deal_tokens | person_tokens) & CADENCE_TAGS)
+
+
+def apply_person_tag(person_id: int, person: Dict[str, Any], tag: str) -> bool:
+    if not TOKEN or not int(person_id or 0):
+        return False
+    existing = normalize_label_tokens(person.get("label"))
+    if tag.lower() in existing:
+        return True
+    merged = sorted(existing | {tag.lower()})
+    merged_label = ",".join(merged)
+    url = f"https://api.pipedrive.com/v1/persons/{int(person_id)}?api_token={TOKEN}"
+    payload = request("PUT", url, json={"label": merged_label})
+    return bool(payload.get("success"))
+
+
+def history_key(phone: str, stage: int) -> str:
+    return f"{normalize_phone(phone)}|{int(stage)}"
+
+
+def count_success_today(history: List[Dict[str, Any]], phone: str) -> int:
+    target = normalize_phone(phone)
+    today = datetime.now(timezone.utc).date().isoformat()
+    total = 0
+    for item in history:
+        if normalize_phone(item.get("phone")) != target:
+            continue
+        if str(item.get("status", "")).strip().lower() != "success":
+            continue
+        sent_at = str(item.get("sent_at", "")).strip()
+        if sent_at.startswith(today):
+            total += 1
+    return total
+
+
+def already_sent_stage(history: List[Dict[str, Any]], phone: str, stage: int) -> bool:
+    marker = history_key(phone, stage)
+    for item in history:
+        if str(item.get("history_key", "")).strip() == marker and str(item.get("status", "")).strip().lower() == "success":
+            return True
+    return False
+
+
+def record_history(history: List[Dict[str, Any]], *, phone: str, deal_id: int, person_id: int, stage: int, message_id: str, status: str) -> None:
+    history.append(
+        {
+            "phone": normalize_phone(phone),
+            "deal_id": int(deal_id or 0),
+            "person_id": int(person_id or 0),
+            "stage": int(stage or 0),
+            "stage_tag": STAGE_TAG.get(int(stage or 0), ""),
+            "history_key": history_key(phone, stage),
+            "message_id": str(message_id or "").strip(),
+            "status": str(status or "").strip().lower(),
+            "sent_at": now_iso(),
+        }
+    )
+
+
+def text_is_bot(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    return bool(text and any(token in text for token in BOT_TOKENS))
+
+
+def has_negative_intent(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    return bool(text and any(token in text for token in NEGATIVE_TOKENS))
+
+
+def has_interest_intent(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    return bool(text and any(token in text for token in INTEREST_TOKENS))
+
+
+def build_message(stage: int, *, nome: str, empresa: str) -> str:
+    template = FLOW_TEXT.get(int(stage), FLOW_TEXT[7])
+    saudacao = random.choice(("Oi", "Ola"))
+    return template.format(nome=nome, empresa=empresa, saudacao=saudacao)
+
+
+def send_message(phone: str, message: str) -> str:
+    session_invalid, invalid_state = channel_session_invalid()
+    if session_invalid:
+        print(
+            f"[BAILEYS_SESSAO_INVALIDA] envio bloqueado | code={invalid_state.get('last_disconnect_code', '')} "
+            f"| motivo={invalid_state.get('last_error', '')}"
+        )
+        return ""
+    resting, state = channel_resting()
+    if resting:
+        print(
+            f"[WA_RESTING] envio suspenso ate {state.get('rest_until', '')} | motivo={state.get('last_error', '')}"
+        )
+        return ""
+    lock = ProcessLock(SEND_LOCK_NAME)
+    try:
+        lock.acquire()
+    except ProcessAlreadyRunningError:
+        print("[LOCK_ATIVO] envio bloqueado")
+        return ""
+    try:
+        payload = request("POST", f"{BAILEYS_BASE}/send", json={"number": phone, "message": message})
+        message_id = str(payload.get("messageId") or "").strip()
+        if message_id:
+            print(f"[ENVIADO_OK] {phone} | messageId={message_id}")
+        else:
+            print(f"[ERRO_ENVIO] {phone} | sem messageId")
+        return message_id
+    finally:
+        lock.release()
+
+
+def find_lead_by_phone(deals: List[Dict[str, Any]], phone: str) -> Tuple[Dict[str, Any], Dict[str, Any], int]:
+    for deal in deals:
+        person_id = parse_person_id(deal)
+        if not person_id:
+            continue
+        person = get_person(person_id)
+        person_phone = extract_phone(person)
+        if person_phone and phone_match(person_phone, phone):
+            return deal, person, person_id
+    return {}, {}, 0
+
+
+def process_inbox(state: Dict[str, Any], history: List[Dict[str, Any]], deals: List[Dict[str, Any]], blocked: set[str]) -> int:
+    session_invalid, invalid_state = channel_session_invalid()
+    if session_invalid:
+        print(
+            f"[BAILEYS_SESSAO_INVALIDA] inbox bloqueada | code={invalid_state.get('last_disconnect_code', '')} "
+            f"| motivo={invalid_state.get('last_error', '')}"
+        )
+        return 0
+    resting, channel_state = channel_resting()
+    if resting:
+        print(
+            f"[WA_RESTING] inbox pausada ate {channel_state.get('rest_until', '')} | motivo={channel_state.get('last_error', '')}"
+        )
+        return 0
+    print("[INBOX_HTTP_DESATIVADO] replies recebidas via webhook interno")
+    rows = []
+    processed = 0
+    replied_in_cycle: set[str] = set()
+    for item in rows:
+        phone = normalize_phone(item.get("number"))
+        message = str(item.get("message") or "").strip()
+        if not phone or not message:
+            continue
+        if phone in replied_in_cycle:
+            continue
+        fingerprint = hashlib.sha1(f"{phone}|{message}".encode("utf-8")).hexdigest()
+        if fingerprint in state["processed_inbox"]:
+            continue
+        state["processed_inbox"].append(fingerprint)
+        processed += 1
+
+        if phone in blocked:
+            print(f"[BLOQUEADO_DUPLICADO] {phone} | blocklist")
+            continue
+        if text_is_bot(message):
+            print(f"[IGNORADO_BOT] {phone}")
+            continue
+
+        deal, person, person_id = find_lead_by_phone(deals, phone)
+        if not deal or not person:
+            print(f"[IGNORADO_FORA_CRM] {phone}")
+            continue
+
+        lead_state = state["leads"].setdefault(phone, {})
+        lead_state["mode"] = "conversation"
+        lead_state["last_direction"] = "inbound"
+        lead_state["last_inbound_at"] = now_iso()
+
+        if has_negative_intent(message):
+            lead_state["mode"] = "closed"
+            print(f"[CONVERSA_ENCERRADA] {phone}")
+            continue
+
+        current_stage = int(lead_state.get("stage", 1) or 1)
+        if has_interest_intent(message):
+            next_stage = 7
+        else:
+            next_stage = min(7, current_stage + 1)
+
+        if already_sent_stage(history, phone, next_stage):
+            print(f"[BLOQUEADO_DUPLICADO] {phone} | stage={next_stage}")
+            continue
+
+        nome = extract_name(person)
+        empresa = extract_company(deal, person)
+        outbound = build_message(next_stage, nome=nome, empresa=empresa)
+        message_id = send_message(phone, outbound)
+        if not message_id:
+            continue
+
+        record_history(
+            history,
+            phone=phone,
+            deal_id=int(deal.get("id") or 0),
+            person_id=person_id,
+            stage=next_stage,
+            message_id=message_id,
+            status="success",
+        )
+        tag = STAGE_TAG.get(next_stage, "")
+        if tag:
+            ok = apply_person_tag(person_id, person, tag)
+            if ok:
+                print(f"[TAG_CRM_APLICADA] person={person_id} | {tag}")
+        lead_state["stage"] = next_stage
+        lead_state["last_direction"] = "outbound"
+        lead_state["last_outbound_at"] = now_iso()
+        lead_state["mode"] = "conversation"
+        replied_in_cycle.add(phone)
+    return processed
+
+
+def process_cadence(state: Dict[str, Any], history: List[Dict[str, Any]], deals: List[Dict[str, Any]], blocked: set[str]) -> int:
+    session_invalid, invalid_state = channel_session_invalid()
+    if session_invalid:
+        print(
+            f"[BAILEYS_SESSAO_INVALIDA] cadencia bloqueada | code={invalid_state.get('last_disconnect_code', '')} "
+            f"| motivo={invalid_state.get('last_error', '')}"
+        )
+        return 0
+    resting, channel_state = channel_resting()
+    if resting:
+        print(
+            f"[WA_RESTING] cadencia pausada ate {channel_state.get('rest_until', '')} | motivo={channel_state.get('last_error', '')}"
+        )
+        return 0
+    sent = 0
+    for deal in deals:
+        person_id = parse_person_id(deal)
+        if not person_id:
+            continue
+        person = get_person(person_id)
+        phone = extract_phone(person)
+        if not phone:
+            continue
+
+        if phone in blocked:
+            print(f"[BLOQUEADO_DUPLICADO] {phone} | blocklist")
+            continue
+        if count_success_today(history, phone) >= 3:
+            append_blocklist(phone, "duplicidade_critica")
+            print(f"[BLOQUEADO_DUPLICADO] {phone} | excesso_envio_dia")
+            continue
+        if has_cadence_tag(deal, person):
+            print(f"[BLOQUEADO_DUPLICADO] {phone} | tag_existente")
+            continue
+        if already_sent_stage(history, phone, 1):
+            print(f"[BLOQUEADO_DUPLICADO] {phone} | historico")
+            continue
+
+        lead_state = state["leads"].setdefault(phone, {})
+        if str(lead_state.get("mode", "")).strip() in {"conversation", "closed"}:
+            continue
+        if lead_state.get("last_direction") == "outbound":
+            continue
+
+        nome = extract_name(person)
+        empresa = extract_company(deal, person)
+        outbound = build_message(1, nome=nome, empresa=empresa)
+        message_id = send_message(phone, outbound)
+        if not message_id:
+            continue
+
+        record_history(
+            history,
+            phone=phone,
+            deal_id=int(deal.get("id") or 0),
+            person_id=person_id,
+            stage=1,
+            message_id=message_id,
+            status="success",
+        )
+        if apply_person_tag(person_id, person, STAGE_TAG[1]):
+            print(f"[TAG_CRM_APLICADA] person={person_id} | {STAGE_TAG[1]}")
+        lead_state["stage"] = 1
+        lead_state["mode"] = "cadence"
+        lead_state["last_direction"] = "outbound"
+        lead_state["last_outbound_at"] = now_iso()
+        sent += 1
+    return sent
+
+
+def main() -> int:
+    process_lock = ProcessLock(WORKER_LOCK_NAME)
+    try:
+        process_lock.acquire()
+    except ProcessAlreadyRunningError:
+        print("[JA_EM_EXECUCAO] safe_worker.py")
+        return 0
+
+    print("[PROCESSO_INICIADO] safe_worker.py")
+    print("[SUPERVISOR_READY] whatsapp")
+    print("[SAFE_WORKER] wrapper ativo")
+    try:
+        try:
+            from whatsapp_bot import executar_campanha_whatsapp, processar_nao_lidas_prioritarias
+            delegated = True
+            print("[SAFE_WORKER] delegando para whatsapp_bot/autopilot_service")
+        except Exception as exc:
+            delegated = False
+            print(f"[SAFE_WORKER_FALLBACK] fluxo interno ativo | motivo={exc}")
+
+        while True:
+            try:
+                session_invalid, invalid_state = channel_session_invalid()
+                if session_invalid:
+                    print(
+                        f"[BAILEYS_SESSAO_INVALIDA] safe_worker abortado | code={invalid_state.get('last_disconnect_code', '')} "
+                        f"| motivo={invalid_state.get('last_error', '')}"
+                    )
+                    time.sleep(LOOP_SLEEP_SEC)
+                    continue
+                resting, channel_state = channel_resting()
+
+                if resting:
+                    print(
+                        f"[WA_RESTING] CRM segue ativo; sem envios ate {channel_state.get('rest_until', '')} | motivo={channel_state.get('last_error', '')}"
+                    )
+                elif delegated:
+                    processed_replies = int(processar_nao_lidas_prioritarias(limit=20) or 0)
+                    if processed_replies > 0:
+                        print(f"[SAFE_WORKER] replies_processadas={processed_replies}")
+                    else:
+                        print("[SAFE_WORKER] sem_replies; cadencia delegada ao whatsapp_worker_loop")
+                else:
+                    ensure_files()
+                    blocked = load_blocklist()
+                    history = load_history()
+                    state = load_state()
+                    deals = fetch_open_deals()
+                    process_inbox(state, history, deals, blocked)
+                    process_cadence(state, history, deals, blocked)
+                    save_state(state)
+                    save_history(history)
+                    time.sleep(LOOP_SLEEP_SEC)
+                    continue
+                time.sleep(LOOP_SLEEP_SEC)
+            except Exception as exc:
+                print(f"[LOOP_EXCEPTION] {exc}")
+                time.sleep(LOOP_SLEEP_SEC)
+    finally:
+        process_lock.release()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

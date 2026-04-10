@@ -1,0 +1,5 @@
+{
+  "noise_reduction_enabled": true,
+  "noise_reduction_strength": 0.8,
+  "vad_enabled": true
+}

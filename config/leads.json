@@ -1,0 +1,16 @@
+[
+  {
+    "id": "lead-001",
+    "nome": "Contato Exemplo 1",
+    "telefone": "+5511999990001",
+    "person_id": 0,
+    "deal_id": 0
+  },
+  {
+    "id": "lead-002",
+    "nome": "Contato Exemplo 2",
+    "telefone": "+5511999990002",
+    "person_id": 0,
+    "deal_id": 0
+  }
+]

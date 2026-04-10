@@ -1,0 +1,29 @@
+{
+  "timezone": "America/Sao_Paulo",
+  "jobs": [
+    {
+      "name": "weekly_base_enrichment",
+      "description": "Reconstrói a base local, roda Casa dos Dados por CNPJ e exporta a matriz limpa.",
+      "schedule_type": "cron",
+      "cron": "0 12 * * 6",
+      "command": "C:\\Users\\Asus\\Python311\\python.exe C:\\Users\\Asus\\legacy\\bot_sdr_ai\\tools\\run_weekly_base_pipeline.py",
+      "recommended_runner": "n8n"
+    },
+    {
+      "name": "weekly_crm_cleanup",
+      "description": "Reprocessa pendências do CRM e roda a faxina semanal com a base local enriquecida.",
+      "schedule_type": "cron",
+      "cron": "0 13 * * 6",
+      "command": "C:\\Users\\Asus\\Python311\\python.exe C:\\Users\\Asus\\legacy\\bot_sdr_ai\\tools\\run_weekly_crm_maintenance.py",
+      "recommended_runner": "n8n"
+    },
+    {
+      "name": "daily_crm_sync",
+      "description": "Sincroniza para o CRM os envios, respostas e estados do dia registrados localmente com replay automático da fila pendente.",
+      "schedule_type": "cron",
+      "cron": "30 17 * * 1-5",
+      "command": "C:\\Users\\Asus\\Python311\\python.exe C:\\Users\\Asus\\legacy\\bot_sdr_ai\\tools\\daily_crm_sync.py",
+      "recommended_runner": "n8n"
+    }
+  ]
+}

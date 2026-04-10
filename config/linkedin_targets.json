@@ -1,0 +1,110 @@
+[
+  {
+    "profile_id": "mkt-001",
+    "nome": "Ana Souza",
+    "cargo": "Gerente de Marketing",
+    "empresa": "Acme Growth",
+    "profile_url": "https://linkedin.com/in/ana-souza",
+    "source": "sales_navigator",
+    "sobre": "Responsavel por geracao de demanda e campanhas B2B."
+  },
+  {
+    "profile_id": "sales-001",
+    "nome": "Bruno Lima",
+    "cargo": "Diretor de Vendas",
+    "empresa": "ScaleCorp",
+    "profile_url": "https://linkedin.com/in/bruno-lima",
+    "source": "sales_navigator",
+    "sobre": "Lidera operacao comercial consultiva com foco em previsibilidade."
+  },
+  {
+    "profile_id": "mkt-002",
+    "nome": "Carla Mendes",
+    "cargo": "Gerente de Marketing",
+    "empresa": "Orbit Media",
+    "profile_url": "https://linkedin.com/in/carla-mendes",
+    "source": "sales_navigator",
+    "sobre": "Cuida de inbound e performance."
+  },
+  {
+    "profile_id": "sales-002",
+    "nome": "Daniel Rocha",
+    "cargo": "Diretor de Vendas",
+    "empresa": "Prime SaaS",
+    "profile_url": "https://linkedin.com/in/daniel-rocha",
+    "source": "sales_navigator",
+    "sobre": "Estrutura squads de SDR e closers."
+  },
+  {
+    "profile_id": "mkt-003",
+    "nome": "Eduarda Costa",
+    "cargo": "Gerente de Marketing",
+    "empresa": "Blue Revenue",
+    "profile_url": "https://linkedin.com/in/eduarda-costa",
+    "source": "sales_navigator",
+    "sobre": "Foco em CAC e pipeline."
+  },
+  {
+    "profile_id": "sales-003",
+    "nome": "Felipe Ramos",
+    "cargo": "Diretor de Vendas",
+    "empresa": "Vertex Tech",
+    "profile_url": "https://linkedin.com/in/felipe-ramos",
+    "source": "sales_navigator",
+    "sobre": "Responsavel por metas e forecast."
+  },
+  {
+    "profile_id": "mkt-004",
+    "nome": "Gabriela Nunes",
+    "cargo": "Gerente de Marketing",
+    "empresa": "Growth Nest",
+    "profile_url": "https://linkedin.com/in/gabriela-nunes",
+    "source": "sales_navigator",
+    "sobre": "Opera campanhas e CRM."
+  },
+  {
+    "profile_id": "sales-004",
+    "nome": "Henrique Alves",
+    "cargo": "Diretor de Vendas",
+    "empresa": "Mercury B2B",
+    "profile_url": "https://linkedin.com/in/henrique-alves",
+    "source": "sales_navigator",
+    "sobre": "Trabalha com funil enterprise."
+  },
+  {
+    "profile_id": "mkt-005",
+    "nome": "Isabela Prado",
+    "cargo": "Gerente de Marketing",
+    "empresa": "Nova Traction",
+    "profile_url": "https://linkedin.com/in/isabela-prado",
+    "source": "sales_navigator",
+    "sobre": "Une marketing e vendas para acelerar SQL."
+  },
+  {
+    "profile_id": "sales-005",
+    "nome": "Joao Teles",
+    "cargo": "Diretor de Vendas",
+    "empresa": "Atlas Consult",
+    "profile_url": "https://linkedin.com/in/joao-teles",
+    "source": "sales_navigator",
+    "sobre": "Busca mais consistencia na prospeccao."
+  },
+  {
+    "profile_id": "mkt-006",
+    "nome": "Larissa Freitas",
+    "cargo": "Gerente de Marketing",
+    "empresa": "Pulse CRM",
+    "profile_url": "https://linkedin.com/in/larissa-freitas",
+    "source": "sales_navigator",
+    "sobre": "Otimiza jornada e qualificacao."
+  },
+  {
+    "profile_id": "sales-006",
+    "nome": "Marcos Vieira",
+    "cargo": "Diretor de Vendas",
+    "empresa": "Lead Engine",
+    "profile_url": "https://linkedin.com/in/marcos-vieira",
+    "source": "sales_navigator",
+    "sobre": "Escala prospeccao outbound com time enxuto."
+  }
+]

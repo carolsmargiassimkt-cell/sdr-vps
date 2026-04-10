@@ -1,0 +1,156 @@
+import requests
+import re
+import time
+import random
+
+
+class WhatsAppBot:
+    def __init__(self):
+        self.api_token = "5933ebf221d4ff6debe9fc0faeaade62033a2bd0"
+        self.deals_url = "https://api.pipedrive.com/v1/deals"
+        self.person_url = "https://api.pipedrive.com/v1/persons"
+        self.baileys_url = "http://127.0.0.1:3000/send"
+
+        self.SUPER_MINAS_IDS = ["175", "162"]
+        self.MAX_ENVIO_DIA = 100
+
+    def _normalize_phone(self, raw):
+        if not raw:
+            return None
+
+        digits = re.sub(r"\D", "", raw)
+
+        if len(digits) < 10:
+            return None
+
+        if not digits.startswith("55"):
+            digits = "55" + digits
+
+        return digits
+
+    def _fetch_person(self, person_id):
+        try:
+            r = requests.get(
+                f"{self.person_url}/{person_id}",
+                params={"api_token": self.api_token},
+                timeout=10
+            )
+            return r.json().get("data")
+        except:
+            return None
+
+    def _send_whatsapp(self, phone, name):
+        msg = f"Oi {name}, tudo bem? Aqui ? a Carol da Mand Digital."
+
+        try:
+            r = requests.post(
+                self.baileys_url,
+                json={
+                    "number": phone,
+                    "text": msg
+                },
+                timeout=10
+            )
+
+            if r.status_code == 200:
+                print(f"[OK] {phone}")
+                return True
+            else:
+                print(f"[INVALIDO] {phone}")
+                return False
+
+        except:
+            print(f"[ERRO] {phone}")
+            return False
+
+    def _delay_inteligente(self, enviados):
+        # distribui ao longo do dia (~12h opera??o)
+        restante = max(1, self.MAX_ENVIO_DIA - enviados)
+
+        segundos_restantes_dia = 12 * 60 * 60  # 12h
+        delay_base = int(segundos_restantes_dia / restante)
+
+        variacao = random.randint(-120, 120)
+
+        delay = max(30, delay_base + variacao)
+
+        print(f"[DELAY] {int(delay/60)} min")
+        time.sleep(delay)
+
+    def run(self):
+        print("[DISPARO DISTRIBUIDO]")
+
+        start = 0
+        enviados = 0
+        usados = set()
+
+        while True:
+            r = requests.get(
+                self.deals_url,
+                params={
+                    "api_token": self.api_token,
+                    "limit": 50,
+                    "start": start
+                },
+                timeout=10
+            )
+
+            data = r.json()
+            deals = data.get("data") or []
+            pagination = data.get("additional_data", {}).get("pagination", {})
+
+            if not deals:
+                break
+
+            for d in deals:
+                if enviados >= self.MAX_ENVIO_DIA:
+                    print("[LIMITE_ATINGIDO]")
+                    return
+
+                labels_raw = d.get("label") or ""
+                labels_list = [x.strip() for x in str(labels_raw).split(",") if x.strip()]
+
+                if not any(tag in labels_list for tag in self.SUPER_MINAS_IDS):
+                    continue
+
+                person = d.get("person_id")
+                if not person:
+                    continue
+
+                person_id = person.get("value") if isinstance(person, dict) else person
+                p = self._fetch_person(person_id)
+
+                if not p:
+                    continue
+
+                for ph in (p.get("phone") or []):
+                    raw = ph.get("value")
+                    phone = self._normalize_phone(raw)
+
+                    if not phone or phone in usados:
+                        continue
+
+                    usados.add(phone)
+
+                    print(f"[TENTATIVA] {phone}")
+
+                    ok = self._send_whatsapp(phone, p.get("name"))
+
+                    if ok:
+                        enviados += 1
+                        self._delay_inteligente(enviados)
+                    else:
+                        # pula r?pido n?mero ruim
+                        time.sleep(1)
+
+                    break
+
+            if not pagination.get("more_items_in_collection"):
+                break
+
+            start = pagination.get("next_start", start + 50)
+
+
+if __name__ == "__main__":
+    bot = WhatsAppBot()
+    bot.run()

@@ -1,0 +1,13 @@
+﻿        sock.ev.on('messages.upsert', (m) => {
+            try {
+                const msg = m.messages?.[0]
+                if (!msg) return
+
+                const jid = msg.key?.remoteJid
+                const id = msg.key?.id
+
+                console.log('MSG EVENT:', jid, id)
+            } catch (e) {
+                console.log('ERRO EVENT MSG')
+            }
+        })
