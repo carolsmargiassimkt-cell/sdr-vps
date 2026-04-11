@@ -1364,7 +1364,11 @@ class SDRSupervisor:
             nova_tag = "email_enviado"
         else:
             return False
-        ok = bool(self.crm.add_person_text_tag_incremental(target_person_id, TAGS_SDR_FIELD, nova_tag))
+        tag_writer = getattr(self.crm, "add_person_text_tag_incremental", None)
+        if not callable(tag_writer):
+            print(f"[TAG_SDR_SKIP] person={target_person_id} tag={nova_tag} motivo=metodo_ausente")
+            return False
+        ok = bool(tag_writer(target_person_id, TAGS_SDR_FIELD, nova_tag))
         if ok:
             print(f"[TAG_SDR_ATUALIZADA] person={target_person_id} tag={nova_tag}")
         return ok
