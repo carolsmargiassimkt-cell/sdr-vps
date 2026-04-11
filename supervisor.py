@@ -11,22 +11,47 @@ import sys
 import time
 import threading
 import unicodedata
+import urllib.parse
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
+
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+PARENT_DIR = os.path.dirname(ROOT_DIR)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
+
+def _pip_install(*packages):
+    cmd = [sys.executable, "-m", "pip", "install"]
+    if os.name != "nt":
+        cmd.append("--break-system-packages")
+    cmd.extend(packages)
+    subprocess.check_call(cmd)
+
 
 try:
     import flask  # type: ignore
 except ImportError:
     print("[AUTO_INSTALL] Instalando Flask...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "flask"])
+    _pip_install("flask")
     print("[AUTO_INSTALL_OK]")
 
-from crm.pipedrive_client import PipedriveClient
+try:
+    import fastapi  # type: ignore  # noqa: F401
+    import uvicorn  # type: ignore  # noqa: F401
+except ImportError:
+    print("[AUTO_INSTALL] Instalando FastAPI/Uvicorn...")
+    _pip_install("fastapi", "uvicorn")
+    print("[AUTO_INSTALL_OK]")
+
+from bot_sdr_ai.crm.pipedrive_client import PipedriveClient
 from crm.crm_orchestrator import CRMEnrichmentLoop
-from logic.whatsapp_pitch_engine import WhatsAppPitchEngine
+from bot_sdr_ai.logic.whatsapp_pitch_engine import WhatsAppPitchEngine
 from services.whatsapp_service import WhatsAppService
 
 
@@ -77,10 +102,11 @@ VPS_FILA_URL = f"{VPS_BASE_URL}/fila"
 VPS_ACK_URL = f"{VPS_BASE_URL}/ack"
 VPS_PENDING_URL = f"{VPS_BASE_URL}/pending"
 VPS_HTTP_TIMEOUT_SEC = 40
-WA2_ENABLED = False
-WA2_AUTH_DIR = str(Path(os.getenv("WA2_AUTH_DIR") or (BASE_DIR / "auth_info_baileys_wa2")).resolve())
-WHATSAPP_SEND_GAP_MIN_SEC = 260
-WHATSAPP_SEND_GAP_MAX_SEC = 300
+WHATSAPP_SEND_GAP_MIN_SEC = 20
+WHATSAPP_SEND_GAP_MAX_SEC = 40
+WHATSAPP_OUTBOUND_MODE = str(os.getenv("WHATSAPP_OUTBOUND_MODE", "manual")).strip().lower()
+ENVIAR_WHATSAPP_AUTOMATICO = WHATSAPP_OUTBOUND_MODE in {"automatico", "automatic", "auto"}
+WHATSAPP_LISTENER_ATIVO = True
 FAST_QUEUE_BUILD = True
 STACK_RECOVERY_COOLDOWN_SEC = 5
 STACK_RECOVERY_MAX_ATTEMPTS = 3
@@ -94,6 +120,12 @@ RUNTIME_DEAL_FETCH_LIMIT = 1000
 INBOUND_RECOVERY_LOOKBACK_HOURS = 24
 INBOUND_RECOVERY_MAX_PER_CYCLE = 10
 FORA_HORARIO_STATUS = "aguardando_horario"
+TAGS_SDR_FIELD = "tags_sdr"
+try:
+    BRASILIA_TZ = ZoneInfo("America/Sao_Paulo")
+except ZoneInfoNotFoundError:
+    BRASILIA_TZ = None
+TEST_WHITELIST = {"5535920002020", "35920002020", "5511998804191", "11998804191"}
 
 
 def _is_local_vps_url():
@@ -137,13 +169,16 @@ def release_lock():
 
 
 def _today_str():
-    return datetime.now().strftime("%Y-%m-%d")
+    return datetime.now(BRASILIA_TZ).strftime("%Y-%m-%d") if BRASILIA_TZ else datetime.now().strftime("%Y-%m-%d")
 
 
-def dentro_do_horario():
-    agora = datetime.now()
+def dentro_do_horario(phone=None):
+    normalized = re.sub(r"\D+", "", str(phone or ""))
+    if normalized in TEST_WHITELIST:
+        return True
+    agora = datetime.now(BRASILIA_TZ) if BRASILIA_TZ else datetime.now()
     if agora.weekday() <= 4:
-        return agora.hour < 17 or (agora.hour == 17 and agora.minute <= 30)
+        return 9 <= agora.hour < 18
     return False
 
 
@@ -341,9 +376,7 @@ def spawn_if_needed(name, command, health_url, timeout=90, env=None):
     lock_file = ""
     if upper_name == "WHATSAPP":
         lock_file = "baileys.wa1.lock"
-    elif upper_name == "WHATSAPP2":
-        lock_file = "baileys.wa2.lock"
-    if upper_name in {"WHATSAPP", "WHATSAPP2"}:
+    if upper_name in {"WHATSAPP"}:
         time.sleep(2)
         if http_ok(health_url):
             print(f"[{name}_OK]")
@@ -354,7 +387,7 @@ def spawn_if_needed(name, command, health_url, timeout=90, env=None):
                 print(f"[{name}_LOCK_ATIVO_PID] {lock_pid}")
                 return
     if not wait_for_http(health_url, timeout=timeout):
-        if upper_name in {"WHATSAPP", "WHATSAPP2"}:
+        if upper_name in {"WHATSAPP"}:
             print("[WA_OFFLINE]")
             return
         if upper_name == "N8N":
@@ -365,29 +398,7 @@ def spawn_if_needed(name, command, health_url, timeout=90, env=None):
 
 
 def start_inbound_with_retry():
-    if wait_for_port(5000, timeout=2) and http_ok("http://127.0.0.1:5000/"):
-        print("[INBOUND_OK]")
-        return
-
-    inbound_command = [r"C:\Users\Asus\Python311\python.exe", "-u", "inbox_handler.py"]
-    for attempt in range(1, 4):
-        print("[INBOUND_START]")
-        proc = subprocess.Popen(inbound_command, cwd=str(BASE_DIR))
-        BOOT_CHILDREN.append(proc)
-        if wait_for_port(5000, timeout=10) and wait_for_http("http://127.0.0.1:5000/", timeout=10):
-            print("[INBOUND_OK]")
-            return
-        print("[ERRO_INBOUND] Falha ao iniciar inbound, tentando novamente...")
-        if attempt < 3:
-            print(f"[INBOUND_RETRY] tentativa={attempt + 1}")
-            try:
-                if proc.poll() is None:
-                    proc.terminate()
-            except Exception:
-                pass
-            time.sleep(2)
-
-    print("[ERRO_INBOUND] Falha ao iniciar inbound, tentando novamente...")
+    print("[INBOUND_HTTP_DESATIVADO] processamento_direto_no_supervisor")
 
 
 def start_vps_with_retry():
@@ -410,8 +421,24 @@ def start_vps_with_retry():
         return
 
     print("[VPS_START]")
-    if not wait_for_port(VPS_PORT, timeout=30):
-        print("[VPS_ERRO_PORTA] timeout_aguardando_bind_pm2")
+    try:
+        spawn_if_needed(
+            "VPS",
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "app.main:app",
+                "--host",
+                VPS_HOST,
+                "--port",
+                str(VPS_PORT),
+            ],
+            VPS_HEALTH_URL,
+            timeout=30,
+        )
+    except Exception as exc:
+        print(f"[VPS_ERRO_PORTA] erro_spawn={exc}")
         return
 
     print("[VPS_BIND_OK]")
@@ -424,11 +451,10 @@ def start_vps_with_retry():
 
 def start_stack():
     start_vps_with_retry()
-    spawn_if_needed("WHATSAPP", ["node", "central_whatsapp.mjs"], "http://127.0.0.1:3000/status", timeout=120)
-    if WA2_ENABLED:
-        wa2_env = os.environ.copy()
-        wa2_env.update({"PORT": "3001", "WA_INSTANCE": "WA2", "WA_AUTH_DIR": WA2_AUTH_DIR})
-        spawn_if_needed("WHATSAPP2", ["node", "central_whatsapp.mjs"], "http://127.0.0.1:3001/status", timeout=120, env=wa2_env)
+    if WHATSAPP_LISTENER_ATIVO:
+        spawn_if_needed("WHATSAPP", ["node", "central_whatsapp.mjs"], "http://127.0.0.1:3000/status", timeout=120)
+    else:
+        print("[WHATSAPP_LISTENER_DESATIVADO] stack_sem_listener")
     start_inbound_with_retry()
     if ENABLE_EMAIL_CADENCE and os.path.exists(N8N_START_BAT):
         spawn_if_needed("N8N", ["cmd", "/c", N8N_START_BAT], N8N_HEALTH_URL, timeout=120)
@@ -453,22 +479,22 @@ def _boot_worker(name, fn):
 def start_stack_fast():
     print("[BOOT_START]")
     print("[BOOT_FAST_MODE]")
-    try:
-        wa_status = get_whatsapp_status(timeout=1)
-        if bool(wa_status.get("connected")):
-            print("[WHATSAPP_JA_ATIVO]")
-    except Exception:
-        pass
+    if WHATSAPP_LISTENER_ATIVO:
+        try:
+            wa_status = get_whatsapp_status(timeout=1)
+            if bool(wa_status.get("connected")):
+                print("[WHATSAPP_JA_ATIVO]")
+        except Exception:
+            pass
+    else:
+        print("[WHATSAPP_LISTENER_DESATIVADO] boot_sem_listener")
 
-    workers = [
-        ("VPS", start_vps_with_retry),
-        ("WHATSAPP", lambda: spawn_if_needed("WHATSAPP", ["node", "central_whatsapp.mjs"], "http://127.0.0.1:3000/status", timeout=BOOT_SERVICE_TIMEOUT_SEC)),
-        ("INBOUND", start_inbound_with_retry),
-    ]
-    if WA2_ENABLED:
-        wa2_env = os.environ.copy()
-        wa2_env.update({"PORT": "3001", "WA_INSTANCE": "WA2", "WA_AUTH_DIR": WA2_AUTH_DIR})
-        workers.insert(1, ("WHATSAPP2", lambda env=wa2_env: spawn_if_needed("WHATSAPP2", ["node", "central_whatsapp.mjs"], "http://127.0.0.1:3001/status", timeout=BOOT_SERVICE_TIMEOUT_SEC, env=env)))
+    workers = [("VPS", start_vps_with_retry), ("INBOUND", start_inbound_with_retry)]
+    if WHATSAPP_LISTENER_ATIVO:
+        workers.insert(
+            1,
+            ("WHATSAPP", lambda: spawn_if_needed("WHATSAPP", ["node", "central_whatsapp.mjs"], "http://127.0.0.1:3000/status", timeout=BOOT_SERVICE_TIMEOUT_SEC)),
+        )
     if ENABLE_EMAIL_CADENCE and os.path.exists(N8N_START_BAT):
         workers.append(("N8N", lambda: spawn_if_needed("N8N", ["cmd", "/c", N8N_START_BAT], N8N_HEALTH_URL, timeout=BOOT_SERVICE_TIMEOUT_SEC)))
     elif ENABLE_EMAIL_CADENCE:
@@ -490,6 +516,7 @@ class SDRSupervisor:
     def __init__(self):
         self.boot_started_at = time.time()
         self.whatsapp = WhatsAppService()
+        self.whatsapp_service = self.whatsapp
         self.pitch = WhatsAppPitchEngine(config=None)
         self.crm = PipedriveClient()
         cadence_labels = ["cad1", "respondido"] + [f"WHATSAPP_CAD{step}" for step in range(1, 6)] + [f"EMAIL_CAD{step}" for step in range(1, 6)]
@@ -515,6 +542,164 @@ class SDRSupervisor:
         self._inbound_recovery_state = _load_inbound_recovery_state()
         self._last_progress_at = time.time()
         self._activity_deal_state_cache = None
+
+    def _recent_inbound_messages(self, phone, limit=10):
+        normalized = self.whatsapp.normalize_phone(phone)
+        if not normalized:
+            return []
+        history = read_history()
+        items = history.get(normalized, [])
+        if not isinstance(items, list):
+            return []
+        messages = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("direction") or "").strip().lower() != "in":
+                continue
+            message = str(item.get("message") or "").strip()
+            if not message:
+                continue
+            messages.append(message)
+        return messages[-max(1, int(limit or 10)):]
+
+    def _build_inbound_lead(self, phone):
+        normalized = self.whatsapp.normalize_phone(phone)
+        lead = {
+            "id": 0,
+            "nome": "",
+            "empresa": "a empresa",
+            "phone": normalized,
+            "phones": [normalized] if normalized else [],
+            "telefones": [normalized] if normalized else [],
+            "person_id": 0,
+            "cadence_step": 1,
+        }
+        try:
+            person = self.crm.find_person(phone=normalized) or {}
+        except Exception:
+            person = {}
+        if not isinstance(person, dict):
+            person = {}
+        person_id = int(self._extract_entity_id(person.get("id")) or 0)
+        org_id = int(self._extract_entity_id(person.get("org_id")) or 0)
+        deals = []
+        try:
+            deals = self.crm.find_open_deals_by_person_or_org(person_id=person_id, org_id=org_id)
+        except Exception:
+            deals = []
+        deal = dict((deals or [None])[0] or {})
+        org_name = ""
+        org = person.get("org_id") or {}
+        if isinstance(org, dict):
+            org_name = str(org.get("name") or "").strip()
+        lead.update(
+            {
+                "id": int(deal.get("id") or 0),
+                "nome": str(person.get("name") or "").strip(),
+                "empresa": self._extract_company_name(deal) if deal else (org_name or "a empresa"),
+                "person_id": person_id,
+                "cadence_step": max(1, int(deal.get("cadence_step") or 1)) if deal else 1,
+            }
+        )
+        return lead
+
+    @staticmethod
+    def _normalize_inbound_intent_text(text):
+        normalized = unicodedata.normalize("NFKD", str(text or ""))
+        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        normalized = normalized.lower()
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    def _classify_inbound_intent(self, text):
+        msg = self._normalize_inbound_intent_text(text)
+        if not msg:
+            return "normal"
+        if "nao tenho interesse" in msg or "não tenho interesse" in msg or "sem interesse" in msg:
+            return "sem_interesse"
+        if "nao sou o responsavel" in msg or "não sou o responsável" in msg or "falar com" in msg:
+            return "indicacao_contato"
+        positive_tokens = (
+            "sim",
+            "sou eu",
+            "pode falar",
+            "claro",
+            "tenho interesse",
+            "quero entender",
+            "me explica",
+            "pode me explicar",
+        )
+        if any(token in msg for token in positive_tokens):
+            return "positivo"
+        return "normal"
+
+    def _build_opening_message(self, lead):
+        opening = random.choice(self.pitch.WHATSAPP_OPENINGS)
+        opening = self.pitch._render_placeholders(opening, lead=lead)
+        opening = self.pitch._render_spintax(opening)
+        return self.pitch._clean_block(opening)
+
+    def process_inbound_message(self, msg):
+        payload = dict(msg or {})
+        phone = self.whatsapp.normalize_phone(payload.get("phone"))
+        text = str(payload.get("text") or payload.get("message") or "").strip()
+        if not phone or not text:
+            print(f"[INBOUND_INVALIDO] telefone={phone or 'vazio'} texto={1 if text else 0}")
+            return {"ok": False, "confirmed": False}
+        append_history(phone, "in", text, step=0)
+        lead = self._build_inbound_lead(phone)
+        inbound_messages = self._recent_inbound_messages(phone)
+        has_outbound_history = self._phone_has_outbound_history(phone)
+        intent = self._classify_inbound_intent(text)
+        reply = ""
+        try:
+            if not has_outbound_history:
+                reply = self._build_opening_message(lead)
+                if phone in TEST_WHITELIST:
+                    print(f"[TESTE_LIBERADO] telefone={phone} contexto=inbound_opening")
+            elif intent == "positivo":
+                reply = str(self.pitch.get_day_message(2, lead=lead) or "").strip()
+            elif intent == "sem_interesse":
+                reply = str(self.pitch.get_closing_message("no_interest") or "").strip()
+                self.blocklist.add(phone)
+            elif intent == "indicacao_contato":
+                reply = str(self.pitch.get_closing_message("referral") or "").strip()
+            else:
+                reply = str(
+                    self.pitch.build_reply(
+                        lead,
+                        inbound_messages,
+                        current_step=max(1, int((lead or {}).get("cadence_step") or 1)),
+                    )
+                    or ""
+                ).strip()
+        except Exception as exc:
+            print(f"[RESPOSTA_FALLBACK] telefone={phone} erro={exc}")
+        if not reply:
+            reply = "Mensagem recebida 👍"
+        print(f"[RESPOSTA_GERADA] {phone}")
+        try:
+            sent = bool(
+                self.whatsapp_service.send_message(
+                    phone,
+                    reply,
+                    cadence_step=max(1, int((lead or {}).get("cadence_step") or 1)),
+                    deal_id=int((lead or {}).get("id") or 0),
+                )
+            )
+            if sent:
+                print(f"[RESPOSTA_ENVIADA] {phone}")
+            else:
+                print(f"[ERRO_ENVIO] telefone={phone} erro=send_message_false estado={self.whatsapp_service.last_send_state}")
+        except Exception as exc:
+            print(f"[ERRO_ENVIO] telefone={phone} erro={exc}")
+            sent = False
+        if not sent:
+            return {"ok": False, "confirmed": False}
+        append_history(phone, "out", reply, step=max(1, int((lead or {}).get("cadence_step") or 1)))
+        if int((lead or {}).get("id") or 0) > 0:
+            self._mark_channel_sent("whatsapp", lead, reply)
+        return {"ok": True, "confirmed": True}
 
     def _startup_window_active(self):
         return (time.time() - float(self.boot_started_at or 0.0)) < BOOT_FAST_WINDOW_SEC
@@ -731,9 +916,11 @@ class SDRSupervisor:
             if not reset_if_new_day or str(cached.get("date") or "") == _today_str():
                 return cached
         progress = _default_send_progress()
+        progress_file_exists = False
         try:
             os.makedirs(DATA_DIR, exist_ok=True)
-            if os.path.exists(SEND_PROGRESS_FILE):
+            progress_file_exists = os.path.exists(SEND_PROGRESS_FILE)
+            if progress_file_exists:
                 with open(SEND_PROGRESS_FILE, "r", encoding="utf-8") as fh:
                     loaded = json.load(fh)
                     if isinstance(loaded, dict):
@@ -744,10 +931,12 @@ class SDRSupervisor:
             progress = _default_send_progress()
         progress["date"] = _today_str()
         progress["meta"] = int(progress.get("meta") or MAX_DEALS_DIA)
-        progress["enviados_hoje"] = max(
-            int(progress.get("enviados_hoje") or 0),
-            int(self._sent_today_from_history()),
-        )
+        progress["enviados_hoje"] = max(0, int(progress.get("enviados_hoje") or 0))
+        if not progress_file_exists:
+            progress["enviados_hoje"] = max(
+                int(progress.get("enviados_hoje") or 0),
+                int(self._sent_today_from_history()),
+            )
         progress["ultima_execucao"] = datetime.now().isoformat()
         self._save_send_progress(progress)
         return dict(progress)
@@ -977,6 +1166,122 @@ class SDRSupervisor:
     def _today_local_date():
         return datetime.now().strftime("%Y-%m-%d")
 
+    @staticmethod
+    def _next_business_activity_date():
+        due_at = datetime.now()
+        if due_at.weekday() == 4:
+            due_at += timedelta(days=3)
+        elif due_at.weekday() == 5:
+            due_at += timedelta(days=2)
+        else:
+            due_at += timedelta(days=1)
+        while due_at.weekday() >= 5:
+            due_at += timedelta(days=1)
+        return due_at.strftime("%Y-%m-%d")
+
+    @staticmethod
+    def _extract_deal_id_from_subject(subject):
+        match = re.search(r"\[DEAL\s+(\d+)\]", str(subject or ""), re.IGNORECASE)
+        return int(match.group(1)) if match else 0
+
+    def _build_call_activity_note(self, lead):
+        lead = lead or {}
+        phones = self._lead_phones(lead)
+        if not phones:
+            return ""
+        best_phone = phones[0]
+        manual_message = self.pitch.get_cadence_message(
+            int(lead.get("cadence_step") or 1),
+            lead={
+                "nome": self._first_name((lead or {}).get("nome")) or "contato",
+                "empresa": self.pitch._resolve_short_company_name(lead) or self._extract_company_name(lead),
+                "telefone": best_phone,
+            },
+        )
+        note_lines = [
+            f"Melhor numero: {best_phone}",
+            "",
+            "WhatsApp manual:",
+            self._build_whatsapp_manual_link(best_phone, manual_message),
+            "",
+            "Telefones priorizados:",
+        ]
+        for index, phone in enumerate(phones, start=1):
+            marker = " (melhor)" if phone == best_phone else ""
+            note_lines.append(f"{index}. {phone}{marker}")
+            note_lines.append(f"   Link: {self._build_whatsapp_manual_link(phone, manual_message)}")
+        return "\n".join(note_lines).strip()
+
+    def _build_activity_note_from_existing(self, subject="", note="", cadence_step=1):
+        existing_note = str(note or "").strip()
+        phones = []
+        for line in existing_note.splitlines():
+            clean = str(line or "").strip()
+            if not clean:
+                continue
+            if clean.lower().startswith("link:") or "wa.me/" in clean.lower():
+                continue
+            if ":" in clean and clean.lower().startswith("melhor numero"):
+                maybe_phone = clean.split(":", 1)[1].strip()
+                normalized = self.whatsapp.normalize_phone(maybe_phone)
+                if self.whatsapp.is_valid_phone(normalized) and normalized not in phones:
+                    phones.append(normalized)
+                continue
+            match = re.match(r"^\d+\.\s+([0-9\-\+\(\)\s]+)", clean)
+            if match:
+                normalized = self.whatsapp.normalize_phone(match.group(1))
+                if self.whatsapp.is_valid_phone(normalized) and normalized not in phones:
+                    phones.append(normalized)
+        if not phones:
+            return existing_note
+        company_name = str(subject or "").strip()
+        company_name = re.sub(r"^\s*Ligar\s*-\s*", "", company_name, flags=re.IGNORECASE)
+        company_name = re.sub(r"\s*\[DEAL\s+\d+\]\s*$", "", company_name, flags=re.IGNORECASE).strip()
+        lead = {
+            "nome": "contato",
+            "empresa": company_name or "a empresa",
+            "phone": phones[0],
+            "phones": phones,
+            "telefones": phones,
+            "cadence_step": int(cadence_step or 1),
+        }
+        return self._build_call_activity_note(lead)
+
+    def _build_activity_lead_from_deal(self, deal):
+        deal = deal or {}
+        person_id = self._extract_person_id(deal)
+        people = self._deal_people(deal, person_id, self._embedded_person(deal))
+        deal_phones = []
+        primary_name = ""
+        primary_email = ""
+        primary_person_id = 0
+        for person in people:
+            person_phones = self._extract_phones(person)
+            if not person_phones:
+                continue
+            if not primary_name:
+                primary_name = person.get("name") or ""
+                primary_email = self._extract_email(person)
+                primary_person_id = int(self._extract_entity_id(person.get("id")) or person_id or 0)
+            elif not primary_email:
+                primary_email = self._extract_email(person)
+            for normalized in person_phones:
+                if normalized not in deal_phones:
+                    deal_phones.append(normalized)
+        if not deal_phones:
+            return {}
+        return {
+            "id": int(deal.get("id") or 0),
+            "nome": primary_name,
+            "empresa": self._extract_company_name(deal),
+            "phone": deal_phones[0],
+            "phones": deal_phones,
+            "telefones": deal_phones,
+            "email": primary_email,
+            "person_id": primary_person_id,
+            "cadence_step": 1,
+        }
+
     def _create_call_activity_for_lead(self, lead):
         lead = lead or {}
         deal_id = int(lead.get("id") or 0)
@@ -998,25 +1303,76 @@ class SDRSupervisor:
             print(f"[CRM_ATIVIDADE_IGNORADA_DUPLICADA] deal={deal_id}")
             return False
         best_phone = phones[0]
-        note_lines = [f"Melhor numero: {best_phone}", "", "Telefones priorizados:"]
-        for index, phone in enumerate(phones, start=1):
-            marker = " (melhor)" if phone == best_phone else ""
-            note_lines.append(f"{index}. {phone}{marker}")
         payload = {
             "subject": subject,
             "type": "call",
             "deal_id": deal_id,
             "person_id": int(lead.get("person_id") or 0),
             "due_date": self._today_local_date(),
-            "due_time": "09:00",
-            "note": "\n".join(note_lines).strip(),
+            "due_time": "17:30",
+            "note": self._build_call_activity_note(lead),
             "done": 0,
         }
         ok = self.crm.create_activity(**payload)
         if ok:
             self._mark_deal_activity_today(deal_id)
+            self.processar_tag("call", int(lead.get("person_id") or 0))
             print(f"[CRM_ATIVIDADE_CRIADA] deal={deal_id}")
         return ok
+
+    def reprogram_bot_call_activities(self, target_date=None, new_due_date=None, new_due_time="17:30"):
+        date_str = str(target_date or self._today_local_date()).strip() or self._today_local_date()
+        due_date = str(new_due_date or self._next_business_activity_date()).strip() or self._next_business_activity_date()
+        updated = 0
+        try:
+            activities = self.crm.get_activities(due_date=date_str, limit=500)
+        except Exception:
+            activities = []
+        for activity in list(activities or []):
+            if not isinstance(activity, dict):
+                continue
+            activity_type_value = str(activity.get("type") or "").strip().lower()
+            if activity_type_value != "call":
+                continue
+            subject = str(activity.get("subject") or "").strip()
+            if not subject.startswith("Ligar - ") or "[DEAL " not in subject:
+                continue
+            activity_id = int(self.crm._extract_id(activity.get("id")) or 0)
+            if activity_id <= 0:
+                continue
+            note = str(activity.get("note") or "").strip()
+            note = self._build_activity_note_from_existing(subject=subject, note=note, cadence_step=1)
+            try:
+                ok = bool(self.crm.update_activity(activity_id, due_date=due_date, due_time=str(new_due_time or "17:30"), note=note))
+            except Exception:
+                ok = False
+            if ok:
+                updated += 1
+        print(f"[CRM_ATIVIDADES_REPROGRAMADAS] total={updated} de={date_str} para={due_date} hora={new_due_time}")
+        return updated
+
+    def processar_tag(self, activity_type, person_id):
+        activity_key = str(activity_type or "").strip().lower()
+        target_person_id = int(person_id or 0)
+        if target_person_id <= 0:
+            return False
+        if activity_key == "whatsapp":
+            nova_tag = "whatsapp_enviado"
+        elif activity_key == "call":
+            nova_tag = "ligado"
+        elif activity_key == "email":
+            nova_tag = "email_enviado"
+        else:
+            return False
+        ok = bool(self.crm.add_person_text_tag_incremental(target_person_id, TAGS_SDR_FIELD, nova_tag))
+        if ok:
+            print(f"[TAG_SDR_ATUALIZADA] person={target_person_id} tag={nova_tag}")
+        return ok
+
+    def _build_whatsapp_manual_link(self, phone, message):
+        normalized = self.whatsapp.normalize_phone(phone)
+        encoded_message = urllib.parse.quote(str(message or "").strip(), safe="")
+        return f"https://wa.me/55{normalized}?text={encoded_message}"
 
     def _resolve_archived_stage_id(self):
         if int(self._archived_stage_id or 0) > 0:
@@ -1229,8 +1585,8 @@ class SDRSupervisor:
                 "source": "recovery",
             }
             try:
-                response = requests.post("http://127.0.0.1:5000/inbound", json=payload, timeout=10)
-                if int(response.status_code or 0) != 200:
+                result = self.process_inbound_message(payload)
+                if not (isinstance(result, dict) and result.get("ok") is True and result.get("confirmed") is not False):
                     continue
             except Exception:
                 continue
@@ -1284,8 +1640,6 @@ class SDRSupervisor:
         return False
 
     def _resume_after_hours_pending(self):
-        if not dentro_do_horario():
-            return 0
         today = _today_str()
         if self.whatsapp.get_after_hours_resume_date() == today:
             return 0
@@ -1308,10 +1662,7 @@ class SDRSupervisor:
                 "timestamp": item.get("last_message_at") or item.get("updated_at"),
             }
             try:
-                response = requests.post("http://127.0.0.1:5000/inbound", json=payload, timeout=VPS_HTTP_TIMEOUT_SEC)
-                if int(response.status_code or 0) != 200:
-                    continue
-                body = response.json() if response.content else {}
+                body = self.process_inbound_message(payload)
                 if not (isinstance(body, dict) and body.get("ok") is True and body.get("confirmed") is not False):
                     continue
             except Exception as exc:
@@ -1339,20 +1690,10 @@ class SDRSupervisor:
             if not msg_id or not phone or not text:
                 continue
             print(f"[FILA_VPS_PROCESSANDO] telefone={phone} msg_id={msg_id}")
-            payload = {
-                "phone": phone,
-                "text": text,
-                "messageId": msg_id,
-                "source": "vps",
-                "timestamp": item.get("timestamp"),
-            }
             try:
-                response = requests.post("http://127.0.0.1:5000/inbound", json=payload, timeout=VPS_HTTP_TIMEOUT_SEC)
-                if int(response.status_code or 0) != 200:
-                    self._return_vps_message_to_pending(msg_id)
-                    continue
-                body = response.json() if response.content else {}
+                body = self.process_inbound_message(item)
                 if not (isinstance(body, dict) and body.get("ok") is True and body.get("confirmed") is not False):
+                    print(f"[FILA_VPS_PENDING_MOTIVO] telefone={phone} msg_id={msg_id} body={body}")
                     self._return_vps_message_to_pending(msg_id)
                     continue
             except Exception as exc:
@@ -1439,21 +1780,24 @@ class SDRSupervisor:
             "origem": "supervisor",
             "canal": "email",
         }
+        print(f"[EMAIL_ENVIO_INICIADO] deal={deal_id} email={email} cadencia={cadence_step}")
         try:
             response = requests.post(resolver_email_webhook_url(), json=payload, timeout=30)
             if int(response.status_code or 0) != 200:
-                print(f"[SKIP_EMAIL] deal={deal_id} motivo=webhook_status status={int(response.status_code or 0)}")
+                print(f"[EMAIL_ENVIO_FALHOU] deal={deal_id} email={email} motivo=webhook_status status={int(response.status_code or 0)}")
                 return False
         except Exception as exc:
-            print(f"[SKIP_EMAIL] deal={deal_id} motivo=erro_envio erro={exc}")
+            print(f"[EMAIL_ENVIO_FALHOU] deal={deal_id} email={email} motivo=erro_envio erro={exc}")
             return False
 
         self._mark_channel_sent("email", lead, f"EMAIL_CAD_{cadence_step}")
+        print(f"[EMAIL_ENVIADO] deal={deal_id} email={email} cadencia={cadence_step}")
         print(f"[N8N_TRIGGER] deal={deal_id} email={email}")
         print(f"[EMAIL_CAD_{cadence_step}] deal={deal_id} email={email}")
         self.crm.add_tag("deal", deal_id, self._email_tag(lead))
+        self.processar_tag("email", int((lead or {}).get("person_id") or 0))
         try:
-            self._append_deal_note(deal_id, f"Email CAD_{cadence_step} disparado via n8n.")
+            self._append_deal_note(deal_id, f"E-mail enviado na cadencia {cadence_step}.")
         except Exception:
             pass
         return True
@@ -1477,7 +1821,7 @@ class SDRSupervisor:
         delay_seconds = random.randint(EMAIL_DELAY_MIN_SEC, EMAIL_DELAY_MAX_SEC)
         queued["due_at"] = time.time() + delay_seconds
         self.pending_email_queue.append(queued)
-        print(f"[DELAY_EMAIL] deal={deal_id} segundos={delay_seconds}")
+        print(f"[DELAY_EMAIL] deal={deal_id} email={email} segundos={delay_seconds}")
 
     def _process_pending_emails(self):
         if not ENABLE_EMAIL_CADENCE:
@@ -1488,6 +1832,7 @@ class SDRSupervisor:
         now = time.time()
         ready = [item for item in list(self.pending_email_queue) if float(item.get("due_at") or 0) <= now]
         self.pending_email_queue = [item for item in list(self.pending_email_queue) if float(item.get("due_at") or 0) > now]
+        print(f"[EMAIL_QUEUE_STATUS] pendentes={len(self.pending_email_queue)} prontos={len(ready)}")
         for lead in ready:
             self._send_email(lead)
 
@@ -1547,6 +1892,9 @@ class SDRSupervisor:
             primary_name = ""
             primary_email = ""
             primary_person_id = 0
+            deal_validation_checked = 0
+            deal_validation_valid = 0
+            deal_validation_invalid = 0
             for person in people:
                 person_cadence_step = cadence_step
                 person_phones = self._extract_phones(person)
@@ -1573,6 +1921,15 @@ class SDRSupervisor:
                         cadence_step=person_cadence_step,
                     ):
                         continue
+                    deal_validation_checked += 1
+                    if not self.whatsapp.validate_whatsapp_cached(normalized):
+                        deal_validation_invalid += 1
+                        print(
+                            f"[WHATSAPP_PREVALIDACAO_INVALIDA] deal={int(deal.get('id') or 0)} "
+                            f"telefone={normalized}"
+                        )
+                        continue
+                    deal_validation_valid += 1
                     valid_person_phones.append(normalized)
                 if not valid_person_phones:
                     if is_super_minas:
@@ -1582,11 +1939,14 @@ class SDRSupervisor:
                     primary_name = person.get("name") or ""
                     primary_email = self._extract_email(person)
                     primary_person_id = int(self._extract_entity_id(person.get("id")) or person_id or 0)
+                elif not primary_email:
+                    primary_email = self._extract_email(person)
                 for normalized in valid_person_phones:
                     if normalized not in deal_phones:
                         deal_phones.append(normalized)
                 person_cadence_step = min(person_cadence_step, cadence_step)
                 deal_added += len(valid_person_phones)
+            email_ready = bool(str(primary_email or "").strip())
             if deal_phones:
                 lead_payload = {
                     "id": int(deal.get("id") or 0),
@@ -1604,7 +1964,32 @@ class SDRSupervisor:
                 }
                 leads.append(lead_payload)
                 self._create_call_activity_for_lead(lead_payload)
-                print(f"[DEAL_ENFILEIRADO] deal={int(deal.get('id') or 0)} telefones={len(deal_phones)}")
+                print(
+                    f"[DEAL_ENFILEIRADO] deal={int(deal.get('id') or 0)} telefones={len(deal_phones)} "
+                    f"prevalidado_ok={deal_validation_valid} prevalidado_invalid={deal_validation_invalid}"
+                )
+                print(
+                    f"[DEAL_CANAIS] deal={int(deal.get('id') or 0)} "
+                    f"whatsapp_valido={len(deal_phones)} email_valido={1 if email_ready else 0}"
+                )
+                if email_ready:
+                    print(f"[DEAL_EMAIL_VALIDO] deal={int(deal.get('id') or 0)} email={primary_email}")
+                if deal_phones and email_ready:
+                    print(
+                        f"[DEAL_MULTI_CANAL_VALIDADO] deal={int(deal.get('id') or 0)} "
+                        f"telefones={len(deal_phones)} email={primary_email}"
+                    )
+            elif deal_validation_checked > 0:
+                print(
+                    f"[DEAL_SEM_WHATSAPP_VALIDO] deal={int(deal.get('id') or 0)} "
+                    f"checados={deal_validation_checked} invalidos={deal_validation_invalid}"
+                )
+                if email_ready:
+                    print(f"[DEAL_EMAIL_VALIDO] deal={int(deal.get('id') or 0)} email={primary_email}")
+                    print(
+                        f"[DEAL_EMAIL_ONLY_VALIDO] deal={int(deal.get('id') or 0)} "
+                        f"checados={deal_validation_checked} email={primary_email}"
+                    )
 
         super_minas = [lead for lead in leads if lead["super_minas"]]
         normal = [lead for lead in leads if not lead["super_minas"]]
@@ -1673,6 +2058,9 @@ class SDRSupervisor:
         self._recover_stack_if_needed(reason="watchdog")
 
     def _recover_stack_if_needed(self, reason="runtime"):
+        if not WHATSAPP_LISTENER_ATIVO:
+            print(f"[WHATSAPP_LISTENER_DESATIVADO] stack_recovery_ignorado motivo={reason}")
+            return False
         now = time.time()
         if now < float(self._next_stack_recovery_at or 0):
             remaining = max(0, int(float(self._next_stack_recovery_at or 0) - now))
@@ -1697,6 +2085,8 @@ class SDRSupervisor:
             return False
 
     def _should_pause_enrichment(self):
+        if not ENVIAR_WHATSAPP_AUTOMATICO:
+            return False
         wa_status = self._whatsapp_status()
         mode = str(wa_status.get("mode") or "").strip().lower()
         session_invalid = bool(wa_status.get("session_invalid"))
@@ -1939,6 +2329,7 @@ class SDRSupervisor:
             self._watchdog_maybe_reset()
             sent_today = self._daily_success_count()
             print(f"[CONTADOR] enviados={sent_today}/{MAX_DEALS_DIA}")
+            print(f"[SALDO_DIA] restantes={max(0, MAX_DEALS_DIA - sent_today)} enviados={sent_today} cap={MAX_DEALS_DIA}")
             resumed_after_hours = self._resume_after_hours_pending()
             if resumed_after_hours:
                 self._touch_progress()
@@ -1954,16 +2345,12 @@ class SDRSupervisor:
                 print(f"[INBOUND_PRIORIDADE] recuperados={recovered_inbounds}")
                 self._process_pending_emails()
                 return
-            if not dentro_do_horario():
-                print("[FORA_HORARIO_BLOQUEADO] contexto=whatsapp_cadence")
-                self._process_pending_emails()
-                return
-
             leads = []
             added_to_queue = 0
             if not self.pending_whatsapp_queue:
                 leads = self.buscar()
-                added_to_queue = self._enqueue_whatsapp_leads(leads, target_size=len(leads))
+                if ENVIAR_WHATSAPP_AUTOMATICO:
+                    added_to_queue = self._enqueue_whatsapp_leads(leads, target_size=len(leads))
             super_minas_count = sum(1 for lead in self.pending_whatsapp_queue if lead["super_minas"])
             print(
                 f"[PIPELINE] total={len(leads) if leads else len(self.pending_whatsapp_queue)} super_minas={super_minas_count} "
@@ -1971,15 +2358,19 @@ class SDRSupervisor:
             )
             print(f"[QUEUE_READY] fila_whatsapp={len(self.pending_whatsapp_queue)}")
             print(f"[QUEUE_FULL_READY] deals={len(self.pending_whatsapp_queue)}")
+            if not ENVIAR_WHATSAPP_AUTOMATICO:
+                print("[WHATSAPP_AUTO_DESATIVADO] envio_inicial_bloqueado")
+                self._run_background_enrichment()
+                self._process_pending_emails()
+                return
             if self.pending_whatsapp_queue:
                 print("[ENVIO_INICIADO]")
             sent_this_run = 0
 
             while self.pending_whatsapp_queue:
-                if not dentro_do_horario():
-                    print("[FORA_HORARIO_BLOQUEADO] contexto=whatsapp_envio")
-                    break
                 if time.time() < float(self.next_whatsapp_send_at or 0):
+                    wait_seconds = max(0, int(float(self.next_whatsapp_send_at or 0) - time.time()))
+                    print(f"[WHATSAPP_COOLDOWN] segundos_restantes={wait_seconds} fila={len(self.pending_whatsapp_queue)}")
                     break
 
                 lead = self.pending_whatsapp_queue.pop(0)
@@ -1990,6 +2381,10 @@ class SDRSupervisor:
                 prioridade = "SUPER_MINAS" if lead["super_minas"] else "CRM"
                 cadence_step = self._cadence_step(lead)
                 lead_phones = list(lead.get("phones") or lead.get("telefones") or [])
+                print(
+                    f"[DEAL_TENTATIVA] deal={deal_id} origem={prioridade} cadencia={cadence_step} "
+                    f"telefones_total={len(lead_phones)} saldo_restante={max(0, MAX_DEALS_DIA - sent_today)}"
+                )
 
                 try:
                     deal_actual = self.crm.get_deal_details(deal_id)
@@ -2087,7 +2482,10 @@ class SDRSupervisor:
                     break
 
                 if not sent_phones:
-                    print(f"[ENVIO_FALHOU_DEAL] deal={deal_id}")
+                    print(
+                        f"[ENVIO_FALHOU_DEAL] deal={deal_id} telefones_total={len(lead_phones)} "
+                        f"telefones_validos_enviados=0"
+                    )
                     self.next_whatsapp_send_at = time.time() + 1
                     continue
 
@@ -2115,7 +2513,8 @@ class SDRSupervisor:
                         self.crm.update_deal(deal_id, {self.crm.STATUS_BOT_FIELD: "contato_iniciado"})
                     except Exception:
                         pass
-                self._append_deal_note(deal_id, f"WhatsApp CAD_{cadence_step} enviado.")
+                self.processar_tag("whatsapp", int((lead or {}).get("person_id") or 0))
+                self._append_deal_note(deal_id, f"WhatsApp enviado na cadencia {cadence_step}.")
                 stage_step = max(cadence_step, int(lead.get("deal_cadence_step") or cadence_step))
                 self._move_deal_to_cadence_stage(deal_id, stage_step)
                 if cadence_step >= ARCHIVE_AFTER_CADENCE_STEP and not any(self._phone_has_inbound_history(phone) for phone in sent_phones):
@@ -2124,6 +2523,7 @@ class SDRSupervisor:
                 self._process_pending_emails()
                 sent_this_run += 1
                 sent_today = self._increment_send_progress()
+                print(f"[DEAL_SUCESSO] deal={deal_id} enviados={sent_today}/{MAX_DEALS_DIA} telefones_ok={len(sent_phones)}")
                 self.next_whatsapp_send_at = time.time() + self._next_whatsapp_delay()
             if sent_this_run == 0 and not self.pending_whatsapp_queue:
                 self._run_background_enrichment()
@@ -2133,28 +2533,25 @@ class SDRSupervisor:
 
     def start(self):
         while True:
-            self._heartbeat_whatsapp()
-            self._watchdog_maybe_reset()
-            wa_status = self._whatsapp_status()
-            if bool(wa_status.get("needs_qr")) or bool(wa_status.get("session_invalid")):
-                print(
-                    f"[WA_BLOQUEADO_SEM_SESSAO] mode={str(wa_status.get('mode') or 'offline')} "
-                    f"needs_qr={bool(wa_status.get('needs_qr'))} session_invalid={bool(wa_status.get('session_invalid'))}"
-                )
-            elif not bool(wa_status.get("connected")):
-                self._recover_stack_if_needed(reason="pre_run_whatsapp_offline")
+            if WHATSAPP_LISTENER_ATIVO:
+                self._heartbeat_whatsapp()
+                self._watchdog_maybe_reset()
+                wa_status = self._whatsapp_status()
+                if ENVIAR_WHATSAPP_AUTOMATICO and (bool(wa_status.get("needs_qr")) or bool(wa_status.get("session_invalid"))):
+                    print(
+                        f"[WA_BLOQUEADO_SEM_SESSAO] mode={str(wa_status.get('mode') or 'offline')} "
+                        f"needs_qr={bool(wa_status.get('needs_qr'))} session_invalid={bool(wa_status.get('session_invalid'))}"
+                    )
+                elif ENVIAR_WHATSAPP_AUTOMATICO and not bool(wa_status.get("connected")):
+                    self._recover_stack_if_needed(reason="pre_run_whatsapp_offline")
+            if not ENVIAR_WHATSAPP_AUTOMATICO:
+                print("[WHATSAPP_AUTO_MANUAL] outbound_inicial_desativado")
             self.run()
             time.sleep(BOOT_BUSY_SLEEP_SEC if self.pending_whatsapp_queue else BOOT_IDLE_SLEEP_SEC)
 
 
 if __name__ == "__main__":
     run_all = any(str(arg).strip().lower() in {"--all", "all"} for arg in sys.argv[1:])
-    reset_progress = any(str(arg).strip().lower() in {"--reset-progress", "reset-progress"} for arg in sys.argv[1:])
-    if reset_progress:
-        os.makedirs(DATA_DIR, exist_ok=True)
-        with open(SEND_PROGRESS_FILE, "w", encoding="utf-8") as fh:
-            json.dump(_default_send_progress(), fh, ensure_ascii=False, indent=2)
-        print("[CONTADOR_RESET]")
     if run_all:
         start_stack_fast()
     SDRSupervisor().start()

@@ -11,29 +11,41 @@ import requests
 
 class WhatsAppService:
     SEND_TIMEOUT_SEC = 40
+    TEST_WHITELIST = {"5535920002020", "35920002020", "5511998804191", "11998804191"}
 
     def __init__(self, *args, **kwargs):
         self.base_dir = Path(__file__).resolve().parents[1]
         self.data_dir = self.base_dir / "data"
         self.logs_dir = self.base_dir / "logs"
+        self.outbound_mode = str(os.getenv("WHATSAPP_OUTBOUND_MODE", "manual")).strip().lower()
         self.base_urls = {
             "WA1": "http://127.0.0.1:3000",
-            "WA2": "http://127.0.0.1:3001",
         }
         self.sent_file = str(self.base_dir / "sent.json")
         self.sent_lock_file = str(self.base_dir / "sent.json.lock")
         self.invalid_file = str(self.base_dir / "invalidos.json")
         self.history_file = str(self.logs_dir / "whatsapp_message_history.json")
         self.channel_map_file = str(self.data_dir / "whatsapp_channel_map.json")
+        self.validation_cache_file = str(self.data_dir / "whatsapp_validation_cache.json")
         self.after_hours_state_file = str(self.data_dir / "after_hours_state.json")
         self.after_hours_lock_file = str(self.data_dir / "after_hours_state.lock")
         self.last_send_state = ""
+
+    def is_outbound_manual_mode(self):
+        return self.outbound_mode not in {"automatico", "automatic", "auto"}
 
     def normalize_phone(self, phone):
         digits = re.sub(r"\D+", "", str(phone or ""))
         if digits.startswith("55") and len(digits) > 11:
             digits = digits[2:]
         return digits
+
+    def is_test_whitelist_phone(self, phone):
+        normalized = self.normalize_phone(phone)
+        if not normalized:
+            return False
+        variants = self.phone_variants(normalized)
+        return bool(variants & set(self.TEST_WHITELIST))
 
     def phone_variants(self, phone):
         num = self.normalize_phone(phone)
@@ -103,6 +115,43 @@ class WhatsAppService:
 
     def _save_channel_map(self, payload):
         self._save_json(self.channel_map_file, payload)
+
+    def _load_validation_cache(self):
+        payload = self._load_json(self.validation_cache_file, {})
+        return payload if isinstance(payload, dict) else {}
+
+    def _save_validation_cache(self, payload):
+        self._save_json(self.validation_cache_file, payload if isinstance(payload, dict) else {})
+
+    def _get_cached_validation(self, phone, max_age_seconds=24 * 60 * 60):
+        normalized = self.normalize_phone(phone)
+        if not normalized:
+            return None
+        cache = self._load_validation_cache()
+        entry = cache.get(normalized)
+        if not isinstance(entry, dict):
+            return None
+        checked_at = str(entry.get("checked_at") or "").strip()
+        if not checked_at:
+            return None
+        try:
+            age_seconds = (datetime.now() - datetime.fromisoformat(checked_at)).total_seconds()
+        except Exception:
+            return None
+        if age_seconds > max(1, int(max_age_seconds or 0)):
+            return None
+        return bool(entry.get("exists"))
+
+    def _cache_validation(self, phone, exists):
+        normalized = self.normalize_phone(phone)
+        if not normalized:
+            return
+        cache = self._load_validation_cache()
+        cache[normalized] = {
+            "exists": bool(exists),
+            "checked_at": datetime.now().isoformat(),
+        }
+        self._save_validation_cache(cache)
 
     def _load_after_hours_state_unlocked(self):
         payload = self._load_json(
@@ -284,21 +333,15 @@ class WhatsAppService:
         healthy = self._healthy_channels()
         if not healthy:
             return "WA1", self.base_urls["WA1"]
-        if len(healthy) == 1:
-            return healthy[0][0], healthy[0][1]
-        target = "WA1" if int(deal_id or 0) % 2 == 0 else "WA2"
-        for channel_name, base_url, _status in healthy:
-            if channel_name == target:
-                return channel_name, base_url
         return healthy[0][0], healthy[0][1]
 
     def remember_channel(self, phone, deal_id=None, channel_name="WA1"):
         payload = self._load_channel_map()
         normalized = self.normalize_phone(phone)
         if normalized:
-            payload.setdefault("phones", {})[normalized] = str(channel_name or "WA1")
+            payload.setdefault("phones", {})[normalized] = "WA1"
         if int(deal_id or 0) > 0:
-            payload.setdefault("deals", {})[str(int(deal_id))] = str(channel_name or "WA1")
+            payload.setdefault("deals", {})[str(int(deal_id))] = "WA1"
         self._save_channel_map(payload)
 
     def has_deal_send_record(self, deal_id):
@@ -479,6 +522,8 @@ class WhatsAppService:
         return numbers, payload
 
     def _is_blocked_unlocked(self, data, invalid_numbers, phone):
+        if self.is_test_whitelist_phone(phone):
+            return False
         variants = self.phone_variants(phone)
         all_numbers = set()
         for item in data.get("ALL", []):
@@ -495,6 +540,8 @@ class WhatsAppService:
     def can_send(self, phone):
         if not self.is_valid_phone(phone):
             return False
+        if self.is_test_whitelist_phone(phone):
+            return True
         fd = None
         try:
             fd = self._acquire_lock()
@@ -510,6 +557,8 @@ class WhatsAppService:
     def has_any_send_record(self, phone):
         normalized = self.normalize_phone(phone)
         if not normalized:
+            return False
+        if self.is_test_whitelist_phone(normalized):
             return False
         fd = None
         try:
@@ -532,6 +581,8 @@ class WhatsAppService:
     def can_send_followup(self, phone):
         if not self.is_valid_phone(phone):
             return False
+        if self.is_test_whitelist_phone(phone):
+            return True
         fd = None
         try:
             fd = self._acquire_lock()
@@ -552,6 +603,8 @@ class WhatsAppService:
         if not self.is_valid_phone(phone):
             self.mark_invalid(phone, "invalid_phone")
             return False
+        if self.is_test_whitelist_phone(phone):
+            return True
         normalized = self.normalize_phone(phone)
         fd = None
         try:
@@ -574,6 +627,8 @@ class WhatsAppService:
         if not self.is_valid_phone(phone):
             self.mark_invalid(phone, "invalid_phone")
             return False
+        if self.is_test_whitelist_phone(phone):
+            return True
         normalized = self.normalize_phone(phone)
         fd = None
         try:
@@ -598,6 +653,8 @@ class WhatsAppService:
 
     def release_send_slot(self, phone):
         normalized = self.normalize_phone(phone)
+        if self.is_test_whitelist_phone(normalized):
+            return
         fd = None
         try:
             fd = self._acquire_lock()
@@ -614,6 +671,8 @@ class WhatsAppService:
     def mark_sent(self, phone):
         normalized = self.normalize_phone(phone)
         if not normalized:
+            return
+        if self.is_test_whitelist_phone(normalized):
             return
         today = datetime.now().strftime("%Y-%m-%d")
         fd = None
@@ -638,6 +697,8 @@ class WhatsAppService:
     def mark_invalid(self, phone, reason="invalid_phone"):
         normalized = self.normalize_phone(phone)
         if not normalized:
+            return
+        if self.is_test_whitelist_phone(normalized):
             return
         fd = None
         try:
@@ -689,6 +750,8 @@ class WhatsAppService:
         normalized = self.normalize_phone(phone)
         if not self.is_valid_phone(normalized):
             return False
+        if self.is_test_whitelist_phone(normalized):
+            return True
         try:
             _channel_name, base_url = self._resolve_channel(phone=normalized)
             r = requests.post(
@@ -702,10 +765,27 @@ class WhatsAppService:
                 body = r.json()
             except Exception:
                 body = {}
-            return bool((body or {}).get("exists"))
+            exists = bool((body or {}).get("exists"))
+            self._cache_validation(normalized, exists)
+            return exists
         except Exception as e:
             logging.error(f"[ERRO_VALIDACAO_WHATSAPP] telefone={normalized} erro={e}")
             return False
+
+    def validate_whatsapp_cached(self, phone, max_age_seconds=24 * 60 * 60):
+        normalized = self.normalize_phone(phone)
+        if not self.is_valid_phone(normalized):
+            self.mark_invalid(phone, "invalid_phone")
+            return False
+        if self.is_test_whitelist_phone(normalized):
+            return True
+        cached = self._get_cached_validation(normalized, max_age_seconds=max_age_seconds)
+        if cached is not None:
+            return bool(cached)
+        exists = self.validate_whatsapp(normalized)
+        if not exists:
+            self.mark_invalid(normalized, "invalid_phone_outbound")
+        return bool(exists)
 
     def send_message(self, phone, text, cadence_step=1, allow_non_cellular=True, deal_id=None):
         normalized = self.normalize_phone(phone)
@@ -716,7 +796,7 @@ class WhatsAppService:
         if not clean_text:
             self.last_send_state = "invalid"
             return False
-        if self._is_duplicate_recent_text(normalized, clean_text, within_seconds=120):
+        if not self.is_test_whitelist_phone(normalized) and self._is_duplicate_recent_text(normalized, clean_text, within_seconds=120):
             self.last_send_state = "duplicate_blocked"
             logging.warning(f"[DUPLICIDADE_BLOQUEADA_TEXTO] {normalized}")
             return False
@@ -732,18 +812,18 @@ class WhatsAppService:
                 f"[WA_BLOQUEADO_SEM_SESSAO] canal={channel_name} telefone={normalized} "
                 f"needs_qr={bool(status_payload.get('needs_qr'))} session_invalid={bool(status_payload.get('session_invalid'))}"
             )
+            logging.warning("[WA_OFFLINE] resposta não enviada")
             return False
         if not bool(status_payload.get("connected")):
-            self.last_send_state = "offline"
-            logging.warning(f"[WA_OFFLINE] canal={channel_name} telefone={normalized}")
-            return False
+            self.last_send_state = "offline_precheck"
+            logging.warning(f"[WA_STATUS_OFFLINE_PRECHECK] canal={channel_name} telefone={normalized} tentando_envio_mesmo_assim")
 
         for attempt in range(2):
             try:
-                logging.info(f"[WHATSAPP_ENVIO] canal={channel_name} telefone={normalized} tentativa={attempt + 1}")
+                logging.info(f"[WHATSAPP_ENVIO] canal=WA1 telefone={normalized} tentativa={attempt + 1}")
                 logging.info(f"[ENVIO_TENTANDO] {jid} tentativa={attempt + 1}")
                 r = requests.post(f"{base_url}/send", json=payload, timeout=self.SEND_TIMEOUT_SEC)
-                logging.info(f"[ENVIO] telefone={normalized} status={r.status_code} tentativa={attempt + 1}")
+                logging.info(f"[ENVIO] canal=WA1 telefone={normalized} status={r.status_code} tentativa={attempt + 1}")
                 if r.status_code == 200:
                     try:
                         body = r.json()
@@ -756,15 +836,20 @@ class WhatsAppService:
                         return False
                     if status == "sent" and str((body or {}).get("message_id") or "").strip():
                         self.last_send_state = "sent"
-                        self.remember_channel(normalized, deal_id=deal_id, channel_name=channel_name)
-                        logging.info(f"[WHATSAPP_OK] telefone={normalized}")
+                        self.remember_channel(normalized, deal_id=deal_id, channel_name="WA1")
+                        logging.info(f"[ENVIO] canal=WA1 phone={normalized}")
                         logging.info(f"[ENVIO_OK_REAL] {jid}")
                         return True
+                    if status:
+                        self.last_send_state = status
+                elif r.status_code == 503:
+                    self.last_send_state = "offline"
+                elif r.status_code == 429:
+                    self.last_send_state = "warmup_limit"
                 logging.warning(f"[ENVIO_FALHOU] {jid} status_http={r.status_code}")
             except requests.Timeout:
                 self.last_send_state = "timeout"
                 logging.error(f"[WHATSAPP_TIMEOUT] telefone={normalized} tentativa={attempt + 1}")
-                return False
             except Exception as e:
                 logging.error(f"[ERRO_ENVIO] telefone={normalized} tentativa={attempt + 1} erro={e}")
             time.sleep(1)
