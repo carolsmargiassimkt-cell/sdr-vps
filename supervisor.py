@@ -49,9 +49,15 @@ except ImportError:
     _pip_install("fastapi", "uvicorn")
     print("[AUTO_INSTALL_OK]")
 
-from bot_sdr_ai.crm.pipedrive_client import PipedriveClient
+try:
+    from bot_sdr_ai.crm.pipedrive_client import PipedriveClient
+except ModuleNotFoundError:
+    from crm.pipedrive_client import PipedriveClient
 from crm.crm_orchestrator import CRMEnrichmentLoop
-from bot_sdr_ai.logic.whatsapp_pitch_engine import WhatsAppPitchEngine
+try:
+    from bot_sdr_ai.logic.whatsapp_pitch_engine import WhatsAppPitchEngine
+except ModuleNotFoundError:
+    from logic.whatsapp_pitch_engine import WhatsAppPitchEngine
 from services.whatsapp_service import WhatsAppService
 
 
