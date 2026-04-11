@@ -33,6 +33,7 @@ let isStarting = false
 let startPromise = null
 let reconnectTimer = null
 let connectTimeoutTimer = null
+let qrReminderTimer = null
 let currentQR = null
 let reconnectAttempt = 0
 let connectionMode = 'booting'
@@ -59,6 +60,7 @@ const BACKLOG_WATCH_TTL_MS = 24 * 60 * 60 * 1000
 const VPS_URL = String(process.env.VPS_URL || 'http://127.0.0.1:8001').replace(/\/+$/, '')
 const WA_PORT = Number(process.env.PORT || 3000)
 const WA_INSTANCE = String(process.env.WA_INSTANCE || (WA_PORT === 3001 ? 'WA2' : 'WA1')).trim() || 'WA1'
+const TEST_WHITELIST = new Set(['5535920002020', '35920002020'])
 const HISTORY_FILE = path.join('logs', 'whatsapp_message_history.json')
 const BACKLOG_STATE_FILE = path.join('logs', `whatsapp_backlog_state.${WA_INSTANCE.toLowerCase()}.json`)
 const AUTH_INFO_DIR = path.resolve(String(process.env.WA_AUTH_DIR || path.join(process.cwd(), 'auth_info_baileys')))
@@ -80,6 +82,56 @@ function clearConnectTimeoutTimer() {
         clearTimeout(connectTimeoutTimer)
         connectTimeoutTimer = null
     }
+}
+
+function isTestWhitelistNumber(number) {
+    const normalized = String(number || '').replace(/\D+/g, '').trim()
+    if (!normalized) {
+        return false
+    }
+    const variants = new Set([normalized])
+    if (normalized.startsWith('55') && normalized.length > 11) {
+        variants.add(normalized.slice(2))
+    }
+    if (!normalized.startsWith('55')) {
+        variants.add(`55${normalized}`)
+    }
+    return Array.from(variants).some((item) => TEST_WHITELIST.has(item))
+}
+
+function clearQrReminderTimer() {
+    if (qrReminderTimer) {
+        clearInterval(qrReminderTimer)
+        qrReminderTimer = null
+    }
+}
+
+function emitQrToTerminal(reason = 'qr_pending') {
+    if (!currentQR) {
+        console.log('[QR_AINDA_INDISPONIVEL]', reason)
+        return
+    }
+    console.log('[QR_READY]', reason)
+    renderQrAscii(currentQR)
+        .then((asciiQR) => {
+            console.log('[QR_CODE_ASCII_INICIO]')
+            console.log(asciiQR)
+            console.log('[QR_CODE_ASCII_FIM]')
+        })
+        .catch((error) => {
+            console.log('[ERRO_QR_ASCII]', error?.message || String(error))
+        })
+}
+
+function ensureQrReminderTimer() {
+    clearQrReminderTimer()
+    qrReminderTimer = setInterval(() => {
+        if (!needsQr || !global.session_invalid) {
+            clearQrReminderTimer()
+            return
+        }
+        emitQrToTerminal('qr_reprint')
+    }, 30000)
 }
 
 function scheduleBacklogStateSave() {
@@ -159,6 +211,10 @@ function markAwaitingQr(reason = '') {
     reconnectAttempt = 0
     WA_STATE.reconnect_attempts = 0
     console.log('[WA_AGUARDANDO_QR]', reason || 'session_invalid')
+    console.log('[QR_URL]', `http://127.0.0.1:${WA_PORT}/qr-image`)
+    console.log('[QR_API]', `http://127.0.0.1:${WA_PORT}/qr`)
+    ensureQrReminderTimer()
+    emitQrToTerminal(reason || 'session_invalid')
 }
 
 function isPidRunning(pid) {
@@ -467,7 +523,15 @@ async function forceReauthMode() {
         saveCredsRef = null
         closeExistingSocket()
         forcedReauthAttempted = false
-        console.log('[WA_AUTH_PRESERVADA]')
+        try {
+            if (fs.existsSync(AUTH_INFO_DIR)) {
+                fs.rmSync(AUTH_INFO_DIR, { recursive: true, force: true })
+            }
+            fs.mkdirSync(AUTH_INFO_DIR, { recursive: true })
+            console.log('[WA_AUTH_RESETADA]')
+        } catch (authError) {
+            console.log('[WA_AUTH_RESET_FALHOU]', authError?.message || String(authError))
+        }
     } catch (error) {
         console.log('[WA_FATAL]', error)
     } finally {
@@ -1133,7 +1197,7 @@ async function start() {
             logger: P({ level: 'silent' }),
             browser: ['Ubuntu', 'Chrome', '22.04'],
             syncFullHistory: true,
-            printQRInTerminal: false,
+            printQRInTerminal: true,
         })
         global.sock = sock
         connectTimeoutTimer = setTimeout(() => {
@@ -1163,6 +1227,7 @@ async function start() {
                 global.connected = true
                 WA_STATE.connected = true
                 global.session_invalid = false
+                clearQrReminderTimer()
                 currentQR = null
                 needsQr = false
                 WA_STATE.needs_qr = false
@@ -1201,6 +1266,11 @@ async function start() {
                     console.log('Sessao invalida. Necessario escanear QR manualmente para restaurar conexao.')
                     await forceReauthMode()
                     markAwaitingQr(`status_${statusCode}`)
+                    setTimeout(() => {
+                        start().catch((error) => {
+                            console.log('[ERRO_REINICIO_QR]', error?.message || String(error))
+                        })
+                    }, 1000)
                     return
                 }
                 if (statusCode === 403) {
@@ -1255,16 +1325,10 @@ async function start() {
                 connectionMode = 'awaiting_qr'
                 clearReconnectTimer()
                 console.log('[WA_AGUARDANDO_QR]', 'qr_received')
-                console.log('[QR_READY]')
-                renderQrAscii(qr)
-                    .then((asciiQR) => {
-                        console.log('[QR_CODE_ASCII_INICIO]')
-                        console.log(asciiQR)
-                        console.log('[QR_CODE_ASCII_FIM]')
-                    })
-                    .catch((error) => {
-                        console.log('[ERRO_QR_ASCII]', error?.message || String(error))
-                    })
+                console.log('[QR_URL]', `http://127.0.0.1:${WA_PORT}/qr-image`)
+                console.log('[QR_API]', `http://127.0.0.1:${WA_PORT}/qr`)
+                ensureQrReminderTimer()
+                emitQrToTerminal('qr_received')
             }
         })
 
@@ -1437,8 +1501,9 @@ app.post('/send', async (req, res) => {
             return res.status(400).json({ status: 'invalid_jid' })
         }
 
-        const check = await sock.onWhatsApp(number)
-        const isWhatsApp = Array.isArray(check) && check.some((item) => item && item.exists === true)
+        const isTestNumber = isTestWhitelistNumber(number)
+        const check = isTestNumber ? [{ exists: true, jid: `${number}@s.whatsapp.net` }] : await sock.onWhatsApp(number)
+        const isWhatsApp = isTestNumber || (Array.isArray(check) && check.some((item) => item && item.exists === true))
         if (!isWhatsApp) {
             console.log('SEM WHATSAPP REAL:', number, JSON.stringify(check || []))
             return res.json({ status: 'invalid' })
