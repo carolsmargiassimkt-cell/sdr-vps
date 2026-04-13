@@ -564,6 +564,8 @@ class SDRSupervisor:
         self._activity_deal_state_cache = None
         self._next_crm_fetch_at = 0.0
         self._last_fetch_time = 0.0
+        self._crm_cooldown_until = 0.0
+        self._crm_backoff = 60
 
     def _recent_inbound_messages(self, phone, limit=10):
         normalized = self.whatsapp.normalize_phone(phone)
@@ -1958,10 +1960,16 @@ class SDRSupervisor:
         fetch_limit = self._deal_fetch_limit()
         deals = self.crm.get_deals(status="open", limit=fetch_limit, pipeline_id=PIPELINE_ID)
         if int(getattr(self.crm, "last_http_status", 0) or 0) == 429:
+            print("[CRM_RATE_LIMIT_DETECTADO] ativando cooldown forte")
+            self._crm_cooldown_until = time.time() + float(self._crm_backoff or 60)
+            self._crm_backoff = min(int(self._crm_backoff or 60) * 2, 600)
+            self._next_crm_fetch_at = max(float(self._next_crm_fetch_at or 0.0), self._crm_cooldown_until)
             print("[ANTI_RATE_LIMIT_ATIVO]")
-            print(f"[MODO_ECONOMICO] rate limit no CRM, aguardando {CRM_RATE_LIMIT_COOLDOWN_SEC}s...")
-            self._next_crm_fetch_at = time.time() + CRM_RATE_LIMIT_COOLDOWN_SEC
+            print(f"[MODO_ECONOMICO] rate limit no CRM, aguardando {int(self._crm_backoff)}s...")
+            time.sleep(int(self._crm_backoff))
             return []
+        self._crm_backoff = 60
+        self._crm_cooldown_until = 0.0
         print(f"[BUSCA_DEALS_OK] total={len(deals)}")
         for deal in deals:
             if len(leads) >= MAX_DEALS_DIA:
@@ -2437,7 +2445,16 @@ class SDRSupervisor:
     def run(self):
         check_lock()
         try:
+            if not hasattr(self, "_warmup_done"):
+                self._warmup_done = True
+                print("[WARMUP] aguardando 60s antes da primeira busca CRM")
+                time.sleep(60)
             now = time.time()
+            if now < float(getattr(self, "_crm_cooldown_until", 0.0) or 0.0):
+                restante = int(float(self._crm_cooldown_until or 0.0) - now)
+                print(f"[CRM_COOLDOWN_ATIVO] aguardando {restante}s")
+                time.sleep(min(max(restante, 1), 30))
+                return
             if not self.pending_whatsapp_queue and now < float(self._next_crm_fetch_at or 0.0):
                 wait_seconds = max(1, int(float(self._next_crm_fetch_at or 0.0) - now))
                 print("[MODO_ECONOMICO_ATIVO]")
@@ -2486,8 +2503,11 @@ class SDRSupervisor:
             print(f"[QUEUE_READY] fila_whatsapp={len(self.pending_whatsapp_queue)}")
             print(f"[QUEUE_FULL_READY] deals={len(self.pending_whatsapp_queue)}")
             if not leads and not self.pending_whatsapp_queue:
+                print("[PIPELINE_VAZIA] aguardando 120s antes de nova busca")
                 print("[MODO_ECONOMICO_ATIVO]")
                 print("[MODO_ECONOMICO] fila vazia, aguardando...")
+                time.sleep(120)
+                return
             if not ENVIAR_WHATSAPP_AUTOMATICO:
                 print("[WHATSAPP_AUTO_DESATIVADO] envio_inicial_bloqueado")
                 self._run_background_enrichment()
