@@ -90,7 +90,9 @@ SUPER_MINAS_LABEL_NAMES = {"SUPER_MINAS", "SUPER MINAS", "SUPERMINAS"}
 OUTBOUND_BLOCKED_LABEL_IDS = {"173", "193"}
 OUTBOUND_BLOCKED_LABEL_NAMES = {"INDICACAO_CAROL_EVENTO", "INDICAÇÃO_CAROL_EVENTO", "LEAD_TRÁFEGO", "LEAD_TRAFEGO"}
 BOOT_CHILDREN = []
-CRM_IDLE_POLL_SEC = 30
+CRM_IDLE_POLL_SEC = 60
+CRM_RATE_LIMIT_COOLDOWN_SEC = 120
+SUPERVISOR_LOOP_SLEEP_SEC = 30
 N8N_EMAIL_WEBHOOK_PATH = "sdr-email"
 N8N_EMAIL_WEBHOOK_URL = f"http://127.0.0.1:5678/webhook/{N8N_EMAIL_WEBHOOK_PATH}"
 N8N_HEALTH_URL = "http://127.0.0.1:5678"
@@ -561,6 +563,7 @@ class SDRSupervisor:
         self._last_progress_at = time.time()
         self._activity_deal_state_cache = None
         self._next_crm_fetch_at = 0.0
+        self._last_fetch_time = 0.0
 
     def _recent_inbound_messages(self, phone, limit=10):
         normalized = self.whatsapp.normalize_phone(phone)
@@ -1940,11 +1943,25 @@ class SDRSupervisor:
     def buscar(self):
         leads = []
         super_skip = {"cad": 0, "sem_person": 0, "sem_phone": 0, "bloqueado": 0}
+        now = time.time()
+        last_fetch_time = float(getattr(self, "_last_fetch_time", 0.0) or 0.0)
+        if now - last_fetch_time < 30:
+            wait_seconds = max(1, int(30 - (now - last_fetch_time)))
+            print("[ANTI_RATE_LIMIT_ATIVO]")
+            print(f"[MODO_ECONOMICO] aguardando antes de nova busca no CRM... segundos={wait_seconds}")
+            self._next_crm_fetch_at = time.time() + 10
+            return []
+        self._last_fetch_time = now
         print("[BUSCA_CRM_INICIO]")
         if not self._activity_generation_locked_today():
             self._cleanup_today_call_activities_once()
         fetch_limit = self._deal_fetch_limit()
         deals = self.crm.get_deals(status="open", limit=fetch_limit, pipeline_id=PIPELINE_ID)
+        if int(getattr(self.crm, "last_http_status", 0) or 0) == 429:
+            print("[ANTI_RATE_LIMIT_ATIVO]")
+            print(f"[MODO_ECONOMICO] rate limit no CRM, aguardando {CRM_RATE_LIMIT_COOLDOWN_SEC}s...")
+            self._next_crm_fetch_at = time.time() + CRM_RATE_LIMIT_COOLDOWN_SEC
+            return []
         print(f"[BUSCA_DEALS_OK] total={len(deals)}")
         for deal in deals:
             if len(leads) >= MAX_DEALS_DIA:
@@ -2647,6 +2664,7 @@ class SDRSupervisor:
 
     def start(self):
         while True:
+            time.sleep(SUPERVISOR_LOOP_SLEEP_SEC)
             if WHATSAPP_LISTENER_ATIVO:
                 self._heartbeat_whatsapp()
                 self._watchdog_maybe_reset()
@@ -2661,7 +2679,6 @@ class SDRSupervisor:
             if not ENVIAR_WHATSAPP_AUTOMATICO:
                 print("[WHATSAPP_AUTO_MANUAL] outbound_inicial_desativado")
             self.run()
-            time.sleep(BOOT_BUSY_SLEEP_SEC if self.pending_whatsapp_queue else BOOT_IDLE_SLEEP_SEC)
 
 
 if __name__ == "__main__":
