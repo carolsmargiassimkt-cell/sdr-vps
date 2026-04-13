@@ -538,10 +538,8 @@ class SDRSupervisor:
         self.whatsapp_service = self.whatsapp
         self.pitch = WhatsAppPitchEngine(config=None)
         self.crm = PipedriveClient()
-        cadence_labels = ["cad1", "respondido"] + [f"WHATSAPP_CAD{step}" for step in range(1, 7)] + [f"EMAIL_CAD{step}" for step in range(1, 7)]
-        self.crm.ensure_deal_labels(cadence_labels)
         self.blocklist = self.load_blocklist()
-        self.deal_label_options = self.crm.get_deal_labels()
+        self.deal_label_options = []
         self.logger = logging.getLogger("sdr_supervisor")
         self.background_enrichment = CRMEnrichmentLoop(self.crm, self.logger, BASE_DIR)
         self.background_enrichment.FETCH_LIMIT = ENRICHMENT_BATCH_SIZE
