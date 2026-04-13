@@ -1731,6 +1731,8 @@ class SDRSupervisor:
 
     def _resume_after_hours_pending(self):
         today = _today_str()
+        if not hasattr(self.whatsapp, "get_after_hours_resume_date"):
+            return 0
         if self.whatsapp.get_after_hours_resume_date() == today:
             return 0
         pending_items = self.whatsapp.list_after_hours_pending()
