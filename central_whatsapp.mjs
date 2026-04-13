@@ -63,7 +63,7 @@ const WA_INSTANCE = String(process.env.WA_INSTANCE || (WA_PORT === 3001 ? 'WA2' 
 const TEST_WHITELIST = new Set(['5535920002020', '35920002020'])
 const HISTORY_FILE = path.join('logs', 'whatsapp_message_history.json')
 const BACKLOG_STATE_FILE = path.join('logs', `whatsapp_backlog_state.${WA_INSTANCE.toLowerCase()}.json`)
-const AUTH_INFO_DIR = path.resolve(String(process.env.WA_AUTH_DIR || path.join(process.cwd(), 'auth_info_baileys')))
+const AUTH_INFO_DIR = './wa-session'
 const PROCESS_LOCK_FILE = path.join(process.cwd(), `baileys.${WA_INSTANCE.toLowerCase()}.lock`)
 let backlogSweepTimer = null
 let backlogStateFlushTimer = null
@@ -430,14 +430,7 @@ function postJsonToUrl(baseUrl, endpoint, data, timeout = 40000) {
 }
 
 async function postToPython(data, endpoint = '/inbound') {
-    const result = await postJson('127.0.0.1', 5000, endpoint, data, 40000)
-    console.log('[PYTHON_STATUS]', result.statusCode)
-    const confirmed = result?.body?.confirmed !== false
-    const ok = result?.body?.ok === true
-    if (result.statusCode === 200 && ok && confirmed) {
-        return true
-    }
-    console.log('[ERRO_ENVIO_PYTHON]', endpoint, `status=${result.statusCode || 0}`, `ok=${ok ? 1 : 0}`, `confirmed=${confirmed ? 1 : 0}`)
+    console.log('[PYTHON_HTTP_DESATIVADO]', endpoint)
     return false
 }
 
@@ -467,7 +460,7 @@ async function postToPythonWithDelay(data, source) {
 }
 
 function syncOutboundToPython(data) {
-    postToPython(data, '/history/outbound')
+    console.log('[OUTBOUND_SYNC_DESATIVADO]')
 }
 
 function closeExistingSocket() {

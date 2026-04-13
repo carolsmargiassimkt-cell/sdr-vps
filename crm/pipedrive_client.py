@@ -24,6 +24,7 @@ class PipedriveClient:
     REQUEST_TIMEOUT_SEC = 10
     RATE_LIMIT_COOLDOWN_SEC = 60
     GLOBAL_MIN_INTERVAL_SEC = 1.5
+    DEAL_FIELDS_CACHE_TTL_SEC = 3600
     _rate_limit_until_ts = 0.0
     _global_last_request_ts = 0.0
     _global_rate_lock = Lock()
@@ -50,6 +51,8 @@ class PipedriveClient:
         self.last_http_body = ""
         self.last_http_endpoint = ""
         self.last_http_method = ""
+        self._deal_fields_cache = None
+        self._deal_fields_cache_time = 0.0
 
     def _perform_request_with_retry(
         self,
@@ -99,6 +102,25 @@ class PipedriveClient:
         params: Optional[Dict[str, Any]] = None,
         json: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
+        rate_limit_retried = False
+        while True:
+            response = self._request_once(method, endpoint, params=params, json=json)
+            if self.last_http_status != 429 or rate_limit_retried:
+                return response
+            rate_limit_retried = True
+            self.logger.warning(
+                f"[CRM_RATE_LIMIT_BACKOFF] aguardando=65s metodo={str(method or '').upper()} endpoint={str(endpoint or '')}"
+            )
+            time.sleep(65)
+
+    def _request_once(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
         if not self.api_token:
             self.last_http_status = 0
             self.last_http_body = ""
@@ -117,6 +139,7 @@ class PipedriveClient:
             elapsed = now - float(self.__class__._global_last_request_ts or 0.0)
             if elapsed < float(self.GLOBAL_MIN_INTERVAL_SEC):
                 time.sleep(float(self.GLOBAL_MIN_INTERVAL_SEC) - elapsed)
+            time.sleep(0.3)
             self.__class__._global_last_request_ts = time.time()
         request_params = dict(params or {})
         request_params["api_token"] = self.api_token
@@ -161,6 +184,17 @@ class PipedriveClient:
             self.logger.error(f"[ERRO_ENRIQUECIMENTO] {str(exc)}", exc_info=True)
             return None
         return payload if isinstance(payload, dict) else None
+
+    def get_deal_fields(self) -> List[Dict[str, Any]]:
+        if self._deal_fields_cache and (time.time() - float(self._deal_fields_cache_time or 0.0) < self.DEAL_FIELDS_CACHE_TTL_SEC):
+            self.logger.info("[CACHE_DEAL_FIELDS_ATIVO]")
+            return list(self._deal_fields_cache or [])
+        response = self._request("GET", "dealFields")
+        fields = list(response.get("data") or []) if response else []
+        self._deal_fields_cache = list(fields)
+        self._deal_fields_cache_time = time.time()
+        self.logger.info("[CACHE_DEAL_FIELDS_ATIVO]")
+        return list(fields)
 
     @staticmethod
     def _extract_id(field: Any) -> int:
@@ -392,6 +426,14 @@ class PipedriveClient:
             lambda: self._request("PUT", f"deals/{int(deal_id)}", json=payload),
         )
 
+    def create_deal(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(data or {})
+        label = payload.get("label")
+        if label:
+            payload["label"] = self.resolve_label_ids(label, self.get_deal_labels())
+        response = self._request("POST", "deals", json=payload)
+        return dict(response.get("data") or {}) if response else {}
+
     def delete_deal(self, deal_id: int) -> bool:
         if not int(deal_id or 0):
             return False
@@ -611,6 +653,14 @@ class PipedriveClient:
         response = self._request("DELETE", f"activities/{target_id}")
         return bool(response and response.get("success") is True)
 
+    def update_activity(self, activity_id: int, **fields) -> bool:
+        target_id = int(activity_id or 0)
+        payload = {k: v for k, v in dict(fields or {}).items() if v is not None}
+        if target_id <= 0 or not payload:
+            return False
+        response = self._request("PUT", f"activities/{target_id}", json=payload)
+        return bool(response and response.get("success") is True)
+
     def cleanup_bot_call_activities_for_date(self, target_date: str = "") -> int:
         date_str = str(target_date or time.strftime("%Y-%m-%d")).strip() or time.strftime("%Y-%m-%d")
         deleted = 0
@@ -683,8 +733,7 @@ class PipedriveClient:
         return False
 
     def get_deal_labels(self) -> List[Dict[str, Any]]:
-        response = self._request("GET", "dealFields")
-        fields = list(response.get("data") or []) if response else []
+        fields = self.get_deal_fields()
         for field in fields:
             if str(field.get("key", "")).strip() == "label":
                 options = field.get("options") or []
@@ -707,6 +756,35 @@ class PipedriveClient:
             if str(field.get("key", "")).strip() == "label":
                 return dict(field or {})
         return {}
+
+    def get_person_text_field(self, field_key: str) -> Dict[str, Any]:
+        target_key = str(field_key or "").strip()
+        if not target_key:
+            return {}
+        response = self._request("GET", "personFields")
+        fields = list(response.get("data") or []) if response else []
+        for field in fields:
+            if str(field.get("key", "")).strip() == target_key:
+                return dict(field or {})
+        return {}
+
+    def add_person_text_tag_incremental(self, person_id: int, field_key: str, new_tag: str) -> bool:
+        target_person_id = int(person_id or 0)
+        target_field_key = str(field_key or "").strip()
+        normalized_tag = str(new_tag or "").strip()
+        if target_person_id <= 0 or not target_field_key or not normalized_tag:
+            return False
+        try:
+            person = self.get_person(target_person_id)
+        except Exception:
+            person = {}
+        current_raw = str((person or {}).get(target_field_key) or "").strip()
+        tokens = [item.strip() for item in re.split(r"[,\n;|]+", current_raw) if item.strip()]
+        normalized_tokens = {item.lower(): item for item in tokens}
+        if normalized_tag.lower() not in normalized_tokens:
+            tokens.append(normalized_tag)
+        merged = ", ".join(tokens)
+        return self.update_person(target_person_id, {target_field_key: merged})
 
     def ensure_person_labels(self, labels: List[str]) -> bool:
         target_labels = [self._normalize_label_token(item) for item in labels if self._normalize_label_token(item)]
@@ -740,8 +818,7 @@ class PipedriveClient:
         return bool(self._request("PUT", f"personFields/{field_id}", json=payload))
 
     def get_deal_label_field(self) -> Dict[str, Any]:
-        response = self._request("GET", "dealFields")
-        fields = list(response.get("data") or []) if response else []
+        fields = self.get_deal_fields()
         for field in fields:
             if str(field.get("key", "")).strip() == "label":
                 return dict(field or {})

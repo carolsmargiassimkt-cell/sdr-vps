@@ -69,9 +69,9 @@ MAX_DEAL_AGE_DAYS = 30
 PIPELINE_ID = 2
 DAILY_SUCCESS_LIMIT = 50
 MAX_DEALS_DIA = 50
-CADENCE_MAX_STEP = 5
+CADENCE_MAX_STEP = 6
 CADENCE_GAP_DAYS = 7
-ARCHIVE_AFTER_CADENCE_STEP = 5
+ARCHIVE_AFTER_CADENCE_STEP = 6
 EMAIL_DELAY_MIN_SEC = 60
 EMAIL_DELAY_MAX_SEC = 120
 ENABLE_EMAIL_CADENCE = True
@@ -90,10 +90,12 @@ SUPER_MINAS_LABEL_NAMES = {"SUPER_MINAS", "SUPER MINAS", "SUPERMINAS"}
 OUTBOUND_BLOCKED_LABEL_IDS = {"173", "193"}
 OUTBOUND_BLOCKED_LABEL_NAMES = {"INDICACAO_CAROL_EVENTO", "INDICAÇÃO_CAROL_EVENTO", "LEAD_TRÁFEGO", "LEAD_TRAFEGO"}
 BOOT_CHILDREN = []
+CRM_IDLE_POLL_SEC = 30
 N8N_EMAIL_WEBHOOK_PATH = "sdr-email"
 N8N_EMAIL_WEBHOOK_URL = f"http://127.0.0.1:5678/webhook/{N8N_EMAIL_WEBHOOK_PATH}"
 N8N_HEALTH_URL = "http://127.0.0.1:5678"
 N8N_START_BAT = r"C:\Users\Asus\start_n8n.bat"
+N8N_START_CMD = str(os.getenv("N8N_START_CMD", "")).strip()
 VPS_HOST = "127.0.0.1"
 VPS_PORT = 8001
 VPS_BASE_URL = str(os.getenv("VPS_URL", "http://127.0.0.1:8001")).rstrip("/")
@@ -397,6 +399,30 @@ def spawn_if_needed(name, command, health_url, timeout=90, env=None):
     print(f"[{name}_OK]")
 
 
+def resolve_n8n_start_command():
+    if os.name == "nt" and os.path.exists(N8N_START_BAT):
+        return ["cmd", "/c", N8N_START_BAT]
+    if N8N_START_CMD:
+        if os.name == "nt":
+            return ["cmd", "/c", N8N_START_CMD]
+        return ["bash", "-lc", N8N_START_CMD]
+    return []
+
+
+def maybe_start_n8n(timeout=90):
+    if not ENABLE_EMAIL_CADENCE:
+        print("[EMAIL_DESATIVADO]")
+        return
+    if not dentro_do_horario():
+        print("[N8N_FORA_HORARIO]")
+        return
+    command = resolve_n8n_start_command()
+    if not command:
+        print("[N8N_STARTER_AUSENTE]")
+        return
+    spawn_if_needed("N8N", command, N8N_HEALTH_URL, timeout=timeout)
+
+
 def start_inbound_with_retry():
     print("[INBOUND_HTTP_DESATIVADO] processamento_direto_no_supervisor")
 
@@ -456,12 +482,7 @@ def start_stack():
     else:
         print("[WHATSAPP_LISTENER_DESATIVADO] stack_sem_listener")
     start_inbound_with_retry()
-    if ENABLE_EMAIL_CADENCE and os.path.exists(N8N_START_BAT):
-        spawn_if_needed("N8N", ["cmd", "/c", N8N_START_BAT], N8N_HEALTH_URL, timeout=120)
-    elif ENABLE_EMAIL_CADENCE:
-        print("[N8N_STARTER_AUSENTE]")
-    else:
-        print("[EMAIL_DESATIVADO]")
+    maybe_start_n8n(timeout=120)
 
 
 def _boot_worker(name, fn):
@@ -495,10 +516,8 @@ def start_stack_fast():
             1,
             ("WHATSAPP", lambda: spawn_if_needed("WHATSAPP", ["node", "central_whatsapp.mjs"], "http://127.0.0.1:3000/status", timeout=BOOT_SERVICE_TIMEOUT_SEC)),
         )
-    if ENABLE_EMAIL_CADENCE and os.path.exists(N8N_START_BAT):
-        workers.append(("N8N", lambda: spawn_if_needed("N8N", ["cmd", "/c", N8N_START_BAT], N8N_HEALTH_URL, timeout=BOOT_SERVICE_TIMEOUT_SEC)))
-    elif ENABLE_EMAIL_CADENCE:
-        print("[N8N_STARTER_AUSENTE]")
+    if ENABLE_EMAIL_CADENCE:
+        workers.append(("N8N", lambda: maybe_start_n8n(timeout=BOOT_SERVICE_TIMEOUT_SEC)))
     else:
         print("[EMAIL_DESATIVADO]")
 
@@ -519,7 +538,7 @@ class SDRSupervisor:
         self.whatsapp_service = self.whatsapp
         self.pitch = WhatsAppPitchEngine(config=None)
         self.crm = PipedriveClient()
-        cadence_labels = ["cad1", "respondido"] + [f"WHATSAPP_CAD{step}" for step in range(1, 6)] + [f"EMAIL_CAD{step}" for step in range(1, 6)]
+        cadence_labels = ["cad1", "respondido"] + [f"WHATSAPP_CAD{step}" for step in range(1, 7)] + [f"EMAIL_CAD{step}" for step in range(1, 7)]
         self.crm.ensure_deal_labels(cadence_labels)
         self.blocklist = self.load_blocklist()
         self.deal_label_options = self.crm.get_deal_labels()
@@ -537,11 +556,13 @@ class SDRSupervisor:
         self._stage_cache = {}
         self._next_stack_recovery_at = 0.0
         self._stack_recovery_attempts = 0
+        self._next_n8n_start_attempt_at = 0.0
         self._send_progress_cache = None
         self._last_wa_heartbeat_at = 0.0
         self._inbound_recovery_state = _load_inbound_recovery_state()
         self._last_progress_at = time.time()
         self._activity_deal_state_cache = None
+        self._next_crm_fetch_at = 0.0
 
     def _recent_inbound_messages(self, phone, limit=10):
         normalized = self.whatsapp.normalize_phone(phone)
@@ -614,11 +635,35 @@ class SDRSupervisor:
     def _classify_inbound_intent(self, text):
         msg = self._normalize_inbound_intent_text(text)
         if not msg:
-            return "normal"
-        if "nao tenho interesse" in msg or "não tenho interesse" in msg or "sem interesse" in msg:
+            return "neutro"
+        if "nao tenho interesse" in msg or "n??o tenho interesse" in msg or "sem interesse" in msg:
             return "sem_interesse"
-        if "nao sou o responsavel" in msg or "não sou o responsável" in msg or "falar com" in msg:
+        if (
+            "nao sou o responsavel" in msg
+            or "n??o sou o respons??vel" in msg
+            or "falar com" in msg
+            or "numero errado" in msg
+            or "n??mero errado" in msg
+            or "nao e aqui" in msg
+            or "n??o e aqui" in msg
+        ):
             return "indicacao_contato"
+        scheduling_tokens = (
+            "amanha",
+            "amanh??",
+            "hoje a tarde",
+            "hoje de tarde",
+            "pode ser",
+            "me chama",
+            "me ligue",
+            "podemos falar",
+            "vamos agendar",
+            "agendar",
+            "agenda",
+            "marcar",
+        )
+        if any(token in msg for token in scheduling_tokens):
+            return "agendamento"
         positive_tokens = (
             "sim",
             "sou eu",
@@ -631,7 +676,17 @@ class SDRSupervisor:
         )
         if any(token in msg for token in positive_tokens):
             return "positivo"
-        return "normal"
+        negative_tokens = (
+            "nao",
+            "n??o",
+            "sem interesse",
+            "nao quero",
+            "n??o quero",
+            "pare",
+        )
+        if any(token in msg for token in negative_tokens):
+            return "negativo"
+        return "neutro"
 
     def _build_opening_message(self, lead):
         opening = random.choice(self.pitch.WHATSAPP_OPENINGS)
@@ -651,6 +706,7 @@ class SDRSupervisor:
         inbound_messages = self._recent_inbound_messages(phone)
         has_outbound_history = self._phone_has_outbound_history(phone)
         intent = self._classify_inbound_intent(text)
+        print(f"[INTENT] telefone={phone} intent={intent}")
         reply = ""
         try:
             if not has_outbound_history:
@@ -659,9 +715,13 @@ class SDRSupervisor:
                     print(f"[TESTE_LIBERADO] telefone={phone} contexto=inbound_opening")
             elif intent == "positivo":
                 reply = str(self.pitch.get_day_message(2, lead=lead) or "").strip()
+            elif intent == "agendamento":
+                reply = str(self.pitch.get_day_message(10, lead=lead) or "").strip()
             elif intent == "sem_interesse":
                 reply = str(self.pitch.get_closing_message("no_interest") or "").strip()
                 self.blocklist.add(phone)
+            elif intent == "negativo":
+                reply = str(self.pitch.get_closing_message("no_interest") or "").strip()
             elif intent == "indicacao_contato":
                 reply = str(self.pitch.get_closing_message("referral") or "").strip()
             else:
@@ -809,6 +869,9 @@ class SDRSupervisor:
             return True
         if self._raw_label_ids(deal) & OUTBOUND_BLOCKED_LABEL_IDS:
             return True
+        status_bot = str((deal or {}).get(self.crm.STATUS_BOT_FIELD) or "").strip().lower()
+        if status_bot in {"conversando", "linkedin"}:
+            return True
         return False
 
     def _daily_success_count(self):
@@ -899,10 +962,15 @@ class SDRSupervisor:
         if bool(state.get("cleaned")):
             return 0
         total = 0
+        rate_limited = False
         try:
             total = int(self.crm.cleanup_bot_call_activities_for_date(_today_str()) or 0)
         except Exception:
             total = 0
+        rate_limited = int(getattr(self.crm, "last_http_status", 0) or 0) == 429
+        if rate_limited:
+            print("[CRM_LIMPEZA_ATIVIDADES_ADIADA] motivo=rate_limit")
+            return 0
         state["cleaned"] = True
         state["geracao_concluida"] = False
         state["deals_com_atividade"] = []
@@ -1098,6 +1166,21 @@ class SDRSupervisor:
             if normalized and normalized not in phones:
                 phones.append(normalized)
         return phones
+
+    def _ordered_lead_phones_for_cycle(self, lead):
+        phones = self._lead_phones(lead)
+        if len(phones) <= 1:
+            return phones
+
+        def sort_key(phone):
+            last_out = self._last_outbound_at(phone)
+            return (
+                1 if self._phone_has_outbound_history(phone) else 0,
+                last_out.timestamp() if last_out else 0.0,
+                phone,
+            )
+
+        return sorted(phones, key=sort_key)
 
     def _lead_has_inbound_history(self, lead):
         return any(self._phone_has_inbound_history(phone) for phone in self._lead_phones(lead))
@@ -1410,7 +1493,7 @@ class SDRSupervisor:
             return False
         if ok:
             print(f"[ARQUIVADO_FALTA_CONTATO] deal={int(deal_id)} stage={archived_stage_id}")
-            self._append_deal_note(deal_id, "Arquivado automaticamente por falta de contato apos CAD5 sem resposta.")
+            self._append_deal_note(deal_id, "Tentativas de contato esgotadas.")
         return ok
 
     def _resolve_stage_by_keywords(self, *keyword_groups):
@@ -1443,7 +1526,12 @@ class SDRSupervisor:
         step = int(cadence_step or 0)
         if step <= 0:
             return False
-        stage_id = self._resolve_stage_by_keywords((f"contato {step}",), ("contato", str(step)))
+        if step <= 2:
+            stage_id = self._resolve_stage_by_keywords(("contato 1 e 2",), ("contato", "1", "2"))
+        elif step <= 4:
+            stage_id = self._resolve_stage_by_keywords(("contato 3 e 4",), ("contato", "3", "4"))
+        else:
+            stage_id = self._resolve_stage_by_keywords(("contato 5 e 6",), ("contato", "5", "6"))
         if not stage_id:
             print(f"[STAGE_CAD_FALHA] deal={int(deal_id or 0)} cadencia={step} motivo=stage_nao_encontrado")
             return False
@@ -2322,9 +2410,23 @@ class SDRSupervisor:
     def _next_whatsapp_delay(self):
         return random.randint(WHATSAPP_SEND_GAP_MIN_SEC, WHATSAPP_SEND_GAP_MAX_SEC)
 
+    def _maybe_start_n8n_runtime(self):
+        now = time.time()
+        if now < float(self._next_n8n_start_attempt_at or 0):
+            return
+        self._next_n8n_start_attempt_at = now + 300
+        maybe_start_n8n(timeout=10)
+
     def run(self):
         check_lock()
         try:
+            now = time.time()
+            if not self.pending_whatsapp_queue and now < float(self._next_crm_fetch_at or 0.0):
+                wait_seconds = max(1, int(float(self._next_crm_fetch_at or 0.0) - now))
+                print("[MODO_ECONOMICO_ATIVO]")
+                print(f"[MODO_ECONOMICO] fila vazia, aguardando... segundos={wait_seconds}")
+                return
+            self._maybe_start_n8n_runtime()
             self._process_pending_emails()
             if BOT_PRIORITY:
                 print("[BOT_PRIORITY]")
@@ -2355,6 +2457,10 @@ class SDRSupervisor:
                 leads = self.buscar()
                 if ENVIAR_WHATSAPP_AUTOMATICO:
                     added_to_queue = self._enqueue_whatsapp_leads(leads, target_size=len(leads))
+                if not leads and not self.pending_whatsapp_queue:
+                    self._next_crm_fetch_at = time.time() + CRM_IDLE_POLL_SEC
+                else:
+                    self._next_crm_fetch_at = 0.0
             super_minas_count = sum(1 for lead in self.pending_whatsapp_queue if lead["super_minas"])
             print(
                 f"[PIPELINE] total={len(leads) if leads else len(self.pending_whatsapp_queue)} super_minas={super_minas_count} "
@@ -2362,6 +2468,9 @@ class SDRSupervisor:
             )
             print(f"[QUEUE_READY] fila_whatsapp={len(self.pending_whatsapp_queue)}")
             print(f"[QUEUE_FULL_READY] deals={len(self.pending_whatsapp_queue)}")
+            if not leads and not self.pending_whatsapp_queue:
+                print("[MODO_ECONOMICO_ATIVO]")
+                print("[MODO_ECONOMICO] fila vazia, aguardando...")
             if not ENVIAR_WHATSAPP_AUTOMATICO:
                 print("[WHATSAPP_AUTO_DESATIVADO] envio_inicial_bloqueado")
                 self._run_background_enrichment()
@@ -2384,7 +2493,7 @@ class SDRSupervisor:
                 deal_id = lead["id"]
                 prioridade = "SUPER_MINAS" if lead["super_minas"] else "CRM"
                 cadence_step = self._cadence_step(lead)
-                lead_phones = list(lead.get("phones") or lead.get("telefones") or [])
+                lead_phones = self._ordered_lead_phones_for_cycle(lead)
                 print(
                     f"[DEAL_TENTATIVA] deal={deal_id} origem={prioridade} cadencia={cadence_step} "
                     f"telefones_total={len(lead_phones)} saldo_restante={max(0, MAX_DEALS_DIA - sent_today)}"
@@ -2456,7 +2565,8 @@ class SDRSupervisor:
                         self.whatsapp.mark_sent(num)
                         sent_phones.append(num)
                         self._touch_progress()
-                        continue
+                        print(f"[DEAL_CONTATO_UNICO] deal={deal_id} telefone={num}")
+                        break
 
                     if self.whatsapp.last_send_state == "timeout":
                         self.whatsapp.release_send_slot(num)
