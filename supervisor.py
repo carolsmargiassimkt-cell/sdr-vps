@@ -50,7 +50,6 @@ except ImportError:
     print("[AUTO_INSTALL_OK]")
 
 from crm.pipedrive_client import PipedriveClient
-from crm.crm_orchestrator import CRMEnrichmentLoop
 from logic.whatsapp_pitch_engine import WhatsAppPitchEngine
 from services.whatsapp_service import WhatsAppService
 
@@ -85,8 +84,8 @@ BOT_PRIORITY = True
 SUPER_MINAS_REENTRY = True
 ENRICHMENT_BATCH_SIZE = 20
 ENRICHMENT_AFTER_MESSAGES = 5
-SUPER_MINAS_LABEL_IDS = {"175", "162"}
-SUPER_MINAS_LABEL_NAMES = {"SUPER_MINAS", "SUPER MINAS", "SUPERMINAS"}
+SUPER_MINAS_LABEL_IDS = {"175", "162", "176", "177"}
+SUPER_MINAS_LABEL_NAMES = {"SUPER_MINAS", "SUPER MINAS", "SUPERMINAS", "SUPER_MINAS_OPORTUNIDADE"}
 OUTBOUND_BLOCKED_LABEL_IDS = {"173", "193"}
 OUTBOUND_BLOCKED_LABEL_NAMES = {"INDICACAO_CAROL_EVENTO", "INDICAÇÃO_CAROL_EVENTO", "LEAD_TRÁFEGO", "LEAD_TRAFEGO"}
 BOOT_CHILDREN = []
@@ -541,17 +540,11 @@ class SDRSupervisor:
         self.pitch = WhatsAppPitchEngine(config=None)
         self.crm = PipedriveClient()
         self.blocklist = self.load_blocklist()
-        self.deal_label_options = []
+        self.deal_label_options = self.crm.get_deal_labels()
         self.logger = logging.getLogger("sdr_supervisor")
-        self.background_enrichment = CRMEnrichmentLoop(self.crm, self.logger, BASE_DIR)
-        self.background_enrichment.FETCH_LIMIT = ENRICHMENT_BATCH_SIZE
-        self.background_enrichment.MAX_EMPRESAS = ENRICHMENT_BATCH_SIZE
-        self.background_enrichment.TURBO_WORKERS = 1
         self.pending_email_queue = []
         self.pending_whatsapp_queue = []
         self.next_whatsapp_send_at = 0.0
-        self.light_enrichment_cache = {}
-        self.next_light_enrichment_at = 0.0
         self._archived_stage_id = 0
         self._stage_cache = {}
         self._next_stack_recovery_at = 0.0
@@ -566,6 +559,7 @@ class SDRSupervisor:
         self._last_fetch_time = 0.0
         self._crm_cooldown_until = 0.0
         self._crm_backoff = 60
+        self._last_cleanup_at = 0.0
 
     def _recent_inbound_messages(self, phone, limit=10):
         normalized = self.whatsapp.normalize_phone(phone)
@@ -1804,13 +1798,18 @@ class SDRSupervisor:
         return processed
 
     def _channel_already_sent(self, channel, lead):
-        if str(channel or "").strip().lower() == "whatsapp":
-            return False
         history = read_history()
         key = self._lead_history_key(channel, lead)
         items = history.get(key, [])
         if not isinstance(items, list):
+            # Fallback para busca por telefone se a chave por deal_id falhar (transição)
+            phones = self._lead_phones(lead)
+            if phones:
+                items = history.get(phones[0], [])
+        
+        if not isinstance(items, list):
             return False
+            
         cadence_step = self._cadence_step(lead)
         if cadence_step <= 1:
             return any(str(item.get("direction") or "").strip().lower() == "out" for item in items if isinstance(item, dict))
@@ -1946,28 +1945,56 @@ class SDRSupervisor:
         leads = []
         super_skip = {"cad": 0, "sem_person": 0, "sem_phone": 0, "bloqueado": 0}
         now = time.time()
+        
+        # Executa cleanup no maximo uma vez a cada 6 horas para poupar API
+        if now - getattr(self, "_last_cleanup_at", 0) > 21600:
+            self._last_cleanup_at = now
+            print("[CRM_LIMPEZA_ATIVIDADES_INICIO] rodando em background")
+            threading.Thread(target=self._cleanup_today_call_activities_once, daemon=True).start()
+
         last_fetch_time = float(getattr(self, "_last_fetch_time", 0.0) or 0.0)
-        if now - last_fetch_time < 30:
-            wait_seconds = max(1, int(30 - (now - last_fetch_time)))
-            print("[ANTI_RATE_LIMIT_ATIVO]")
-            print(f"[MODO_ECONOMICO] aguardando antes de nova busca no CRM... segundos={wait_seconds}")
-            self._next_crm_fetch_at = time.time() + 10
-            return []
-        self._last_fetch_time = now
-        print("[BUSCA_CRM_INICIO]")
-        if not self._activity_generation_locked_today():
-            self._cleanup_today_call_activities_once()
         fetch_limit = self._deal_fetch_limit()
-        deals = self.crm.get_deals(status="open", limit=fetch_limit, pipeline_id=PIPELINE_ID)
-        if int(getattr(self.crm, "last_http_status", 0) or 0) == 429:
-            print("[CRM_RATE_LIMIT_DETECTADO] ativando cooldown forte")
-            self._crm_cooldown_until = time.time() + float(self._crm_backoff or 60)
-            self._crm_backoff = min(int(self._crm_backoff or 60) * 2, 600)
-            self._next_crm_fetch_at = max(float(self._next_crm_fetch_at or 0.0), self._crm_cooldown_until)
-            print("[ANTI_RATE_LIMIT_ATIVO]")
-            print(f"[MODO_ECONOMICO] rate limit no CRM, aguardando {int(self._crm_backoff)}s...")
-            time.sleep(int(self._crm_backoff))
-            return []
+
+        # BUSCA DIRETA PELA API PARA EVITAR 401 OU PROBLEMAS NO CLIENT
+        api_token = getattr(self.crm, "token", "") or getattr(self.crm, "api_token", "")
+        if not api_token:
+            from config.config_loader import get_config_value
+            api_token = get_config_value("pipedrive_api_token", "") or get_config_value("pipedrive_token", "")
+
+        deals = []
+        try:
+            url = "https://api.pipedrive.com/v1/deals"
+            params = {
+                "api_token": api_token,
+                "status": "open",
+                "limit": fetch_limit,
+                "pipeline_id": PIPELINE_ID,
+                "sort": "id DESC"
+            }
+            resp = requests.get(url, params=params, timeout=20)
+            self.crm.last_http_status = resp.status_code
+            if resp.status_code == 200:
+                data = resp.json()
+                deals = data.get("data") or []
+            elif resp.status_code == 401:
+                print(f"[CRM_UNAUTHORIZED] verifique o token: {api_token[:5]}***")
+                deals = []
+            elif resp.status_code == 429:
+                print("[CRM_RATE_LIMIT_DETECTADO] ativando cooldown forte")
+                self._crm_cooldown_until = time.time() + float(self._crm_backoff or 60)
+                self._crm_backoff = min(int(self._crm_backoff or 60) * 2, 600)
+                self._next_crm_fetch_at = max(float(self._next_crm_fetch_at or 0.0), self._crm_cooldown_until)
+                print(f"[MODO_ECONOMICO] rate limit no CRM, aguardando {int(self._crm_backoff)}s...")
+                time.sleep(int(self._crm_backoff))
+                return []
+            else:
+                print(f"[CRM_ERROR] status={resp.status_code} body={resp.text[:100]}")
+                deals = []
+        except Exception as e:
+            print(f"[CRM_EXCEPTION] erro={e}")
+            deals = []
+
+        print("[DEALS_FETCHED]", len(deals))
         self._crm_backoff = 60
         self._crm_cooldown_until = 0.0
         print(f"[BUSCA_DEALS_OK] total={len(deals)}")
@@ -2120,31 +2147,6 @@ class SDRSupervisor:
             return super_minas + normal
         return leads
 
-    def _run_background_enrichment(self):
-        if ENRICHMENT_MODE == "off":
-            print("[ENRICHMENT_DESATIVADO]")
-            return
-        if self._startup_window_active():
-            print("[ENRICHMENT_STARTUP_SKIP]")
-            return
-        if self.pending_whatsapp_queue:
-            print(f"[ENRICHMENT_IDLE_SKIP] fila_whatsapp={len(self.pending_whatsapp_queue)}")
-            return
-        if ENRICHMENT_MODE == "light":
-            self._run_light_enrichment()
-            return
-        if self._should_pause_enrichment():
-            return
-        try:
-            print("[ENRICHMENT_BACKGROUND] start")
-            counters = self.background_enrichment.run_cycle()
-            print(
-                f"[FINALIZADO_CICLO] enrichment_processed={int(counters.get('processed') or 0)} "
-                f"cnpj_encontrado={int(counters.get('cnpj_encontrado') or 0)}"
-            )
-        except Exception as exc:
-            print(f"[PIPEDRIVE_SKIP_CICLO] erro_enrichment_background={exc}")
-
     def _whatsapp_status(self):
         return get_whatsapp_status(timeout=5)
 
@@ -2200,168 +2202,6 @@ class SDRSupervisor:
         except Exception as exc:
             print(f"[STACK_RECOVERY_FALHOU] motivo={reason} erro={exc}")
             return False
-
-    def _should_pause_enrichment(self):
-        if not ENVIAR_WHATSAPP_AUTOMATICO:
-            return False
-        wa_status = self._whatsapp_status()
-        mode = str(wa_status.get("mode") or "").strip().lower()
-        session_invalid = bool(wa_status.get("session_invalid"))
-        needs_qr = bool(wa_status.get("needs_qr"))
-        if session_invalid or needs_qr or mode in {"reconnecting", "booting", "awaiting_qr"}:
-            print(f"[ENRICHMENT_PAUSADO] motivo=whatsapp_status mode={mode or 'offline'}")
-            return True
-
-        thread_count = threading.active_count()
-        if thread_count >= 40:
-            self.background_enrichment.TURBO_WORKERS = max(1, min(int(self.background_enrichment.TURBO_WORKERS or 1), 2))
-            print(f"[ENRICHMENT_PAUSADO] motivo=sobrecarga threads={thread_count}")
-            return True
-
-        if hasattr(os, "getloadavg"):
-            try:
-                load_avg = os.getloadavg()[0]
-                cpu_count = max(1, os.cpu_count() or 1)
-                if load_avg >= cpu_count * 1.5:
-                    self.background_enrichment.TURBO_WORKERS = max(1, min(int(self.background_enrichment.TURBO_WORKERS or 1), 2))
-                    print(f"[ENRICHMENT_PAUSADO] motivo=sobrecarga load={load_avg:.2f} cpu={cpu_count}")
-                    return True
-            except Exception:
-                pass
-
-        return False
-
-    def _light_enrichment_delay(self):
-        return random.randint(LIGHT_ENRICH_INTERVAL_MIN_SEC, LIGHT_ENRICH_INTERVAL_MAX_SEC)
-
-    @staticmethod
-    def _org_or_deal_name(deal):
-        org = (deal or {}).get("org_id") or {}
-        if isinstance(org, dict):
-            name = str(org.get("name") or "").strip()
-            if name:
-                return name
-        return str((deal or {}).get("org_name") or (deal or {}).get("title") or "").strip()
-
-    def _is_generic_company_name(self, name):
-        clean = str(name or "").strip()
-        if not clean:
-            return True
-        if self.background_enrichment._is_generic_org_name(clean):
-            return True
-        lowered = clean.lower()
-        generic_terms = ("supermercado", "empresa", "comercio", "comércio", "servicos", "serviços")
-        return lowered in generic_terms
-
-    def _light_cache_valid(self, org_id):
-        ts = float(self.light_enrichment_cache.get(int(org_id or 0)) or 0)
-        return ts > 0 and (time.time() - ts) < LIGHT_ENRICH_TTL_SEC
-
-    def _mark_light_cache(self, org_id):
-        if int(org_id or 0) > 0:
-            self.light_enrichment_cache[int(org_id)] = time.time()
-
-    def _light_enrichment_candidates(self):
-        deals = self.crm.get_deals(status="open", limit=LIGHT_ENRICH_FETCH_LIMIT, pipeline_id=PIPELINE_ID)
-        candidates = []
-        seen_orgs = set()
-        for deal in deals:
-            if not isinstance(deal, dict):
-                continue
-            if self.background_enrichment._is_archived_deal(deal):
-                continue
-            org = deal.get("org_id") or {}
-            org_id = self.background_enrichment._extract_id(org)
-            if not org_id or org_id in seen_orgs or self._light_cache_valid(org_id):
-                continue
-            seen_orgs.add(org_id)
-            organization = self.crm.get_organization(org_id)
-            person_id = self._extract_person_id(deal)
-            person = self.crm.get_person(int(person_id)) if person_id else {}
-            cnpj = self.crm.extract_cnpj(organization)
-            phone = self._extract_phone(person)
-            name = self._org_or_deal_name(deal)
-            reasons = []
-            priority = 99
-            if not cnpj:
-                reasons.append("missing_cnpj")
-                priority = min(priority, 1)
-            if not phone:
-                reasons.append("missing_phone")
-                priority = min(priority, 2)
-            if self._is_generic_company_name(name):
-                reasons.append("generic_name")
-                priority = min(priority, 3)
-            if not reasons:
-                print(f"[ENRICHMENT_SKIP_COMPLETO] deal={int(deal.get('id') or 0)} org={org_id}")
-                self._mark_light_cache(org_id)
-                continue
-            candidates.append({
-                "deal": deal,
-                "org_id": org_id,
-                "organization": organization,
-                "cnpj": cnpj,
-                "reasons": reasons,
-                "priority": priority,
-            })
-        candidates.sort(key=lambda item: (int(item["priority"]), int((item["deal"] or {}).get("id") or 0)))
-        print(
-            f"[ENRICHMENT_CANDIDATOS] total={len(candidates)} "
-            f"fetch_limit={LIGHT_ENRICH_FETCH_LIMIT} max_por_ciclo={MAX_ENRICH_PER_CYCLE}"
-        )
-        for item in candidates[:5]:
-            deal = item.get("deal") or {}
-            print(
-                f"[ENRICHMENT_CANDIDATO] deal={int(deal.get('id') or 0)} "
-                f"org={int(item.get('org_id') or 0)} "
-                f"motivos={','.join(item.get('reasons') or [])} "
-                f"empresa={self._org_or_deal_name(deal)}"
-            )
-        return candidates[:MAX_ENRICH_PER_CYCLE]
-
-    def _run_light_enrichment(self):
-        print("[ENRICHMENT_LIGHT_MODE]")
-        if self._should_pause_enrichment():
-            return
-        now = time.time()
-        if now < float(self.next_light_enrichment_at or 0):
-            remaining = max(0, int(float(self.next_light_enrichment_at or 0) - now))
-            print(f"[ENRICHMENT_AGUARDANDO_JANELA] segundos_restantes={remaining}")
-            return
-        delay = self._light_enrichment_delay()
-        self.next_light_enrichment_at = now + delay
-        print(f"[ENRICHMENT_JANELA_ABERTA] proximo_ciclo_em={delay}s")
-        candidates = self._light_enrichment_candidates()
-        if not candidates:
-            print("[ENRICHMENT_SEM_CANDIDATOS]")
-            return
-        for item in candidates:
-            deal = item["deal"]
-            org_id = int(item["org_id"] or 0)
-            reasons = list(item["reasons"] or [])
-            try:
-                executed = False
-                if "missing_phone" in reasons:
-                    print(
-                        f"[ENRICHMENT_PROCESSANDO] deal={int((deal or {}).get('id') or 0)} "
-                        f"org={org_id} motivos={','.join(reasons)}"
-                    )
-                    self.background_enrichment.process_light_high_quality_deal(deal)
-                    executed = True
-                else:
-                    print(
-                        f"[ENRICHMENT_CANDIDATO_SEM_ACAO] deal={int((deal or {}).get('id') or 0)} "
-                        f"org={org_id} motivos={','.join(reasons)}"
-                    )
-                self._mark_light_cache(org_id)
-                if executed:
-                    print(
-                        f"[ENRICHMENT_EXECUTADO] deal={int((deal or {}).get('id') or 0)} "
-                        f"org={org_id} motivos={','.join(reasons)}"
-                    )
-            except Exception as exc:
-                self._mark_light_cache(org_id)
-                print(f"[PIPEDRIVE_SKIP_CICLO] erro_enrichment_light={exc}")
 
     def _lead_queue_key(self, lead):
         lead = lead or {}
@@ -2510,7 +2350,6 @@ class SDRSupervisor:
                 return
             if not ENVIAR_WHATSAPP_AUTOMATICO:
                 print("[WHATSAPP_AUTO_DESATIVADO] envio_inicial_bloqueado")
-                self._run_background_enrichment()
                 self._process_pending_emails()
                 return
             if self.pending_whatsapp_queue:
@@ -2677,7 +2516,7 @@ class SDRSupervisor:
                 print(f"[DEAL_SUCESSO] deal={deal_id} enviados={sent_today}/{MAX_DEALS_DIA} telefones_ok={len(sent_phones)}")
                 self.next_whatsapp_send_at = time.time() + self._next_whatsapp_delay()
             if sent_this_run == 0 and not self.pending_whatsapp_queue:
-                self._run_background_enrichment()
+                pass
             self._process_pending_emails()
         finally:
             release_lock()

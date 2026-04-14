@@ -1,4 +1,4 @@
-cd C:\Users\Asus\legacy\bot_sdr_ai
+cd /d %~dp0
 
 echo ===== INICIANDO STACK SDR =====
 C:\Users\Asus\Python311\python.exe -u supervisor.py --all

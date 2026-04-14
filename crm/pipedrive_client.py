@@ -23,11 +23,12 @@ class PipedriveClient:
     REQUEST_RETRY_DELAYS_SEC = (5.0, 10.0, 20.0)
     REQUEST_TIMEOUT_SEC = 10
     RATE_LIMIT_COOLDOWN_SEC = 60
-    GLOBAL_MIN_INTERVAL_SEC = 1.5
+    GLOBAL_MIN_INTERVAL_SEC = 0.5
     DEAL_FIELDS_CACHE_TTL_SEC = 3600
     _rate_limit_until_ts = 0.0
     _global_last_request_ts = 0.0
     _global_rate_lock = Lock()
+    _deals_list_cache: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
 
     def __init__(
         self,
@@ -37,9 +38,10 @@ class PipedriveClient:
         base_url: str = "",
         logger: logging.Logger | None = None,
     ) -> None:
-        resolved_token = str(
-            token or get_config_value("pipedrive_api_token", "") or get_config_value("pipedrive_token", "") or ""
-        ).strip()
+        resolved_token = "119ada66d2216a66981ec95a1ec983ec8255e31c"
+        # resolved_token = str(
+        #     token or get_config_value("pipedrive_api_token", "") or get_config_value("pipedrive_token", "") or ""
+        # ).strip()
         resolved_base_url = str(
             base_url or domain or get_config_value("pipedrive_base_url", "https://api.pipedrive.com/v1") or "https://api.pipedrive.com/v1"
         ).rstrip("/")
@@ -330,6 +332,14 @@ class PipedriveClient:
         updated_since: float | None = None,
         pipeline_id: int | None = None,
     ) -> List[Dict[str, Any]]:
+        cache_key = f"{status}_{pipeline_id}_{limit}"
+        now = time.time()
+        if not updated_since and cache_key in self.__class__._deals_list_cache:
+            cached_time, cached_data = self.__class__._deals_list_cache[cache_key]
+            if now - cached_time < 60:
+                self.logger.info(f"[CACHE_GET_DEALS_ATIVO] key={cache_key}")
+                return list(cached_data)
+
         target_total = max(1, int(limit or 100))
         page_limit = max(1, min(target_total, 100))
         start = 0
@@ -371,7 +381,11 @@ class PipedriveClient:
             start = int(next_start or (start + page_limit))
             if added == 0:
                 break
-        return deals[:target_total]
+        
+        final_deals = deals[:target_total]
+        if not updated_since:
+            self.__class__._deals_list_cache[cache_key] = (now, list(final_deals))
+        return final_deals
 
     def get_person(self, person_id: int) -> Dict[str, Any]:
         return self.get_person_details(person_id)
@@ -546,6 +560,10 @@ class PipedriveClient:
         return dict(response.get("data") or {}) if response else {}
 
     def find_open_deals_by_person_or_org(self, *, person_id: int = 0, org_id: int = 0) -> List[Dict[str, Any]]:
+        if person_id and int(person_id) > 0:
+            response = self._request("GET", f"persons/{int(person_id)}/deals", params={"status": "open"})
+            return list(response.get("data") or []) if response else []
+
         results: List[Dict[str, Any]] = []
         seen_ids = set()
         for deal in self.get_deals(status="open", limit=500):

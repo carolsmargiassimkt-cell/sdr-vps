@@ -64,8 +64,6 @@ class WhatsAppService:
             return False
         if num[:2] == "00":
             return False
-        if len(num) == 11 and num[2] != "9":
-            return False
         return True
 
     def _acquire_lock(self, timeout=10, lock_file=None):

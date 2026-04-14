@@ -1,0 +1,140 @@
+[1mdiff --git a/supervisor.py b/supervisor.py[m
+[1mindex 46b0e51..33ad709 100644[m
+[1m--- a/supervisor.py[m
+[1m+++ b/supervisor.py[m
+[36m@@ -50,7 +50,6 @@[m [mexcept ImportError:[m
+     print("[AUTO_INSTALL_OK]")[m
+ [m
+ from crm.pipedrive_client import PipedriveClient[m
+[31m-from crm.crm_orchestrator import CRMEnrichmentLoop[m
+ from logic.whatsapp_pitch_engine import WhatsAppPitchEngine[m
+ from services.whatsapp_service import WhatsAppService[m
+ [m
+[36m@@ -85,8 +84,8 @@[m [mBOT_PRIORITY = True[m
+ SUPER_MINAS_REENTRY = True[m
+ ENRICHMENT_BATCH_SIZE = 20[m
+ ENRICHMENT_AFTER_MESSAGES = 5[m
+[31m-SUPER_MINAS_LABEL_IDS = {"175", "162"}[m
+[31m-SUPER_MINAS_LABEL_NAMES = {"SUPER_MINAS", "SUPER MINAS", "SUPERMINAS"}[m
+[32m+[m[32mSUPER_MINAS_LABEL_IDS = {"175", "162", "176", "177"}[m
+[32m+[m[32mSUPER_MINAS_LABEL_NAMES = {"SUPER_MINAS", "SUPER MINAS", "SUPERMINAS", "SUPER_MINAS_OPORTUNIDADE"}[m
+ OUTBOUND_BLOCKED_LABEL_IDS = {"173", "193"}[m
+ OUTBOUND_BLOCKED_LABEL_NAMES = {"INDICACAO_CAROL_EVENTO", "INDICAÇÃO_CAROL_EVENTO", "LEAD_TRÁFEGO", "LEAD_TRAFEGO"}[m
+ BOOT_CHILDREN = [][m
+[36m@@ -541,17 +540,11 @@[m [mclass SDRSupervisor:[m
+         self.pitch = WhatsAppPitchEngine(config=None)[m
+         self.crm = PipedriveClient()[m
+         self.blocklist = self.load_blocklist()[m
+[31m-        self.deal_label_options = [][m
+[32m+[m[32m        self.deal_label_options = self.crm.get_deal_labels()[m
+         self.logger = logging.getLogger("sdr_supervisor")[m
+[31m-        self.background_enrichment = CRMEnrichmentLoop(self.crm, self.logger, BASE_DIR)[m
+[31m-        self.background_enrichment.FETCH_LIMIT = ENRICHMENT_BATCH_SIZE[m
+[31m-        self.background_enrichment.MAX_EMPRESAS = ENRICHMENT_BATCH_SIZE[m
+[31m-        self.background_enrichment.TURBO_WORKERS = 1[m
+         self.pending_email_queue = [][m
+         self.pending_whatsapp_queue = [][m
+         self.next_whatsapp_send_at = 0.0[m
+[31m-        self.light_enrichment_cache = {}[m
+[31m-        self.next_light_enrichment_at = 0.0[m
+         self._archived_stage_id = 0[m
+         self._stage_cache = {}[m
+         self._next_stack_recovery_at = 0.0[m
+[36m@@ -566,6 +559,7 @@[m [mclass SDRSupervisor:[m
+         self._last_fetch_time = 0.0[m
+         self._crm_cooldown_until = 0.0[m
+         self._crm_backoff = 60[m
+[32m+[m[32m        self._last_cleanup_at = 0.0[m
+ [m
+     def _recent_inbound_messages(self, phone, limit=10):[m
+         normalized = self.whatsapp.normalize_phone(phone)[m
+[36m@@ -1804,13 +1798,18 @@[m [mclass SDRSupervisor:[m
+         return processed[m
+ [m
+     def _channel_already_sent(self, channel, lead):[m
+[31m-        if str(channel or "").strip().lower() == "whatsapp":[m
+[31m-            return False[m
+         history = read_history()[m
+         key = self._lead_history_key(channel, lead)[m
+         items = history.get(key, [])[m
+[32m+[m[32m        if not isinstance(items, list):[m
+[32m+[m[32m            # Fallback para busca por telefone se a chave por deal_id falhar (transição)[m
+[32m+[m[32m            phones = self._lead_phones(lead)[m
+[32m+[m[32m            if phones:[m
+[32m+[m[32m                items = history.get(phones[0], [])[m
+[32m+[m[41m        [m
+         if not isinstance(items, list):[m
+             return False[m
+[32m+[m[41m            [m
+         cadence_step = self._cadence_step(lead)[m
+         if cadence_step <= 1:[m
+             return any(str(item.get("direction") or "").strip().lower() == "out" for item in items if isinstance(item, dict))[m
+[36m@@ -1946,28 +1945,56 @@[m [mclass SDRSupervisor:[m
+         leads = [][m
+         super_skip = {"cad": 0, "sem_person": 0, "sem_phone": 0, "bloqueado": 0}[m
+         now = time.time()[m
+[32m+[m[41m        [m
+[32m+[m[32m        # Executa cleanup no maximo uma vez a cada 6 horas para poupar API[m
+[32m+[m[32m        if now - getattr(self, "_last_cleanup_at", 0) > 21600:[m
+[32m+[m[32m            self._last_cleanup_at = now[m
+[32m+[m[32m            print("[CRM_LIMPEZA_ATIVIDADES_INICIO] rodando em background")[m
+[32m+[m[32m            threading.Thread(target=self._cleanup_today_call_activities_once, daemon=True).start()[m
+[32m+[m
+         last_fetch_time = float(getattr(self, "_last_fetch_time", 0.0) or 0.0)[m
+[31m-        if now - last_fetch_time < 30:[m
+[31m-            wait_seconds = max(1, int(30 - (now - last_fetch_time)))[m
+[31m-            print("[ANTI_RATE_LIMIT_ATIVO]")[m
+[31m-            print(f"[MODO_ECONOMICO] aguardando antes de nova busca no CRM... segundos={wait_seconds}")[m
+[31m-            self._next_crm_fetch_at = time.time() + 10[m
+[31m-            return [][m
+[31m-        self._last_fetch_time = now[m
+[31m-        print("[BUSCA_CRM_INICIO]")[m
+[31m-        if not self._activity_generation_locked_today():[m
+[31m-            self._cleanup_today_call_activities_once()[m
+         fetch_limit = self._deal_fetch_limit()[m
+[31m-        deals = self.crm.get_deals(status="open", limit=fetch_limit, pipeline_id=PIPELINE_ID)[m
+[31m-        if int(getattr(self.crm, "last_http_status", 0) or 0) == 429:[m
+[31m-            print("[CRM_RATE_LIMIT_DETECTADO] ativando cooldown forte")[m
+[31m-            self._crm_cooldown_until = time.time() + float(self._crm_backoff or 60)[m
+[31m-            self._crm_backoff = min(int(self._crm_backoff or 60) * 2, 600)[m
+[31m-            self._next_crm_fetch_at = max(float(self._next_crm_fetch_at or 0.0), self._crm_cooldown_until)[m
+[31m-            print("[ANTI_RATE_LIMIT_ATIVO]")[m
+[31m-            print(f"[MODO_ECONOMICO] rate limit no CRM, aguardando {int(self._crm_backoff)}s...")[m
+[31m-            time.sleep(int(self._crm_backoff))[m
+[31m-            return [][m
+[32m+[m
+[32m+[m[32m        # BUSCA DIRETA PELA API PARA EVITAR 401 OU PROBLEMAS NO CLIENT[m
+[32m+[m[32m        api_token = getattr(self.crm, "token", "") or getattr(self.crm, "api_token", "")[m
+[32m+[m[32m        if not api_token:[m
+[32m+[m[32m            from config.config_loader import get_config_value[m
+[32m+[m[32m            api_token = get_config_value("pipedrive_api_token", "") or get_config_value("pipedrive_token", "")[m
+[32m+[m
+[32m+[m[32m        deals = [][m
+[32m+[m[32m        try:[m
+[32m+[m[32m            url = "https://api.pipedrive.com/v1/deals"[m
+[32m+[m[32m            params = {[m
+[32m+[m[32m                "api_token": api_token,[m
+[32m+[m[32m                "status": "open",[m
+[32m+[m[32m                "limit": fetch_limit,[m
+[32m+[m[32m                "pipeline_id": PIPELINE_ID,[m
+[32m+[m[32m                "sort": "id DESC"[m
+[32m+[m[32m            }[m
+[32m+[m[32m            resp = requests.get(url, params=params, timeout=20)[m
+[32m+[m[32m            self.crm.last_http_status = resp.status_code[m
+[32m+[m[32m            if resp.status_code == 200:[m
+[32m+[m[32m                data = resp.json()[m
+[32m+[m[32m                deals = data.get("data") or [][m
+[32m+[m[32m            elif resp.status_code == 401:[m
+[32m+[m[32m                print(f"[CRM_UNAUTHORIZED] verifique o token: {api_token[:5]}***")[m
+[32m+[m[32m                deals = [][m
+[32m+[m[32m            elif resp.status_code == 429:[m
+[32m+[m[32m                print("[CRM_RATE_LIMIT_DETECTADO] ativando cooldown forte")[m
+[32m+[m[32m                self._crm_cooldown_until = time.time() + float(self._crm_backoff or 60)[m
+[32m+[m[32m                self._crm_backoff = min(int(self._crm_backoff or 60) * 2, 600)[m
+[32m+[m[32m                self._next_crm_fetch_at = max(float(self._next_crm_fetch_at or 0.0), self._crm_cooldown_until)[m
+[32m+[m[32m                print(f"[MODO_ECONOMICO] rate limit no CRM, aguardando {int(self._crm_backoff)}s...")[m
+[32m+[m[32m                time.sleep(int(self._crm_backoff))[m
+[32m+[m[32m                return [][m
+[32m+[m[32m            else:[m
+[32m+[m[32m                print(f"[CRM_ERROR] status={resp.status_code} body={resp.text[:100]}")[m
+[32m+[m[32m             
