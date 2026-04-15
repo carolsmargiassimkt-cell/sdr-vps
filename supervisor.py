@@ -206,6 +206,45 @@ def is_within_business_hours(phone=None):
     return False
 
 
+def is_allowed_to_send_outbound(phone):
+    """
+    Define se um envio ATIVO (cadencia) pode ser feito agora.
+    Regra: Whitelist sempre, outros apenas no horario comercial.
+    """
+    normalized = re.sub(r"\D+", "", str(phone or ""))
+    is_whitelist = normalized in TEST_WHITELIST or any(v in TEST_WHITELIST for v in [normalized, "55"+normalized])
+    
+    if is_whitelist:
+        print(f"[WHITELIST_24H] outbound permitido: {phone}")
+        return True
+        
+    if is_within_business_hours(phone):
+        print(f"[OUTBOUND_PERMITIDO] horario comercial: {phone}")
+        return True
+        
+    print(f"[FORA_HORARIO_BLOCK_OUTBOUND] {phone}")
+    return False
+
+
+def should_reply(phone, is_inbound=True):
+    """
+    Define se o bot deve responder a uma mensagem recebida.
+    Regra: Inbound responde SEMPRE (24h). Whitelist responde SEMPRE.
+    """
+    normalized = re.sub(r"\D+", "", str(phone or ""))
+    is_whitelist = normalized in TEST_WHITELIST or any(v in TEST_WHITELIST for v in [normalized, "55"+normalized])
+    
+    if is_whitelist:
+        print(f"[WHITELIST_24H] resposta permitida: {phone}")
+        return True
+        
+    if is_inbound:
+        print(f"[INBOUND_PRIORIDADE] respondendo lead 24h: {phone}")
+        return True
+        
+    return is_within_business_hours(phone)
+
+
 def _default_send_progress():
     return {
         "date": _today_str(),
@@ -435,7 +474,7 @@ def maybe_start_n8n(timeout=90):
     if not ENABLE_EMAIL_CADENCE:
         print("[EMAIL_DESATIVADO]")
         return
-    if not dentro_do_horario():
+    if not is_within_business_hours():
         print("[N8N_FORA_HORARIO]")
         return
     command = resolve_n8n_start_command()
@@ -1035,36 +1074,21 @@ class SDRSupervisor:
             print(f"[INBOUND_INVALIDO] telefone={phone or 'vazio'} texto={1 if text else 0}")
             return {"ok": False, "confirmed": False}
         
+        normalized_phone = re.sub(r"\D+", "", str(phone or ""))
+        is_whitelist = normalized_phone in TEST_WHITELIST or any(v in TEST_WHITELIST for v in [normalized_phone, "55"+normalized_phone])
+        
         append_history(phone, "in", text, step=0)
         lead = self._build_inbound_lead(phone)
         deal_id = int((lead or {}).get("id") or 0)
-        
-        # CONTROLE DE HORARIO (WHITELIST 24H)
-        if not is_within_business_hours(phone):
-            print(f"[FORA_HORARIO] telefone={phone}. Verificando se ja enviamos aviso hoje.")
-            # Trava para enviar mensagem de fora do horario apenas uma vez por dia
-            lock_key = f"OFF_HOURS_{_today_str()}:{phone}"
-            already_notified = False
-            history = read_history()
-            items = history.get(phone, [])
-            for item in reversed(items):
-                if str(item.get("direction")).lower() == "out" and "Não estou disponível no momento" in str(item.get("message")):
-                    already_notified = True
-                    break
-            
-            if not already_notified:
-                msg_fora = "Oi, aqui é a Carol da Mand. Não estou disponível no momento, mas responderei assim que possível 😊"
-                self.whatsapp_service.send_message(phone, msg_fora, deal_id=deal_id)
-                append_history(phone, "out", msg_fora, step=0)
-                print(f"[AVISO_HORARIO_ENVIADO] telefone={phone}")
-                if deal_id > 0:
-                    try:
-                        self.crm.update_deal(deal_id, {self.crm.STATUS_BOT_FIELD: "aguardando_horario"})
-                    except: pass
-            else:
-                print(f"[AVISO_HORARIO_SKIP] Ja notificado hoje: {phone}")
-            
-            return {"ok": True, "confirmed": True, "reason": "out_of_hours"}
+
+        # REGRA CRITICA: SO RESPONDE SE EXISTIR NO CRM (EXCETO WHITELIST)
+        if deal_id <= 0 and not is_whitelist:
+            print(f"[INBOUND_IGNORE] Lead nao encontrado no CRM e nao eh whitelist: {phone}")
+            return {"ok": True, "confirmed": True, "reason": "not_in_crm"}
+
+        # CONTROLE DE RESPOSTA (INBOUND 24H)
+        if not should_reply(phone, is_inbound=True):
+            return {"ok": True, "confirmed": True, "reason": "blocked_by_logic"}
 
         inbound_messages = self._recent_inbound_messages(phone)
         has_outbound_history = self._phone_has_outbound_history(phone)
@@ -2807,6 +2831,11 @@ class SDRSupervisor:
                     if not num or num in self.blocklist:
                         print(f"[BLOQUEADO] deal={deal_id} telefone={num}")
                         continue
+
+                    # TRAVA DE OUTBOUND (HORARIO + WHITELIST)
+                    if not is_allowed_to_send_outbound(num):
+                        continue
+
                     if self._already_sent_today_for_lead(deal_id, num):
                         print(f"[DUPLICIDADE_BLOQUEADA_DIA] deal={deal_id} telefone={num}")
                         continue
