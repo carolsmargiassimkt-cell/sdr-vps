@@ -188,11 +188,19 @@ def _today_str():
     return datetime.now(BRASILIA_TZ).strftime("%Y-%m-%d") if BRASILIA_TZ else datetime.now().strftime("%Y-%m-%d")
 
 
-def dentro_do_horario(phone=None):
+def is_within_business_hours(phone=None):
+    """
+    Valida se o bot pode responder automaticamente.
+    Whitelist (testadores/admin) funciona 24h.
+    Horario padrao: Segunda a Sexta, 09:00 as 18:00 (Brasilia).
+    """
     normalized = re.sub(r"\D+", "", str(phone or ""))
-    if normalized in TEST_WHITELIST:
+    # Whitelist ignora restrição de horário
+    if normalized in TEST_WHITELIST or any(v in TEST_WHITELIST for v in [normalized, "55"+normalized]):
         return True
+    
     agora = datetime.now(BRASILIA_TZ) if BRASILIA_TZ else datetime.now()
+    # Segunda (0) a Sexta (4)
     if agora.weekday() <= 4:
         return 9 <= agora.hour < 18
     return False
@@ -1026,8 +1034,38 @@ class SDRSupervisor:
         if not phone or not text:
             print(f"[INBOUND_INVALIDO] telefone={phone or 'vazio'} texto={1 if text else 0}")
             return {"ok": False, "confirmed": False}
+        
         append_history(phone, "in", text, step=0)
         lead = self._build_inbound_lead(phone)
+        deal_id = int((lead or {}).get("id") or 0)
+        
+        # CONTROLE DE HORARIO (WHITELIST 24H)
+        if not is_within_business_hours(phone):
+            print(f"[FORA_HORARIO] telefone={phone}. Verificando se ja enviamos aviso hoje.")
+            # Trava para enviar mensagem de fora do horario apenas uma vez por dia
+            lock_key = f"OFF_HOURS_{_today_str()}:{phone}"
+            already_notified = False
+            history = read_history()
+            items = history.get(phone, [])
+            for item in reversed(items):
+                if str(item.get("direction")).lower() == "out" and "Não estou disponível no momento" in str(item.get("message")):
+                    already_notified = True
+                    break
+            
+            if not already_notified:
+                msg_fora = "Oi, aqui é a Carol da Mand. Não estou disponível no momento, mas responderei assim que possível 😊"
+                self.whatsapp_service.send_message(phone, msg_fora, deal_id=deal_id)
+                append_history(phone, "out", msg_fora, step=0)
+                print(f"[AVISO_HORARIO_ENVIADO] telefone={phone}")
+                if deal_id > 0:
+                    try:
+                        self.crm.update_deal(deal_id, {self.crm.STATUS_BOT_FIELD: "aguardando_horario"})
+                    except: pass
+            else:
+                print(f"[AVISO_HORARIO_SKIP] Ja notificado hoje: {phone}")
+            
+            return {"ok": True, "confirmed": True, "reason": "out_of_hours"}
+
         inbound_messages = self._recent_inbound_messages(phone)
         has_outbound_history = self._phone_has_outbound_history(phone)
         intent = self._classify_inbound_intent(text)
