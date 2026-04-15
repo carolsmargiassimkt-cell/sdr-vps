@@ -63,7 +63,7 @@ const WA_INSTANCE = String(process.env.WA_INSTANCE || (WA_PORT === 3001 ? 'WA2' 
 const TEST_WHITELIST = new Set(['5535920002020', '35920002020'])
 const HISTORY_FILE = path.join('logs', 'whatsapp_message_history.json')
 const BACKLOG_STATE_FILE = path.join('logs', `whatsapp_backlog_state.${WA_INSTANCE.toLowerCase()}.json`)
-const AUTH_INFO_DIR = './wa-session'
+const AUTH_INFO_DIR = path.join(process.cwd(), 'auth_info_baileys')
 const PROCESS_LOCK_FILE = path.join(process.cwd(), `baileys.${WA_INSTANCE.toLowerCase()}.lock`)
 let backlogSweepTimer = null
 let backlogStateFlushTimer = null
@@ -1190,9 +1190,16 @@ async function start() {
             logger: P({ level: 'silent' }),
             browser: ['Ubuntu', 'Chrome', '22.04'],
             syncFullHistory: true,
-            printQRInTerminal: true,
+            printQRInTerminal: false,
         })
         global.sock = sock
+
+        // Se ja existem credenciais, logar que estamos reutilizando a sessao
+        if (fs.existsSync(path.join(AUTH_INFO_DIR, 'creds.json'))) {
+            console.log('[WA_REUSED_SESSION]')
+        } else {
+            console.log('[WA_NEW_SESSION_PENDING]')
+        }
         connectTimeoutTimer = setTimeout(() => {
             if (!global.connected && !currentQR) {
                 console.log('[CONEXAO_TIMEOUT]')
