@@ -101,7 +101,7 @@ class WhatsAppService:
     def _save_json(self, path, payload):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2 if isinstance(payload, list) else None)
+            json.dump(payload, f, ensure_ascii=False, indent=2 if isinstance(payload, (list, dict)) else None)
 
     def _load_channel_map(self):
         payload = self._load_json(self.channel_map_file, {"phones": {}, "deals": {}})
@@ -508,6 +508,37 @@ class WhatsAppService:
             seen.add(normalized)
             normalized_all.append(normalized)
         data["ALL"] = normalized_all
+
+        normalized_today_by_deal = {}
+        for key, values in list(data.items()):
+            if not str(key).startswith("DEAL_"):
+                continue
+            if key in {"DEAL_ALL", "DEAL_PENDING"}:
+                continue
+            if not isinstance(values, list):
+                continue
+            unique_ids = []
+            seen_ids = set()
+            for raw in values:
+                token = str(raw or "").strip()
+                if not token or token in seen_ids:
+                    continue
+                seen_ids.add(token)
+                unique_ids.append(token)
+            data[key] = unique_ids
+            for deal_id in unique_ids:
+                normalized_today_by_deal[str(deal_id)] = True
+
+        if isinstance(data.get("DEAL_PENDING"), dict):
+            cleaned_pending = {}
+            for raw_deal_id, stamp in list(data.get("DEAL_PENDING", {}).items()):
+                token = str(raw_deal_id or "").strip()
+                if token:
+                    cleaned_pending[token] = stamp
+            data["DEAL_PENDING"] = cleaned_pending
+        else:
+            data["DEAL_PENDING"] = {}
+
         return data
 
     def _load_invalid_numbers_unlocked(self):

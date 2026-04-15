@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import os
 import random
 import re
 from typing import Any, Dict, List
 
 import requests
+
+try:
+    from config.config_loader import get_config_value
+except Exception:
+    def get_config_value(_key, default=""):
+        return default
 
 
 class WhatsAppPitchEngine:
@@ -197,7 +204,6 @@ class WhatsAppPitchEngine:
         re.IGNORECASE | re.DOTALL,
     )
     OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-    OPENROUTER_TOKEN = "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"
 
     def __init__(self, config: Any, logger=None) -> None:
         self.config = config
@@ -205,6 +211,11 @@ class WhatsAppPitchEngine:
         self._pitch_text = str(getattr(config, "pitch", "") or "")
         self._days = self._parse_day_messages(self._pitch_text)
         self._closings = self._parse_closing_messages(self._pitch_text)
+        self.openrouter_token = str(
+            os.getenv("OPENROUTER_API_KEY")
+            or get_config_value("openrouter_api_key", "")
+            or ""
+        ).strip()
 
     @staticmethod
     def _clean_block(text: str) -> str:
@@ -401,6 +412,10 @@ class WhatsAppPitchEngine:
             cleaned = cleaned.replace("...", ".")
         return cleaned
 
+    def get_closing_message(self, key: str) -> str:
+        normalized = str(key or "").strip().lower()
+        return str(self.DEFAULT_CLOSING_OVERRIDES.get(normalized) or self._closings.get(normalized, "")).strip()
+
     def get_day_message(self, day: int, *, lead: Dict[str, Any] | None = None) -> str:
         day = int(day or 0)
         if day == 1:
@@ -412,17 +427,6 @@ class WhatsAppPitchEngine:
         base = self._render_placeholders(base, lead=lead)
         rendered = self._render_spintax(base).strip()
         return self._quality_check_message(rendered, first_touch=False)
-
-    def get_closing_message(self, key: str) -> str:
-        normalized = str(key or "").strip().lower()
-        return str(self.DEFAULT_CLOSING_OVERRIDES.get(normalized) or self._closings.get(normalized, "")).strip()
-
-    def get_day_message(self, day: int, *, lead: Dict[str, Any] | None = None) -> str:
-        day = int(day or 0)
-        base = str(self.DEFAULT_DAY_OVERRIDES.get(day) or self._days.get(day, "")).strip()
-        base = self._render_placeholders(base, lead=lead)
-        rendered = self._render_spintax(base).strip()
-        return self._quality_check_message(rendered, first_touch=(day == 1))
 
     def get_cadence_message(self, cadence_step: int, *, lead: Dict[str, Any] | None = None) -> str:
         step = max(1, min(5, int(cadence_step or 1)))
@@ -503,43 +507,56 @@ class WhatsAppPitchEngine:
         return softened.strip()
 
     def _openrouter_reply(self, lead: Dict[str, Any], inbound_messages: List[str]) -> str:
-        latest = str((inbound_messages or [""])[-1] or "").strip()
-        if not latest:
+        if not inbound_messages or not self.openrouter_token:
             return ""
+        
+        # Pega as ultimas 5 mensagens para dar contexto real e evitar "Alzheimer"
+        recent_context = inbound_messages[-5:]
         nome = str((lead or {}).get("nome") or "").strip()
-        context = latest
-        if nome:
-            context = f"Lead: {nome}\nMensagem: {latest}"
+        empresa = self._resolve_short_company_name(lead)
+        
+        messages = [
+            {
+                "role": "system",
+                "content": f"Voce e a Carol, SDR da Mand Digital. Estamos falando com {nome} da empresa {empresa}. "
+                           "Seu objetivo e ser consultiva, direta e natural (nivel humano). "
+                           "Use o pitch da Copa: campanhas gamificadas geram dados reais e vendas mensuraveis. "
+                           "Nao seja robótica, nao repita o que ja foi dito. Responda em no maximo 3 linhas. "
+                           "Conduza para um agendamento ou tire duvidas de forma breve."
+            }
+        ]
+        
+        # Adiciona historico recente
+        for msg in recent_context:
+            messages.append({"role": "user", "content": msg})
+
         payload = {
             "model": "openrouter/auto",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "Você é um SDR consultivo seguindo o pitch da Copa. Seja direto, natural e leve. Responda em no máximo 3 linhas. Não mencione IA. Conduza a conversa para o próximo passo comercial.",
-                },
-                {
-                    "role": "user",
-                    "content": context,
-                },
-            ],
+            "messages": messages,
+            "temperature": 0.7, # Um pouco de criatividade para nao ser robotico
+            "max_tokens": 150
         }
         headers = {
-            "Authorization": f"Bearer {self.OPENROUTER_TOKEN}",
+            "Authorization": f"Bearer {self.openrouter_token}",
             "Content-Type": "application/json",
+            "HTTP-Referer": "https://mand.digital", # Opcional para OpenRouter
+            "X-Title": "SDR Bot Carol"
         }
         try:
-            response = requests.post(self.OPENROUTER_URL, headers=headers, json=payload, timeout=8)
+            response = requests.post(self.OPENROUTER_URL, headers=headers, json=payload, timeout=12)
             if response.status_code != 200:
+                print(f"[OPENROUTER_ERROR] status={response.status_code} body={response.text[:100]}")
                 return ""
             body = response.json()
             choices = body.get("choices") or []
             if not choices:
                 return ""
             content = (((choices[0] or {}).get("message") or {}).get("content") or "").strip()
-            content = self._clean_block(content)
-            content = "\n".join(content.splitlines()[:3]).strip()
+            # Limpeza basica de ruidos da IA
+            content = content.replace("Carol:", "").replace("Carol SDR:", "").strip()
             return content
-        except Exception:
+        except Exception as exc:
+            print(f"[OPENROUTER_EXCEPTION] erro={exc}")
             return ""
 
     def build_reply(self, lead: Dict[str, Any], inbound_messages: List[str], *, current_step: int = 1) -> str:

@@ -26,6 +26,16 @@ if ROOT_DIR not in sys.path:
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
+try:
+    from logic.whatsapp_pitch_engine import WhatsAppPitchEngine
+except ImportError:
+    # Fallback para ambientes onde a estrutura de pastas difere
+    sys.path.append(os.path.join(ROOT_DIR, 'logic'))
+    try:
+        from whatsapp_pitch_engine import WhatsAppPitchEngine
+    except ImportError:
+        WhatsAppPitchEngine = None
+
 def _pip_install(*packages):
     cmd = [sys.executable, "-m", "pip", "install"]
     if os.name != "nt":
@@ -84,10 +94,13 @@ BOT_PRIORITY = True
 SUPER_MINAS_REENTRY = True
 ENRICHMENT_BATCH_SIZE = 20
 ENRICHMENT_AFTER_MESSAGES = 5
-SUPER_MINAS_LABEL_IDS = {"175", "162", "176", "177"}
 SUPER_MINAS_LABEL_NAMES = {"SUPER_MINAS", "SUPER MINAS", "SUPERMINAS", "SUPER_MINAS_OPORTUNIDADE"}
-OUTBOUND_BLOCKED_LABEL_IDS = {"173", "193"}
-OUTBOUND_BLOCKED_LABEL_NAMES = {"INDICACAO_CAROL_EVENTO", "INDICAÇÃO_CAROL_EVENTO", "LEAD_TRÁFEGO", "LEAD_TRAFEGO"}
+OUTBOUND_BLOCKED_LABEL_IDS = {"173", "193", "166"}
+OUTBOUND_BLOCKED_LABEL_NAMES = {
+    "INDICACAO_CAROL_EVENTO", "INDICAÇÃO_CAROL_EVENTO", "LEAD_TRÁFEGO", "LEAD_TRAFEGO",
+    "CONVERSANDO", "CONVERSATION", "INDICACAO", "INDICAÇÃO", "CAROL_EVENTO", "CAROL EVENTO",
+    "STOP", "SEM_INTERESSE", "SEM INTERESSE", "BLOQUEADO", "BLOCKED"
+}
 BOOT_CHILDREN = []
 CRM_IDLE_POLL_SEC = 60
 CRM_RATE_LIMIT_COOLDOWN_SEC = 120
@@ -561,6 +574,60 @@ class SDRSupervisor:
         self._crm_backoff = 60
         self._last_cleanup_at = 0.0
 
+    @staticmethod
+    def _normalize_label_token(value):
+        token = unicodedata.normalize("NFKD", str(value or ""))
+        token = "".join(ch for ch in token if not unicodedata.combining(ch))
+        token = token.upper().strip()
+        token = re.sub(r"\s+", " ", token)
+        return token
+
+    def _daily_send_key(self, deal_id, phone):
+        normalized_phone = self.whatsapp.normalize_phone(phone)
+        normalized_deal = int(deal_id or 0)
+        if normalized_deal <= 0 or not normalized_phone:
+            return ""
+        return f"{_today_str()}:{normalized_deal}:{normalized_phone}"
+
+    def _already_sent_today_for_lead(self, deal_id, phone):
+        key = self._daily_send_key(deal_id, phone)
+        if not key:
+            return False
+        fd = None
+        try:
+            fd = self.whatsapp._acquire_lock()
+            data = self.whatsapp._load_sent_data_unlocked()
+            today_key = f"DEAL_PHONE_{_today_str()}"
+            keys = {str(item).strip() for item in list(data.get(today_key) or []) if str(item).strip()}
+            return key in keys
+        except Exception:
+            return False
+        finally:
+            if fd is not None:
+                self.whatsapp._release_lock(fd)
+
+    def _lock_sent_today_for_lead(self, deal_id, phone):
+        key = self._daily_send_key(deal_id, phone)
+        if not key:
+            return False
+        fd = None
+        try:
+            fd = self.whatsapp._acquire_lock()
+            data = self.whatsapp._load_sent_data_unlocked()
+            today_key = f"DEAL_PHONE_{_today_str()}"
+            keys = [str(item).strip() for item in list(data.get(today_key) or []) if str(item).strip()]
+            if key in set(keys):
+                return False
+            keys.append(key)
+            data[today_key] = keys
+            self.whatsapp._save_json(self.whatsapp.sent_file, data)
+            return True
+        except Exception:
+            return False
+        finally:
+            if fd is not None:
+                self.whatsapp._release_lock(fd)
+
     def _recent_inbound_messages(self, phone, limit=10):
         normalized = self.whatsapp.normalize_phone(phone)
         if not normalized:
@@ -632,64 +699,325 @@ class SDRSupervisor:
     def _classify_inbound_intent(self, text):
         msg = self._normalize_inbound_intent_text(text)
         if not msg:
-            return "neutro"
-        if "nao tenho interesse" in msg or "n??o tenho interesse" in msg or "sem interesse" in msg:
+            return "duvida"
+
+        hostil_tokens = (
+            "vai se f",
+            "tomar no",
+            "caralho",
+            "porra",
+            "fdp",
+            "filho da",
+            "otario",
+            "ot??rio",
+            "idiota",
+            "vsf",
+        )
+        if any(token in msg for token in hostil_tokens):
+            return "hostil"
+
+        no_interest_tokens = (
+            "nao tenho interesse",
+            "n??o tenho interesse",
+            "sem interesse",
+            "nao quero",
+            "n??o quero",
+            "nao me chama",
+            "n??o me chama",
+            "pare",
+            "parar",
+            "remove meu numero",
+            "remova meu numero",
+            "nao insist",
+            "n??o insist",
+        )
+        if any(token in msg for token in no_interest_tokens):
             return "sem_interesse"
-        if (
-            "nao sou o responsavel" in msg
-            or "n??o sou o respons??vel" in msg
-            or "falar com" in msg
-            or "numero errado" in msg
-            or "n??mero errado" in msg
-            or "nao e aqui" in msg
-            or "n??o e aqui" in msg
-        ):
-            return "indicacao_contato"
+
+        referral_tokens = (
+            "falar com",
+            "procura",
+            "procure",
+            "responsavel e",
+            "respons??vel ??",
+            "contato de",
+            "numero de",
+            "whatsapp de",
+            "nao sou eu",
+            "n??o sou eu",
+            "nao sou o responsavel",
+            "n??o sou o respons??vel",
+            "numero errado",
+            "n??mero errado",
+            "nao e aqui",
+            "n??o ?? aqui",
+        )
+        if any(token in msg for token in referral_tokens):
+            return "indicacao"
+
         scheduling_tokens = (
+            "vamos agendar",
+            "podemos agendar",
+            "agendar",
+            "agenda",
+            "marcar",
+            "reuniao",
+            "reuni??o",
+            "call",
             "amanha",
             "amanh??",
             "hoje a tarde",
             "hoje de tarde",
-            "pode ser",
             "me chama",
-            "me ligue",
-            "podemos falar",
-            "vamos agendar",
-            "agendar",
-            "agenda",
-            "marcar",
+            "pode ser",
+            "disponivel",
+            "dispon??vel",
         )
         if any(token in msg for token in scheduling_tokens):
-            return "agendamento"
+            return "interesse"
+
         positive_tokens = (
             "sim",
-            "sou eu",
-            "pode falar",
-            "claro",
             "tenho interesse",
+            "interesse",
             "quero entender",
             "me explica",
             "pode me explicar",
+            "sou eu",
+            "pode falar",
+            "claro",
+            "manda",
+            "envia",
+            "pode enviar",
         )
         if any(token in msg for token in positive_tokens):
-            return "positivo"
-        negative_tokens = (
-            "nao",
-            "n??o",
-            "sem interesse",
-            "nao quero",
-            "n??o quero",
-            "pare",
-        )
-        if any(token in msg for token in negative_tokens):
-            return "negativo"
-        return "neutro"
+            return "interesse"
+
+        return "duvida"
 
     def _build_opening_message(self, lead):
         opening = random.choice(self.pitch.WHATSAPP_OPENINGS)
         opening = self.pitch._render_placeholders(opening, lead=lead)
         opening = self.pitch._render_spintax(opening)
         return self.pitch._clean_block(opening)
+
+    def _add_to_blocklist(self, phone, reason="manual"):
+        normalized = self.whatsapp.normalize_phone(phone)
+        if not normalized:
+            return False
+        already = normalized in self.blocklist
+        self.blocklist.add(normalized)
+        if already:
+            return True
+        try:
+            os.makedirs(LOGS_DIR, exist_ok=True)
+            payload = []
+            if os.path.exists(BLOCKLIST_FILE):
+                with open(BLOCKLIST_FILE, "r", encoding="utf-8-sig") as fh:
+                    loaded = json.load(fh)
+                    if isinstance(loaded, list):
+                        payload = loaded
+            if not any(self.whatsapp.normalize_phone(item.get("telefone")) == normalized for item in payload if isinstance(item, dict)):
+                payload.append(
+                    {
+                        "telefone": normalized,
+                        "reason": str(reason or "manual").strip() or "manual",
+                        "tag": "blocked_automatic",
+                        "created_at": datetime.now().isoformat(),
+                    }
+                )
+                with open(BLOCKLIST_FILE, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, ensure_ascii=False, indent=2)
+            print(f"[BLOCKLIST_ADICIONADO] telefone={normalized} motivo={reason}")
+        except Exception as exc:
+            print(f"[ERRO_BLOCKLIST] telefone={normalized} erro={exc}")
+        return True
+
+    @staticmethod
+    def _extract_referral_payload(text):
+        raw_text = str(text or "")
+        if not raw_text.strip():
+            return {}
+        email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", raw_text)
+        phone_candidates = re.findall(r"(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?(?:9?\d{4})[-\s]?\d{4}", raw_text)
+        normalized_phones = []
+        for candidate in phone_candidates:
+            digits = re.sub(r"\D+", "", str(candidate or ""))
+            if digits.startswith("55") and len(digits) > 11:
+                digits = digits[2:]
+            if len(digits) in {10, 11} and digits not in normalized_phones:
+                normalized_phones.append(digits)
+
+        name_match = re.search(
+            r"(?:falar com|procura(?:r)?|contato(?: e| eh| e o)?|responsavel(?: e| eh)?)[:\\s-]*([A-Za-z]{2,}(?:\\s+[A-Za-z]{2,}){0,2})",
+            raw_text,
+            flags=re.IGNORECASE,
+        )
+
+        return {
+            "name": str(name_match.group(1) if name_match else "").strip(),
+            "phone": normalized_phones[0] if normalized_phones else "",
+            "email": str(email_match.group(0) if email_match else "").strip().lower(),
+        }
+
+    def _register_referral_contact(self, lead, text):
+        lead = dict(lead or {})
+        payload = self._extract_referral_payload(text)
+        referral_phone = self.whatsapp.normalize_phone(payload.get("phone"))
+        referral_email = str(payload.get("email") or "").strip().lower()
+        referral_name = str(payload.get("name") or "").strip()
+
+        if not referral_phone and not referral_email:
+            return False
+
+        deal_id = int(lead.get("id") or 0)
+        org_id = 0
+        if deal_id > 0:
+            try:
+                deal = self.crm.get_deal_details(deal_id) or {}
+                org_id = int(self._extract_entity_id((deal or {}).get("org_id")) or 0)
+            except Exception:
+                org_id = 0
+
+        person = {}
+        try:
+            person = self.crm.find_person(org_id=org_id, phone=referral_phone, email=referral_email) or {}
+        except Exception:
+            person = {}
+
+        person_id = int(self._extract_entity_id((person or {}).get("id")) or 0)
+        created = False
+        if person_id <= 0:
+            person_payload = {
+                "name": referral_name or "Contato indicado",
+                "phone": [f"+55{referral_phone}"] if referral_phone else [],
+                "email": [referral_email] if referral_email else [],
+            }
+            if org_id > 0:
+                person_payload["org_id"] = org_id
+            try:
+                person = self.crm.create_person(person_payload) or {}
+                person_id = int(self._extract_entity_id((person or {}).get("id")) or 0)
+                created = person_id > 0
+            except Exception:
+                person_id = 0
+
+        if deal_id > 0 and person_id > 0:
+            try:
+                self.crm.add_deal_participant(deal_id, person_id)
+            except Exception:
+                pass
+
+        if deal_id > 0:
+            note_lines = ["Contato indicado pelo lead."]
+            if referral_name:
+                note_lines.append(f"Nome: {referral_name}")
+            if referral_phone:
+                note_lines.append(f"Telefone: {referral_phone}")
+            if referral_email:
+                note_lines.append(f"Email: {referral_email}")
+            if created:
+                note_lines.append("Novo contato criado no CRM sem duplicidade.")
+            self._append_deal_note(deal_id, "\n".join(note_lines))
+
+        if person_id > 0:
+            print(
+                f"[CRM_INDICACAO_OK] deal={deal_id} person={person_id} "
+                f"created={1 if created else 0}"
+            )
+            return True
+        return False
+
+    def _upsert_relevant_meeting_activity(self, lead, reason="interesse"):
+        lead = dict(lead or {})
+        deal_id = int(lead.get("id") or 0)
+        if deal_id <= 0:
+            return False
+        subject = f"Reuniao SDR - DEAL {deal_id}"
+        if self.crm.has_open_activity_today(deal_id=deal_id, activity_type="meeting", subject=subject):
+            return False
+        payload = {
+            "subject": subject,
+            "type": "meeting",
+            "deal_id": deal_id,
+            "person_id": int(lead.get("person_id") or 0),
+            "due_date": self._next_business_activity_date(),
+            "due_time": "10:00",
+            "note": f"Lead demonstrou {str(reason or 'interesse')} no WhatsApp. Priorizar agendamento.",
+            "done": 0,
+        }
+        ok = bool(self.crm.create_activity(**payload))
+        if ok:
+            print(f"[CRM_REUNIAO_CRIADA] deal={deal_id}")
+        return ok
+
+    def _classify_inbound_intent_llm(self, text):
+        message = str(text or "").strip()
+        if not message:
+            return ""
+        model_name = str(os.getenv("GEMINI_MODEL") or "gemini-1.5-flash").strip() or "gemini-1.5-flash"
+        try:
+            from config.config_loader import get_config_value as _get_config_value
+        except Exception:
+            def _get_config_value(_key, default=""):
+                return default
+
+        keys = []
+        for candidate in (
+            os.getenv("GEMINI_API_KEY_PRIMARY", ""),
+            os.getenv("GEMINI_API_KEY_FALLBACK", ""),
+            os.getenv("GEMINI_API_KEY", ""),
+            _get_config_value("gemini_api_key_primary", ""),
+            _get_config_value("gemini_api_key_fallback", ""),
+            _get_config_value("gemini_api_key", ""),
+        ):
+            token = str(candidate or "").strip()
+            if token and token not in keys:
+                keys.append(token)
+        if not keys:
+            return ""
+
+        prompt = (
+            "Classifique a mensagem do lead em exatamente um rotulo: "
+            "interesse, duvida, sem_interesse, indicacao, hostil. "
+            "Responda somente com o rotulo, sem texto extra.\n\n"
+            f"Mensagem: {message}"
+        )
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0, "maxOutputTokens": 12},
+        }
+
+        for api_key in keys:
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+                response = requests.post(url, params={"key": api_key}, json=payload, timeout=8)
+                if int(response.status_code or 0) >= 400:
+                    continue
+                body = response.json() if response.content else {}
+                text_out = ""
+                candidates = list((body or {}).get("candidates") or [])
+                if candidates:
+                    parts = (((candidates[0] or {}).get("content") or {}).get("parts") or [])
+                    for part in parts:
+                        maybe_text = str((part or {}).get("text") or "").strip()
+                        if maybe_text:
+                            text_out = maybe_text
+                            break
+                label = self._normalize_inbound_intent_text(text_out)
+                if "sem_interesse" in label or "sem interesse" in label:
+                    return "sem_interesse"
+                if "hostil" in label:
+                    return "hostil"
+                if "indicacao" in label or "indicacao" in label or "indica" in label:
+                    return "indicacao"
+                if "interesse" in label:
+                    return "interesse"
+                if "duvida" in label or "d?vida" in label:
+                    return "duvida"
+            except Exception:
+                continue
+        return ""
 
     def process_inbound_message(self, msg):
         payload = dict(msg or {})
@@ -703,23 +1031,38 @@ class SDRSupervisor:
         inbound_messages = self._recent_inbound_messages(phone)
         has_outbound_history = self._phone_has_outbound_history(phone)
         intent = self._classify_inbound_intent(text)
+        if intent == "duvida":
+            llm_intent = self._classify_inbound_intent_llm(text)
+            if llm_intent:
+                intent = llm_intent
         print(f"[INTENT] telefone={phone} intent={intent}")
+
         reply = ""
+        normalized_text = self._normalize_inbound_intent_text(text)
         try:
             if not has_outbound_history:
                 reply = self._build_opening_message(lead)
                 if phone in TEST_WHITELIST:
                     print(f"[TESTE_LIBERADO] telefone={phone} contexto=inbound_opening")
-            elif intent == "positivo":
-                reply = str(self.pitch.get_day_message(2, lead=lead) or "").strip()
-            elif intent == "agendamento":
-                reply = str(self.pitch.get_day_message(10, lead=lead) or "").strip()
+            elif intent == "interesse":
+                if any(token in normalized_text for token in ("agendar", "agenda", "reuniao", "reuni?o", "call", "horario", "hor?rio")):
+                    reply = str(self.pitch.get_day_message(10, lead=lead) or "").strip()
+                else:
+                    reply = str(self.pitch.get_day_message(8, lead=lead) or "").strip()
+                self._upsert_relevant_meeting_activity(lead, reason="interesse")
+                try:
+                    if int((lead or {}).get("id") or 0) > 0:
+                        self.crm.add_tag("deal", int((lead or {}).get("id") or 0), "respondido")
+                except Exception:
+                    pass
             elif intent == "sem_interesse":
                 reply = str(self.pitch.get_closing_message("no_interest") or "").strip()
-                self.blocklist.add(phone)
-            elif intent == "negativo":
+                self._add_to_blocklist(phone, reason="sem_interesse")
+            elif intent == "hostil":
                 reply = str(self.pitch.get_closing_message("no_interest") or "").strip()
-            elif intent == "indicacao_contato":
+                self._add_to_blocklist(phone, reason="hostil")
+            elif intent == "indicacao":
+                self._register_referral_contact(lead, text)
                 reply = str(self.pitch.get_closing_message("referral") or "").strip()
             else:
                 reply = str(
@@ -732,8 +1075,10 @@ class SDRSupervisor:
                 ).strip()
         except Exception as exc:
             print(f"[RESPOSTA_FALLBACK] telefone={phone} erro={exc}")
+
         if not reply:
-            reply = "Mensagem recebida 👍"
+            reply = "Mensagem recebida."
+
         print(f"[RESPOSTA_GERADA] {phone}")
         try:
             sent = bool(
@@ -751,11 +1096,18 @@ class SDRSupervisor:
         except Exception as exc:
             print(f"[ERRO_ENVIO] telefone={phone} erro={exc}")
             sent = False
+
         if not sent:
             return {"ok": False, "confirmed": False}
+
         append_history(phone, "out", reply, step=max(1, int((lead or {}).get("cadence_step") or 1)))
         if int((lead or {}).get("id") or 0) > 0:
             self._mark_channel_sent("whatsapp", lead, reply)
+            if intent in {"sem_interesse", "hostil"}:
+                try:
+                    self.crm.update_deal(int((lead or {}).get("id") or 0), {self.crm.STATUS_BOT_FIELD: "bloqueado"})
+                except Exception:
+                    pass
         return {"ok": True, "confirmed": True}
 
     def _startup_window_active(self):
@@ -853,21 +1205,23 @@ class SDRSupervisor:
         return results
 
     def _is_super_minas(self, deal):
-        tokens = {token.upper() for token in self._deal_tokens(deal)}
-        if tokens & SUPER_MINAS_LABEL_NAMES:
+        tokens = {self._normalize_label_token(token) for token in self._deal_tokens(deal)}
+        normalized_super = {self._normalize_label_token(item) for item in SUPER_MINAS_LABEL_NAMES}
+        if tokens & normalized_super:
             return True
         if self._raw_label_ids(deal) & SUPER_MINAS_LABEL_IDS:
             return True
         return False
 
     def _is_outbound_blocked_label(self, deal):
-        tokens = {token.upper() for token in self._deal_tokens(deal)}
-        if tokens & OUTBOUND_BLOCKED_LABEL_NAMES:
+        tokens = {self._normalize_label_token(token) for token in self._deal_tokens(deal)}
+        normalized_blocked = {self._normalize_label_token(item) for item in OUTBOUND_BLOCKED_LABEL_NAMES}
+        if tokens & normalized_blocked:
             return True
         if self._raw_label_ids(deal) & OUTBOUND_BLOCKED_LABEL_IDS:
             return True
-        status_bot = str((deal or {}).get(self.crm.STATUS_BOT_FIELD) or "").strip().lower()
-        if status_bot in {"conversando", "linkedin"}:
+        status_bot = self._normalize_label_token((deal or {}).get(self.crm.STATUS_BOT_FIELD) or "")
+        if status_bot in normalized_blocked or status_bot in {"CONVERSANDO", "LINKEDIN", "BLOCKED", "BLOQUEADO"}:
             return True
         return False
 
@@ -2107,7 +2461,6 @@ class SDRSupervisor:
                     "tentativas": 0,
                 }
                 leads.append(lead_payload)
-                self._create_call_activity_for_lead(lead_payload)
                 print(
                     f"[DEAL_ENFILEIRADO] deal={int(deal.get('id') or 0)} telefones={len(deal_phones)} "
                     f"prevalidado_ok={deal_validation_valid} prevalidado_invalid={deal_validation_invalid}"
@@ -2220,10 +2573,13 @@ class SDRSupervisor:
         lead_phones = self._lead_phones(lead)
         num = next((phone for phone in lead_phones if phone not in self.blocklist), lead_phones[0] if lead_phones else "")
         cadence_step = self._cadence_step(lead)
+        deal_id = int((lead or {}).get("id") or 0)
         if not num:
             return False, "invalid"
         if self._lead_has_inbound_history(lead):
             return False, "ja_respondeu"
+        if deal_id > 0 and any(self._already_sent_today_for_lead(deal_id, phone) for phone in lead_phones):
+            return False, "ja_enviado_hoje"
         if bool(lead.get("super_minas")) and cadence_step == 1 and (
             self._lead_has_outbound_history(lead) or any(self._phone_has_send_record(phone) for phone in lead_phones)
         ):
@@ -2413,6 +2769,9 @@ class SDRSupervisor:
                     if not num or num in self.blocklist:
                         print(f"[BLOQUEADO] deal={deal_id} telefone={num}")
                         continue
+                    if self._already_sent_today_for_lead(deal_id, num):
+                        print(f"[DUPLICIDADE_BLOQUEADA_DIA] deal={deal_id} telefone={num}")
+                        continue
                     reserved = (
                         self.whatsapp.reserve_followup_send(num)
                         if cadence_step > 1
@@ -2428,6 +2787,11 @@ class SDRSupervisor:
                     )
                     print(f"[PROCESSANDO] origem={prioridade} deal={deal_id} telefone={num} cadencia={cadence_step}")
                     print(f"[WHATSAPP_ENVIO] deal={deal_id} telefone={num} cadencia={cadence_step}")
+                    daily_locked = self._lock_sent_today_for_lead(deal_id, num)
+                    if not daily_locked:
+                        self.whatsapp.release_send_slot(num)
+                        print(f"[DUPLICIDADE_BLOQUEADA_DIA] deal={deal_id} telefone={num}")
+                        continue
                     ok = self.whatsapp.send_message(num, msg, cadence_step=cadence_step, deal_id=deal_id)
                     if ok:
                         confirmed = self.whatsapp.wait_for_outbound_sync(num, msg, timeout_seconds=8, poll_seconds=0.5)
