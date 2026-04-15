@@ -188,61 +188,45 @@ def _today_str():
     return datetime.now(BRASILIA_TZ).strftime("%Y-%m-%d") if BRASILIA_TZ else datetime.now().strftime("%Y-%m-%d")
 
 
-def is_within_business_hours(phone=None):
-    """
-    Valida se o bot pode responder automaticamente.
-    Whitelist (testadores/admin) funciona 24h.
-    Horario padrao: Segunda a Sexta, 09:00 as 18:00 (Brasilia).
-    """
+def is_whitelisted(phone):
+    """Verifica se o numero esta na whitelist de teste 24h."""
     normalized = re.sub(r"\D+", "", str(phone or ""))
-    # Whitelist ignora restrição de horário
-    if normalized in TEST_WHITELIST or any(v in TEST_WHITELIST for v in [normalized, "55"+normalized]):
-        return True
-    
+    return normalized in TEST_WHITELIST or any(v in TEST_WHITELIST for v in [normalized, "55"+normalized])
+
+
+def is_business_hours():
+    """Valida o horario comercial padrao (Seg-Sex, 09:00 - 18:00)."""
     agora = datetime.now(BRASILIA_TZ) if BRASILIA_TZ else datetime.now()
-    # Segunda (0) a Sexta (4)
     if agora.weekday() <= 4:
         return 9 <= agora.hour < 18
     return False
 
 
-def is_allowed_to_send_outbound(phone):
-    """
-    Define se um envio ATIVO (cadencia) pode ser feito agora.
-    Regra: Whitelist sempre, outros apenas no horario comercial.
-    """
-    normalized = re.sub(r"\D+", "", str(phone or ""))
-    is_whitelist = normalized in TEST_WHITELIST or any(v in TEST_WHITELIST for v in [normalized, "55"+normalized])
-    
-    if is_whitelist:
-        print(f"[WHITELIST_24H] outbound permitido: {phone}")
+def can_send_outbound(phone):
+    """Define se um envio ativo (cadencia) e permitido agora."""
+    if is_whitelisted(phone):
+        print(f"[WHITELIST_BYPASS] Outbound liberado 24h para {phone}")
         return True
-        
-    if is_within_business_hours(phone):
-        print(f"[OUTBOUND_PERMITIDO] horario comercial: {phone}")
+    if is_business_hours():
         return True
-        
-    print(f"[FORA_HORARIO_BLOCK_OUTBOUND] {phone}")
+    print(f"[OUTBOUND_BLOCKED_HOUR] Tentativa de envio fora do horario para {phone}")
     return False
 
 
 def should_reply(phone, is_inbound=True):
-    """
-    Define se o bot deve responder a uma mensagem recebida.
-    Regra: Inbound responde SEMPRE (24h). Whitelist responde SEMPRE.
-    """
-    normalized = re.sub(r"\D+", "", str(phone or ""))
-    is_whitelist = normalized in TEST_WHITELIST or any(v in TEST_WHITELIST for v in [normalized, "55"+normalized])
-    
-    if is_whitelist:
-        print(f"[WHITELIST_24H] resposta permitida: {phone}")
+    """Define se o bot deve responder a uma interacao."""
+    if is_whitelisted(phone):
+        print(f"[WHITELIST_BYPASS] Resposta liberada 24h para {phone}")
         return True
-        
     if is_inbound:
-        print(f"[INBOUND_PRIORIDADE] respondendo lead 24h: {phone}")
+        print(f"[INBOUND_OK_24H] Respondendo lead 24h: {phone}")
         return True
-        
-    return is_within_business_hours(phone)
+    return is_business_hours()
+
+
+def is_within_business_hours(phone=None):
+    """Mantida para compatibilidade interna, usa as novas funcoes."""
+    return should_reply(phone, is_inbound=True)
 
 
 def _default_send_progress():
