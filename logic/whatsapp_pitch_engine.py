@@ -27,6 +27,13 @@ class WhatsAppPitchEngine:
         "sac",
         "supermercado",
         "vendas",
+        "rh",
+        "recursos humanos",
+        "recepcao",
+        "portaria",
+        "suporte",
+        "ti",
+        "tecnologia",
     }
     WHATSAPP_OPENINGS = [
         "{Oi|Olá}, tudo bem? Aqui é a Carol da Mand Digital. {Nesse contato|Por aqui} consigo falar com {a pessoa responsável|quem cuida} por marketing e vendas {aí na __EMPRESA__|na empresa}?",
@@ -264,11 +271,23 @@ class WhatsAppPitchEngine:
         cleaned = str(value or "").strip()
         if not cleaned:
             return "a empresa"
-        cleaned = re.sub(r"\b(via|loja|shopping|sorteio|promo[cç][aã]o)\b.*$", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\b(ltda|me|eireli|s\/a|sa|epp|mei)\b\.?", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\b(comercio|comÃ©rcio|servicos|serviÃ§os|industria|indÃºstria|holding|grupo)\b", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -|,:;")
-        return cleaned or "a empresa"
+        
+        # Remove suffixes and corporate structures
+        cleaned = re.sub(r"\b(via|loja|shopping|sorteio|promo[cç][aã]o|filial|matriz)\b.*$", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b(ltda|me|eireli|s\/a|sa|epp|mei|inc|corp|cia|company|unidade|centro)\b\.?", "", cleaned, flags=re.IGNORECASE)
+        
+        # Remove business types
+        business_types = r"\b(comercio|comÃ©rcio|servicos|serviÃ§os|industria|indÃºstria|holding|grupo|distribuidora|atacadista|varejista|transportes|logistica|consultoria|assessoramento)\b"
+        cleaned = re.sub(business_types, "", cleaned, flags=re.IGNORECASE)
+        
+        # Final cleanup
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -|,:;/\\")
+        
+        # Se sobrar apenas 1 palavra curta (ex: "O"), ou ficar vazio
+        if len(cleaned) <= 1 or not cleaned:
+            return "a empresa"
+            
+        return cleaned
 
     @classmethod
     def _resolve_short_company_name(cls, lead: Dict[str, Any] | None = None) -> str:

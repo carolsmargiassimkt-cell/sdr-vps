@@ -18,6 +18,12 @@ class PipedriveClient:
     STATUS_BOT_FIELD = "status_bot"
     CNPJ_FIELD_KEY = "cnpj"
     CNAE_FIELD_KEY = "cnae"
+    
+    # Audit Tags
+    TAG_FILTER_163 = 163
+    TAG_FILTER_166 = 166
+    TAG_LOCK_168 = 168
+    
     CRM_WRITE_RETRIES = 1
     REQUEST_RETRIES = 3
     REQUEST_RETRY_DELAYS_SEC = (5.0, 10.0, 20.0)
@@ -430,15 +436,39 @@ class PipedriveClient:
         self.logger.error(f"[ERRO_CRM_CRITICO] operacao={operation}")
         return False
 
+    def is_deal_locked(self, deal_id: int) -> bool:
+        """Verifica se o deal tem a trava absoluta (Tag 168)."""
+        try:
+            deal = self.get_deal_details(deal_id)
+            if not deal:
+                return False
+            labels = self.resolve_label_ids(deal.get("label"), self.get_deal_labels())
+            if self.TAG_LOCK_168 in labels:
+                self.logger.info(f"[TRAVA_ATIVA] Deal {deal_id} possui Tag 168. Operação abortada.")
+                return True
+        except Exception as e:
+            self.logger.error(f"[ERRO_CHECK_LOCK] {e}")
+        return False
+
     def update_deal(self, deal_id: int, data: Dict[str, Any]) -> bool:
         payload = dict(data or {})
+        
+        # Se estiver tentando atualizar algo além do status_bot ou se for uma atualização crítica,
+        # verificamos a trava.
+        if self.is_deal_locked(deal_id):
+            return False
+
         label = payload.get("label")
         if label:
             payload["label"] = self.resolve_label_ids(label, self.get_deal_labels())
-        return self._write_with_retry(
+        
+        ok = self._write_with_retry(
             f"update_deal:{int(deal_id)}",
             lambda: self._request("PUT", f"deals/{int(deal_id)}", json=payload),
         )
+        if not ok:
+            self.logger.error(f"[FALHA_UPDATE_DEAL] deal_id={deal_id} payload={payload}")
+        return ok
 
     def create_deal(self, data: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(data or {})
@@ -612,10 +642,19 @@ class PipedriveClient:
             return False
         if not entity_id:
             return False
+        
+        if self.is_deal_locked(entity_id):
+            self.logger.warning(f"[ADD_TAG_ABORTADO] Deal {entity_id} está travado (Tag 168).")
+            return False
+
         self.ensure_deal_labels([str(tag or "").strip()])
         
         try:
             deal = self.get_deal_details(entity_id)
+            if not deal:
+                self.logger.error(f"[ADD_TAG_FALHA] Não foi possível obter detalhes do deal {entity_id}")
+                return False
+                
             current_labels = deal.get("label") or []
             if isinstance(current_labels, str):
                 current_labels = current_labels.split(",")
@@ -626,9 +665,13 @@ class PipedriveClient:
             if tag not in new_labels:
                 new_labels.append(tag)
             
-            return self.update_deal(int(entity_id), {"label": new_labels})
+            ok = self.update_deal(int(entity_id), {"label": new_labels})
+            if not ok:
+                self.logger.error(f"[ADD_TAG_FALHA_UPDATE] deal_id={entity_id} tag={tag}")
+            return ok
         except Exception as e:
-            self.logger.error(f"[ERRO_ADD_TAG] {e}")
+            self.logger.error(f"[ERRO_ADD_TAG] deal_id={entity_id} erro={e}")
+            # Tenta fallback de overwrite apenas com a tag nova se falhar a mesclagem
             return self.update_deal(int(entity_id), {"label": [tag]})
 
     def create_activity(self, *args, **kwargs) -> bool:
