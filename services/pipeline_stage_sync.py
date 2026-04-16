@@ -14,7 +14,7 @@ PIPELINE_PAIR_STAGE_NAMES = {
 }
 FINAL_STAGE_NAMES = {
     "agendado": "AGENDADO",
-    "perdido": "PERDIDO",
+    "perdido": "ARQUIVADOS / PERDIDOS",
 }
 PIPELINE_STAGE_ORDER = {
     "ENTRADA": 0,
@@ -136,7 +136,15 @@ def _target_stage_id_by_name(client: PipedriveClient, stage_name: str) -> int:
         return 0
     fallback_aliases = {
         "AGENDADO": {"AGENDADA", "REUNIAO MARCADA", "REUNIÃO MARCADA", "MEETING"},
-        "PERDIDO": {"LOST", "PERDIDA", "PERDIDOS"},
+        "ARQUIVADOS / PERDIDOS": {
+            "ARQUIVADO / PERDIDO",
+            "ARQUIVADOS/PERDIDOS",
+            "ARQUIVADO/PERDIDO",
+            "PERDIDO",
+            "PERDIDA",
+            "PERDIDOS",
+            "LOST",
+        },
     }
     for stage in client.get_stages():
         if not isinstance(stage, dict):
