@@ -1,0 +1,20 @@
+{
+  "5535920002020": {
+    "etapa": "inicio",
+    "last_question": "Oi, tudo certo? Na a empresa, vocês costumam fazer campanhas promocionais?\nCom a Copa chegando, isso entra no radar de vocês ou não é prioridade agora?",
+    "last_question_id": "horario",
+    "last_lead_reply": "[MENSAGEM_SEM_TEXTO]",
+    "last_bot_reply": "Oi, tudo certo? Na a empresa, vocês costumam fazer campanhas promocionais?\nCom a Copa chegando, isso entra no radar de vocês ou não é prioridade agora?",
+    "last_intent": "duvida",
+    "updated_at": "2026-04-17T15:30:08.716766+00:00"
+  },
+  "5511998804191": {
+    "etapa": "inicio",
+    "last_question": "Fala, tudo certo? Posso te fazer uma pergunta bem direta sobre campanhas?\nCom a Copa chegando, isso entra no radar de vocês ou não é prioridade agora?",
+    "last_question_id": "",
+    "last_lead_reply": "[MENSAGEM_SEM_TEXTO]",
+    "last_bot_reply": "Fala, tudo certo? Posso te fazer uma pergunta bem direta sobre campanhas?\nCom a Copa chegando, isso entra no radar de vocês ou não é prioridade agora?",
+    "last_intent": "duvida",
+    "updated_at": "2026-04-17T16:01:09.038859+00:00"
+  }
+}

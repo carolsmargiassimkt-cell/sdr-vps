@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from core.automation_freeze import should_drop_inbound
+
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "inbound_queue.sqlite3"
+PROCESSING_LEASE_SECONDS = 300
 
 app = FastAPI(title="whatsapp-inbound-vps")
 
@@ -34,6 +38,12 @@ def init_db() -> None:
             )
             """
         )
+        columns = {
+            str(row["name"] or "").strip()
+            for row in conn.execute("PRAGMA table_info(inbound_messages)").fetchall()
+        }
+        if "processing_started_at" not in columns:
+            conn.execute("ALTER TABLE inbound_messages ADD COLUMN processing_started_at TEXT")
         conn.commit()
 
 
@@ -45,6 +55,9 @@ class InboundPayload(BaseModel):
     text: str | None = None
     message: str | None = None
     timestamp: str | None = None
+    remoteJid: str | None = None
+    remoteJidAlt: str | None = None
+    source: str | None = None
 
 
 class AckPayload(BaseModel):
@@ -71,8 +84,37 @@ def inbound(payload: InboundPayload) -> dict[str, Any]:
     phone = str(payload.phone or "").strip()
     text = str(payload.text or payload.message or "").strip()
     timestamp = str(payload.timestamp or "").strip() or None
-    if not msg_id or not phone or not text:
-        return {"ok": False, "error": "invalid_payload"}
+    remote_jid = str(payload.remoteJid or "").strip()
+    remote_jid_alt = str(payload.remoteJidAlt or "").strip()
+    source = str(payload.source or "").strip() or "unknown"
+    missing_fields: list[str] = []
+    if not msg_id:
+        missing_fields.append("id")
+    if not phone:
+        missing_fields.append("phone")
+    if not text:
+        missing_fields.append("text")
+    if missing_fields:
+        print(
+            "[INBOUND_REJEITADO]",
+            f"missing={','.join(missing_fields)}",
+            f"id={msg_id or '-'}",
+            f"phone={phone or '-'}",
+            f"text_len={len(text)}",
+            f"remote_jid={remote_jid or '-'}",
+            f"remote_jid_alt={remote_jid_alt or '-'}",
+            f"source={source}",
+        )
+        return {"ok": False, "error": "invalid_payload", "missing_fields": missing_fields}
+
+    if should_drop_inbound():
+        print(
+            "[INBOUND_FREEZE_DROP]",
+            f"id={msg_id}",
+            f"phone={phone}",
+            f"source={source}",
+        )
+        return {"ok": True, "id": msg_id, "status": "paused", "duplicate": False}
 
     with get_conn() as conn:
         existing = conn.execute(
@@ -91,6 +133,13 @@ def inbound(payload: InboundPayload) -> dict[str, Any]:
             (msg_id, phone, text, timestamp),
         )
         conn.commit()
+    print(
+        "[INBOUND_ACEITO]",
+        f"id={msg_id}",
+        f"phone={phone}",
+        f"duplicate={bool(existing)}",
+        f"source={source}",
+    )
     if existing:
         return {"ok": True, "id": msg_id, "status": str(existing["status"] or "pending"), "duplicate": True}
     return {"ok": True, "id": msg_id, "status": "pending", "duplicate": False}
@@ -100,20 +149,43 @@ def inbound(payload: InboundPayload) -> dict[str, Any]:
 def fila() -> dict[str, Any]:
     with get_conn() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        lease_cutoff = (datetime.now(timezone.utc) - timedelta(seconds=PROCESSING_LEASE_SECONDS)).isoformat()
+        reclaimed = conn.execute(
+            """
+            UPDATE inbound_messages
+            SET status = 'pending', processing_started_at = NULL
+            WHERE status = 'processing'
+              AND (
+                processing_started_at IS NULL
+                OR processing_started_at = ''
+                OR processing_started_at < ?
+              )
+            """,
+            (lease_cutoff,),
+        ).rowcount or 0
         rows = conn.execute(
             """
-            SELECT id, phone, text, timestamp, status
+            SELECT id, phone, text, timestamp, status, processing_started_at
             FROM inbound_messages
             WHERE status = 'pending'
             ORDER BY COALESCE(timestamp, ''), id
             """
         ).fetchall()
         if rows:
+            locked_at = datetime.now(timezone.utc).isoformat()
             conn.executemany(
-                "UPDATE inbound_messages SET status = 'processing' WHERE id = ? AND status = 'pending'",
-                [(str(row["id"]),) for row in rows],
+                """
+                UPDATE inbound_messages
+                SET status = 'processing', processing_started_at = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                [(locked_at, str(row["id"])) for row in rows],
             )
         conn.commit()
+    if reclaimed:
+        print(f"[FILA_REQUEUE_STALE] reclaimed={reclaimed}")
+    if rows:
+        print(f"[FILA_CLAIM] claimed={len(rows)}")
     return {"ok": True, "items": [dict(row) for row in rows]}
 
 
@@ -128,10 +200,19 @@ def ack(payload: AckPayload) -> dict[str, Any]:
             (msg_id,),
         ).fetchone()
         conn.execute(
-            "UPDATE inbound_messages SET status = 'done' WHERE id = ? AND status != 'done'",
+            """
+            UPDATE inbound_messages
+            SET status = 'done', processing_started_at = NULL
+            WHERE id = ? AND status != 'done'
+            """,
             (msg_id,),
         )
         conn.commit()
+    print(
+        "[ACK_RESULT]",
+        f"id={msg_id}",
+        f"previous_status={str(before['status'] or '') if before else ''}",
+    )
     return {
         "ok": True,
         "id": msg_id,
@@ -147,8 +228,13 @@ def pending(payload: PendingPayload) -> dict[str, Any]:
         return {"ok": False, "error": "invalid_id"}
     with get_conn() as conn:
         conn.execute(
-            "UPDATE inbound_messages SET status = 'pending' WHERE id = ? AND status != 'done'",
+            """
+            UPDATE inbound_messages
+            SET status = 'pending', processing_started_at = NULL
+            WHERE id = ? AND status != 'done'
+            """,
             (msg_id,),
         )
         conn.commit()
+    print("[PENDING_RESULT]", f"id={msg_id}", "status=pending")
     return {"ok": True, "id": msg_id, "status": "pending"}

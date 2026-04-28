@@ -44,6 +44,32 @@ class WhatsAppConversationMemory:
         }
         self._write(payload)
 
+    def register_automation_pause(
+        self,
+        phone: Any,
+        *,
+        status: str,
+        reason: str,
+        last_intent: str = "",
+        last_lead_reply: str = "",
+    ) -> None:
+        normalized = self._normalize_phone(phone)
+        if not normalized:
+            return
+        payload = self._read()
+        current = dict(payload.get(normalized) or {})
+        payload[normalized] = {
+            **current,
+            "status": str(status or "automation_paused").strip(),
+            "automation_paused": True,
+            "etapa": str(current.get("etapa") or "triagem_humana").strip() or "triagem_humana",
+            "reason": str(reason or "").strip(),
+            "last_intent": str(last_intent or current.get("last_intent") or "").strip(),
+            "last_lead_reply": str(last_lead_reply or current.get("last_lead_reply") or "").strip(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._write(payload)
+
     def register_outbound(
         self,
         lead: Dict[str, Any],
@@ -136,3 +162,33 @@ class WhatsAppConversationMemory:
             changed = True
         if changed:
             self._write(payload)
+
+    def upsert_conversation_state(
+        self,
+        phone: Any,
+        *,
+        etapa: str = "",
+        last_question: str = "",
+        last_question_id: str = "",
+        last_lead_reply: str = "",
+        last_bot_reply: str = "",
+        last_intent: str = "",
+    ) -> Dict[str, Any]:
+        normalized = self._normalize_phone(phone)
+        if not normalized:
+            return {}
+        payload = self._read()
+        current = dict(payload.get(normalized) or {})
+        updated = {
+            **current,
+            "etapa": str(etapa or current.get("etapa") or "inicio").strip(),
+            "last_question": str(last_question or current.get("last_question") or "").strip(),
+            "last_question_id": str(last_question_id or current.get("last_question_id") or "").strip(),
+            "last_lead_reply": str(last_lead_reply or current.get("last_lead_reply") or "").strip(),
+            "last_bot_reply": str(last_bot_reply or current.get("last_bot_reply") or "").strip(),
+            "last_intent": str(last_intent or current.get("last_intent") or "").strip(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        payload[normalized] = updated
+        self._write(payload)
+        return dict(updated)

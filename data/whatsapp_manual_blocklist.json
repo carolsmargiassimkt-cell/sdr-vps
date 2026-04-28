@@ -1,0 +1,13 @@
+[
+  {
+    "phone": "5511950907233",
+    "reason": "manual_block",
+    "source": "manual"
+  },
+  {
+    "phone": "5511930303600",
+    "reason": "numero_errado_ignorado_session_guard",
+    "source": "manual_recovery",
+    "created_at": 1777410721
+  }
+]

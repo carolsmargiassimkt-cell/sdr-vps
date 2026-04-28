@@ -21,7 +21,7 @@ _print_original = print
 
 def print(*args, **kwargs):
     try:
-        if len(args) >= 2 and args[0] == "[CAD1]":
+        if len(args) >= 2 and args[0] == "[WHATSAPP_CAD1]":
             numero = str(args[1])
             enviar_whatsapp(numero)
     except:

@@ -10,13 +10,13 @@ from crm.pipedrive_client import PipedriveClient
 from enrich_missing_cnpj_from_xlsx import normalize_cnpj, normalize_phone, parse_xlsx
 
 
-INPUT_XLSX = Path(r"C:\Users\Asus\Downloads\deals_enriquecido_writeback_ready.xlsx")
-STATE_JSON = Path(r"C:\Users\Asus\legacy\bot_sdr_ai\runtime\writeback_enriched_to_pipedrive_state.json")
+INPUT_XLSX = Path(r"/root/BASE_LEADS_COM_LINKEDIN.xlsx")
+STATE_JSON = Path(r"/root/sdr-vps/runtime/writeback_enriched_to_pipedrive_state.json")
 PIPELINE_ID = 2
 ARCHIVE_STAGE_ID = 50
 CNPJ_FIELD_KEY = "aa3d1d254e5f80a2e5c791cdd390ef58ccfb68f0"
-BATCH_LIMIT = 80
-BATCH_DELAY_SEC = 8
+BATCH_LIMIT = 5
+BATCH_DELAY_SEC = 10
 BLOCKED_PHONES = {"18043309723", "11999999999", "00999999977", "1155555555"}
 
 

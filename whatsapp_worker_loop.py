@@ -1,3 +1,16 @@
+
+# === DUP_GUARD ===
+_last_send_cache = {}
+
+def _dup_guard(phone, text, window=60):
+    import time, re
+    key = re.sub(r"\D","",str(phone)) + "|" + text.strip().lower()[:50]
+    now = time.time()
+    if key in _last_send_cache and now - _last_send_cache[key] < window:
+        return True
+    _last_send_cache[key] = now
+    return False
+
 ﻿import time
 from services.autopilot_service import AutopilotService
 

@@ -23,7 +23,7 @@ from supervisor import SDRSupervisor
 CNPJ_FIELD_KEY = "aa3d1d254e5f80a2e5c791cdd390ef58ccfb68f0"
 WRITEBACK_XLSX = Path(r"C:\Users\Asus\Downloads\deals_enriquecido_writeback_ready.xlsx")
 SENT_LABEL_IDS = {"176", "195", "196", "197"}
-SENT_LABEL_NAMES = {"CAD1", "RESPONDIDO", "WHATSAPP_CAD1", "EMAIL_CAD1"}
+SENT_LABEL_NAMES = {"RESPONDIDO", "WHATSAPP_CAD1", "EMAIL_CAD1"}
 BLOCKED_GENERIC_PHONES = {"1804330972", "18043309723", "8731990856"}
 
 

@@ -1,0 +1,4 @@
+0 8 * * * /bin/bash /root/sdr-vps/ops/stop_pipeline2_writebacks.sh >> /root/sdr-vps/logs/nightly_scheduler.log 2>&1
+0 9 * * * /bin/bash /root/sdr-vps/ops/start_sdr_bot.sh >> /root/sdr-vps/logs/nightly_scheduler.log 2>&1
+0 18 * * * /bin/bash /root/sdr-vps/ops/start_pipeline2_nightly_writeback.sh >> /root/sdr-vps/logs/nightly_scheduler.log 2>&1
+0 9 22 4 * /bin/bash /root/sdr-vps/ops/resume_after_holiday.sh >> /root/sdr-vps/logs/nightly_scheduler.log 2>&1

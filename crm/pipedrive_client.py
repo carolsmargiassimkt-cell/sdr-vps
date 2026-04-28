@@ -9,13 +9,35 @@ from typing import Any, Dict, List, Optional
 
 import requests
 from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import Timeout as RequestsTimeout
 from urllib3.exceptions import MaxRetryError
 
 from config.config_loader import get_config_value
 
+try:
+    from sdr_config import STATUS_FIELD as SDR_STATUS_FIELD, STATUS_MAP as SDR_STATUS_MAP
+except Exception:
+    SDR_STATUS_FIELD = "status_bot"
+    SDR_STATUS_MAP = {}
+
 
 class PipedriveClient:
-    STATUS_BOT_FIELD = "status_bot"
+    STATUS_BOT_FIELD = str(SDR_STATUS_FIELD or "status_bot").strip() or "status_bot"
+    STATUS_BOT_MAP = {str(key or "").strip().lower(): int(value or 0) for key, value in dict(SDR_STATUS_MAP or {}).items()}
+    STATUS_BOT_SYNONYMS = {
+        "contato_iniciado": "lead_sem_contato",
+        "bloqueado": "lead_sem_interesse",
+        "sem_interesse": "lead_sem_interesse",
+        "hostil": "lead_sem_interesse",
+        "indicacao": "lead_sem_interesse",
+        "interesse": "lead_interessado",
+        "respondido": "lead_interessado",
+        "wrong_number": "numero_nao_corresponde",
+        "unknown_person": "numero_nao_corresponde",
+        "numero_errado": "numero_nao_corresponde",
+        "aguardando_horario": "lead_sem_contato",
+    }
+    PERSON_TAGS_FIELD = "label_ids"
     CNPJ_FIELD_KEY = "cnpj"
     CNAE_FIELD_KEY = "cnae"
     
@@ -24,10 +46,11 @@ class PipedriveClient:
     TAG_FILTER_166 = 166
     TAG_LOCK_168 = 168
     
-    CRM_WRITE_RETRIES = 1
+    CRM_WRITE_RETRIES = 2
     REQUEST_RETRIES = 3
     REQUEST_RETRY_DELAYS_SEC = (5.0, 10.0, 20.0)
     REQUEST_TIMEOUT_SEC = 10
+    RETRIABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
     RATE_LIMIT_COOLDOWN_SEC = 60
     GLOBAL_MIN_INTERVAL_SEC = 0.5
     DEAL_FIELDS_CACHE_TTL_SEC = 3600
@@ -62,44 +85,156 @@ class PipedriveClient:
         self._deal_fields_cache = None
         self._deal_fields_cache_time = 0.0
 
+    @staticmethod
+    def _body_preview(body: Any, limit: int = 200) -> str:
+        compact = re.sub(r"\s+", " ", str(body or "")).strip()
+        return compact[: max(1, int(limit or 200))]
+
+    @classmethod
+    def _body_looks_like_html(cls, body: Any) -> bool:
+        preview = cls._body_preview(body, limit=64).lower()
+        return preview.startswith("<!doctype html") or preview.startswith("<html") or preview.startswith("<head") or preview.startswith("<body")
+
+    @classmethod
+    def _response_looks_like_html(cls, response: Any) -> bool:
+        try:
+            content_type = str((response.headers or {}).get("Content-Type") or "").lower()
+        except Exception:
+            content_type = ""
+        if "text/html" in content_type:
+            return True
+        return cls._body_looks_like_html(getattr(response, "text", ""))
+
+    @classmethod
+    def _is_transient_http_status(cls, status: Any) -> bool:
+        try:
+            return int(status or 0) in cls.RETRIABLE_HTTP_STATUS_CODES
+        except Exception:
+            return False
+
+    @staticmethod
+    def _header_int(headers: Any, *names: str) -> int:
+        if not hasattr(headers, "items"):
+            return 0
+        lowered = {str(key).strip().lower(): value for key, value in dict(headers).items()}
+        for name in names:
+            raw = str(lowered.get(str(name).strip().lower(), "") or "").strip()
+            match = re.search(r"-?\d+", raw)
+            if match:
+                try:
+                    return int(match.group(0))
+                except Exception:
+                    continue
+        return 0
+
+    @classmethod
+    def _rate_limit_cooldown_for_response(cls, response: Any) -> int:
+        headers = getattr(response, "headers", {}) or {}
+        retry_after = cls._header_int(headers, "retry-after")
+        reset_window = cls._header_int(headers, "x-ratelimit-reset")
+        cooldown = max(2, int(cls.RATE_LIMIT_COOLDOWN_SEC or 60))
+        if retry_after > 0:
+            cooldown = max(cooldown, retry_after + 1)
+        elif reset_window > 0:
+            cooldown = max(2, reset_window + 1)
+        return cooldown
+
+    @classmethod
+    def _rate_limit_headers_text(cls, response: Any) -> str:
+        headers = getattr(response, "headers", {}) or {}
+        details = {
+            "limit": cls._header_int(headers, "x-ratelimit-limit"),
+            "remaining": cls._header_int(headers, "x-ratelimit-remaining"),
+            "reset": cls._header_int(headers, "x-ratelimit-reset"),
+            "daily_left": cls._header_int(headers, "x-daily-requests-left"),
+            "retry_after": cls._header_int(headers, "retry-after"),
+        }
+        parts = [f"{key}={value}" for key, value in details.items() if value > 0]
+        return " ".join(parts)
+
+    def _last_call_was_transient(self, endpoint_prefix: str = "") -> bool:
+        status = int(getattr(self, "last_http_status", 0) or 0)
+        endpoint = str(getattr(self, "last_http_endpoint", "") or "")
+        if endpoint_prefix and not endpoint.startswith(str(endpoint_prefix or "")):
+            return False
+        if status == 0:
+            return True
+        if self._is_transient_http_status(status):
+            return True
+        return self._body_looks_like_html(getattr(self, "last_http_body", ""))
+
     def _perform_request_with_retry(
         self,
         method: str,
         url: str,
+        endpoint: str,
         *,
         params: Dict[str, Any],
         json: Optional[Dict[str, Any]],
     ):
         for attempt in range(1, self.REQUEST_RETRIES + 1):
+            response = None
             try:
-                return requests.request(
+                response = requests.request(
                     method.upper(),
                     url,
                     params=params,
                     json=json,
-                    timeout=min(max(int(self.REQUEST_TIMEOUT_SEC or 10), 1), 15),
+                    timeout=float(self.REQUEST_TIMEOUT_SEC or 10),
                 )
-            except (RequestsConnectionError, MaxRetryError, socket.gaierror) as exc:
+            except (RequestsConnectionError, RequestsTimeout, MaxRetryError, socket.gaierror) as exc:
                 self.last_http_status = 0
                 self.last_http_body = str(exc)
                 self.logger.warning(
-                    f"[PIPEDRIVE_DNS_FAIL] metodo={method.upper()} url={url} tentativa={attempt}/{self.REQUEST_RETRIES}"
+                    f"[PIPEDRIVE_RETRY] metodo={method.upper()} endpoint={endpoint} "
+                    f"status=0 tentativa={attempt}/{self.REQUEST_RETRIES} motivo={exc.__class__.__name__} "
+                    f"timeout={float(self.REQUEST_TIMEOUT_SEC or 10):.0f}s"
                 )
                 if attempt >= self.REQUEST_RETRIES:
                     return None
-                self.logger.warning(
-                    f"[PIPEDRIVE_RETRY] metodo={method.upper()} url={url} tentativa={attempt}/{self.REQUEST_RETRIES}"
-                )
                 delay = self.REQUEST_RETRY_DELAYS_SEC[min(attempt - 1, len(self.REQUEST_RETRY_DELAYS_SEC) - 1)]
                 time.sleep(delay)
+                continue
             except Exception as exc:
                 if attempt >= self.REQUEST_RETRIES:
                     raise
                 self.logger.warning(
-                    f"[PIPEDRIVE_RETRY] metodo={method.upper()} url={url} tentativa={attempt}/{self.REQUEST_RETRIES}"
+                    f"[PIPEDRIVE_RETRY] metodo={method.upper()} endpoint={endpoint} "
+                    f"status=0 tentativa={attempt}/{self.REQUEST_RETRIES} motivo={exc.__class__.__name__}"
                 )
                 delay = self.REQUEST_RETRY_DELAYS_SEC[min(attempt - 1, len(self.REQUEST_RETRY_DELAYS_SEC) - 1)]
                 time.sleep(delay)
+                continue
+            response_status = int(getattr(response, "status_code", 0) or 0)
+            response_body = str(getattr(response, "text", "") or "")
+            self.last_http_status = response_status
+            self.last_http_body = response_body
+            if self._is_transient_http_status(response_status):
+                self.logger.warning(
+                    f"[PIPEDRIVE_RETRY] metodo={method.upper()} endpoint={endpoint} "
+                    f"status={response_status} tentativa={attempt}/{self.REQUEST_RETRIES} motivo=http_{response_status}"
+                )
+                if attempt >= self.REQUEST_RETRIES:
+                    return response
+                
+                delay = self.REQUEST_RETRY_DELAYS_SEC[min(attempt - 1, len(self.REQUEST_RETRY_DELAYS_SEC) - 1)]
+                if response_status == 429:
+                    cooldown = self._rate_limit_cooldown_for_response(response)
+                    delay = max(delay, cooldown)
+                
+                time.sleep(delay)
+                continue
+            if self._response_looks_like_html(response):
+                self.logger.warning(
+                    f"[PIPEDRIVE_RETRY] metodo={method.upper()} endpoint={endpoint} "
+                    f"status={response_status} tentativa={attempt}/{self.REQUEST_RETRIES} motivo=html_unexpected"
+                )
+                if attempt >= self.REQUEST_RETRIES:
+                    return response
+                delay = self.REQUEST_RETRY_DELAYS_SEC[min(attempt - 1, len(self.REQUEST_RETRY_DELAYS_SEC) - 1)]
+                time.sleep(delay)
+                continue
+            return response
         return None
 
     def _request(
@@ -110,16 +245,7 @@ class PipedriveClient:
         params: Optional[Dict[str, Any]] = None,
         json: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        rate_limit_retried = False
-        while True:
-            response = self._request_once(method, endpoint, params=params, json=json)
-            if self.last_http_status != 429 or rate_limit_retried:
-                return response
-            rate_limit_retried = True
-            self.logger.warning(
-                f"[CRM_RATE_LIMIT_BACKOFF] aguardando=65s metodo={str(method or '').upper()} endpoint={str(endpoint or '')}"
-            )
-            time.sleep(65)
+        return self._request_once(method, endpoint, params=params, json=json)
 
     def _request_once(
         self,
@@ -155,13 +281,13 @@ class PipedriveClient:
         self.last_http_endpoint = str(endpoint or "")
         self.last_http_method = str(method or "").upper()
         try:
-            response = self._perform_request_with_retry(method, url, params=request_params, json=json)
+            response = self._perform_request_with_retry(method, url, endpoint=endpoint, params=request_params, json=json)
             if response is None:
                 self.last_http_status = int(self.last_http_status or 0)
                 if not self.last_http_body:
                     self.last_http_body = "request_failed_after_retries"
                 return None
-        except (RequestsConnectionError, MaxRetryError, socket.gaierror) as exc:
+        except (RequestsConnectionError, RequestsTimeout, MaxRetryError, socket.gaierror) as exc:
             self.last_http_status = 0
             self.last_http_body = str(exc)
             self.logger.warning(
@@ -176,20 +302,33 @@ class PipedriveClient:
         self.last_http_status = int(response.status_code or 0)
         self.last_http_body = str(response.text or "")
         if self.last_http_status == 429:
-            self.__class__._rate_limit_until_ts = time.time() + float(self.RATE_LIMIT_COOLDOWN_SEC)
+            cooldown = self._rate_limit_cooldown_for_response(response)
+            self.__class__._rate_limit_until_ts = time.time() + float(cooldown)
+            extra = self._rate_limit_headers_text(response)
             self.logger.warning(
-                f"[CRM_RATE_LIMIT] cooldown={self.RATE_LIMIT_COOLDOWN_SEC}s metodo={method.upper()} endpoint={endpoint}"
+                f"[CRM_RATE_LIMIT] cooldown={cooldown}s metodo={method.upper()} endpoint={endpoint}"
+                + (f" {extra}" if extra else "")
+            )
+            return None
+        if self._response_looks_like_html(response):
+            self.logger.error(
+                f"[PIPEDRIVE_HTML_UNEXPECTED] metodo={method.upper()} endpoint={endpoint} "
+                f"status={self.last_http_status} body={self._body_preview(self.last_http_body)}"
             )
             return None
         if response.status_code not in (200, 201):
             self.logger.error(
-                f"Erro Pipedrive API | {method.upper()} {endpoint} | Status: {response.status_code} | Resposta: {response.text}"
+                f"[PIPEDRIVE_HTTP_ERROR] metodo={method.upper()} endpoint={endpoint} "
+                f"status={response.status_code} body={self._body_preview(self.last_http_body)}"
             )
             return None
         try:
             payload = response.json()
         except Exception as exc:
-            self.logger.error(f"[ERRO_ENRIQUECIMENTO] {str(exc)}", exc_info=True)
+            self.logger.error(
+                f"[PIPEDRIVE_JSON_INVALID] metodo={method.upper()} endpoint={endpoint} "
+                f"status={self.last_http_status} erro={exc.__class__.__name__} body={self._body_preview(self.last_http_body)}"
+            )
             return None
         return payload if isinstance(payload, dict) else None
 
@@ -312,6 +451,94 @@ class PipedriveClient:
             return ""
         if digits.startswith("55"):
             return digits
+
+    @staticmethod
+    def _compact_digits(value: Any) -> str:
+        return re.sub(r"\D+", "", str(value or ""))
+
+    @classmethod
+    def _phone_search_terms(cls, phone: Any) -> List[str]:
+        raw = cls._compact_digits(phone)
+        if not raw:
+            return []
+        terms: List[str] = []
+
+        def add(term: str) -> None:
+            clean = cls._compact_digits(term)
+            if clean and clean not in terms:
+                terms.append(clean)
+
+        add(raw)
+        if raw.startswith("55") and len(raw) > 11:
+            local = raw[2:]
+            add(local)
+        else:
+            local = raw
+            add(f"55{raw}")
+
+        if len(local) == 11 and local[2] == "9":
+            add(local[:2] + local[3:])
+            add(f"55{local[:2]}{local[3:]}")
+        elif len(local) == 10:
+            add(local[:2] + "9" + local[2:])
+            add(f"55{local[:2]}9{local[2:]}")
+        return terms
+
+    @classmethod
+    def _person_phone_tokens(cls, person: Dict[str, Any]) -> set[str]:
+        tokens: set[str] = set()
+        for source in (person.get("phones"), person.get("phone")):
+            if isinstance(source, list):
+                for item in source:
+                    if isinstance(item, dict):
+                        tokens.update(cls._phone_search_terms(item.get("value")))
+                    else:
+                        tokens.update(cls._phone_search_terms(item))
+            elif isinstance(source, dict):
+                tokens.update(cls._phone_search_terms(source.get("value")))
+            elif source:
+                tokens.update(cls._phone_search_terms(source))
+        return {token for token in tokens if token}
+
+    def _decorate_deal_status(self, deal: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(deal, dict):
+            return {}
+        payload = dict(deal)
+        resolved = self.resolve_status_bot_token(payload.get(self.STATUS_BOT_FIELD, payload.get("status_bot")))
+        if resolved:
+            payload["status_bot"] = resolved
+        return payload
+
+    def resolve_status_bot_token(self, value: Any) -> str:
+        token = str(value or "").strip()
+        if not token:
+            return ""
+        normalized = token.lower()
+        mapped = self.STATUS_BOT_SYNONYMS.get(normalized, normalized)
+        if mapped in self.STATUS_BOT_MAP:
+            return mapped
+        if token.isdigit():
+            target_id = int(token)
+            for field in self.get_deal_fields():
+                if str(field.get("key") or "").strip() != self.STATUS_BOT_FIELD:
+                    continue
+                for option in list(field.get("options") or []):
+                    if int(option.get("id") or 0) == target_id:
+                        return str(option.get("label") or "").strip().lower()
+        return normalized
+
+    def resolve_status_bot_value(self, value: Any) -> Any:
+        if value in (None, ""):
+            return value
+        if isinstance(value, int):
+            return value
+        token = self.resolve_status_bot_token(value)
+        mapped_id = int(self.STATUS_BOT_MAP.get(token, 0) or 0)
+        if mapped_id > 0:
+            return mapped_id
+        if str(value).isdigit():
+            return int(str(value))
+        return value
         if len(digits) in {10, 11, 12, 13}:
             return f"55{digits}"
         return digits
@@ -374,7 +601,7 @@ class PipedriveClient:
                     continue
                 if deal_id:
                     seen_ids.add(deal_id)
-                deals.append(deal)
+                deals.append(self._decorate_deal_status(deal))
                 added += 1
                 if len(deals) >= target_total:
                     break
@@ -402,7 +629,7 @@ class PipedriveClient:
 
     def get_deal_details(self, deal_id: int) -> Dict[str, Any]:
         response = self._request("GET", f"deals/{int(deal_id)}")
-        return dict(response.get("data") or {}) if response else {}
+        return self._decorate_deal_status(dict(response.get("data") or {})) if response else {}
 
     def get_deal_persons(self, deal_id: int, limit: int = 10) -> List[Dict[str, Any]]:
         response = self._request("GET", f"deals/{int(deal_id)}/persons", params={"limit": max(1, int(limit))})
@@ -441,6 +668,12 @@ class PipedriveClient:
         try:
             deal = self.get_deal_details(deal_id)
             if not deal:
+                if self._last_call_was_transient(f"deals/{int(deal_id)}"):
+                    self.logger.warning(
+                        f"[TRAVA_CHECK_INDETERMINADA] deal={int(deal_id)} status={int(self.last_http_status or 0)} "
+                        f"endpoint={self.last_http_endpoint}"
+                    )
+                    return True
                 return False
             labels = self.resolve_label_ids(deal.get("label"), self.get_deal_labels())
             if self.TAG_LOCK_168 in labels:
@@ -452,6 +685,11 @@ class PipedriveClient:
 
     def update_deal(self, deal_id: int, data: Dict[str, Any]) -> bool:
         payload = dict(data or {})
+
+        if "status_bot" in payload and self.STATUS_BOT_FIELD != "status_bot":
+            payload[self.STATUS_BOT_FIELD] = payload.pop("status_bot")
+        if self.STATUS_BOT_FIELD in payload:
+            payload[self.STATUS_BOT_FIELD] = self.resolve_status_bot_value(payload.get(self.STATUS_BOT_FIELD))
         
         # Se estiver tentando atualizar algo além do status_bot ou se for uma atualização crítica,
         # verificamos a trava.
@@ -472,11 +710,15 @@ class PipedriveClient:
 
     def create_deal(self, data: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(data or {})
+        if "status_bot" in payload and self.STATUS_BOT_FIELD != "status_bot":
+            payload[self.STATUS_BOT_FIELD] = payload.pop("status_bot")
+        if self.STATUS_BOT_FIELD in payload:
+            payload[self.STATUS_BOT_FIELD] = self.resolve_status_bot_value(payload.get(self.STATUS_BOT_FIELD))
         label = payload.get("label")
         if label:
             payload["label"] = self.resolve_label_ids(label, self.get_deal_labels())
         response = self._request("POST", "deals", json=payload)
-        return dict(response.get("data") or {}) if response else {}
+        return self._decorate_deal_status(dict(response.get("data") or {})) if response else {}
 
     def delete_deal(self, deal_id: int) -> bool:
         if not int(deal_id or 0):
@@ -493,12 +735,57 @@ class PipedriveClient:
 
     def update_person(self, person_id: int, data: Dict[str, Any]) -> bool:
         payload = dict(data or {})
+        
+        # 1. Ajustar Label
         label = payload.get("label")
         if label:
             resolved = self.resolve_label_ids(label, self.get_person_labels())
             payload["label"] = resolved[0] if resolved else None
             if payload["label"] is None:
                 payload.pop("label", None)
+
+        # 2. Garantir formato correto para telefone (array of objects)
+        if "phone" in payload:
+            raw_phone = payload["phone"]
+            phones_list = []
+            if isinstance(raw_phone, str) and raw_phone.strip():
+                phones_list.append({"value": raw_phone.strip(), "primary": True})
+            elif isinstance(raw_phone, list):
+                for item in raw_phone:
+                    if isinstance(item, dict) and item.get("value"):
+                        phones_list.append(item)
+                    elif isinstance(item, str) and item.strip():
+                        phones_list.append({"value": item.strip(), "primary": len(phones_list) == 0})
+            
+            if phones_list:
+                payload["phone"] = phones_list
+            else:
+                payload.pop("phone", None)
+
+        # 3. Garantir formato correto para email (array of objects)
+        if "email" in payload:
+            raw_email = payload["email"]
+            emails_list = []
+            if isinstance(raw_email, str) and raw_email.strip():
+                emails_list.append({"value": raw_email.strip(), "primary": True})
+            elif isinstance(raw_email, list):
+                for item in raw_email:
+                    if isinstance(item, dict) and item.get("value"):
+                        emails_list.append(item)
+                    elif isinstance(item, str) and item.strip():
+                        emails_list.append({"value": item.strip(), "primary": len(emails_list) == 0})
+            
+            if emails_list:
+                payload["email"] = emails_list
+            else:
+                payload.pop("email", None)
+
+        # 4. Remover campos None ou vazios ""
+        payload = {k: v for k, v in payload.items() if v not in (None, "")}
+
+        # 5. Log antes do PUT
+        print("[DEBUG_PERSON_PAYLOAD]", payload)
+
         return self._write_with_retry(
             f"update_person:{int(person_id)}",
             lambda: self._request("PUT", f"persons/{int(person_id)}", json=payload),
@@ -537,16 +824,24 @@ class PipedriveClient:
         return list(((response or {}).get("data") or {}).get("items") or [])
 
     def find_person(self, *, org_id: int = 0, phone: str = "", email: str = "") -> Dict[str, Any]:
-        for term in (self._normalize_phone(phone), str(email or "").strip().lower()):
+        phone_terms = self._phone_search_terms(phone)
+        expected_phones = set(phone_terms)
+        for term in [*phone_terms, str(email or "").strip().lower()]:
             if not term:
                 continue
+            fallback_person = {}
             for item in self.find_person_by_term(term):
                 person = dict(item.get("item") or {})
                 if not person:
                     continue
                 if org_id and self._extract_id(person.get("org_id")) not in {0, int(org_id)}:
                     continue
-                return person
+                if expected_phones and self._person_phone_tokens(person) & expected_phones:
+                    return person
+                if not fallback_person:
+                    fallback_person = person
+            if fallback_person:
+                return fallback_person
         return {}
 
     def create_person(self, *args, **kwargs) -> Dict[str, Any]:
@@ -592,7 +887,7 @@ class PipedriveClient:
     def find_open_deals_by_person_or_org(self, *, person_id: int = 0, org_id: int = 0) -> List[Dict[str, Any]]:
         if person_id and int(person_id) > 0:
             response = self._request("GET", f"persons/{int(person_id)}/deals", params={"status": "open"})
-            return list(response.get("data") or []) if response else []
+            return [self._decorate_deal_status(dict(item or {})) for item in list(response.get("data") or [])] if response else []
 
         results: List[Dict[str, Any]] = []
         seen_ids = set()
@@ -603,13 +898,13 @@ class PipedriveClient:
                 deal_id = self._extract_id(deal.get("id"))
                 if deal_id and deal_id not in seen_ids:
                     seen_ids.add(deal_id)
-                    results.append(deal)
+                    results.append(self._decorate_deal_status(deal))
                 continue
             if org_id and current_org_id == int(org_id):
                 deal_id = self._extract_id(deal.get("id"))
                 if deal_id and deal_id not in seen_ids:
                     seen_ids.add(deal_id)
-                    results.append(deal)
+                    results.append(self._decorate_deal_status(deal))
         return results
 
     def find_deal_by_title(self, title: str) -> Dict[str, Any]:
@@ -660,12 +955,26 @@ class PipedriveClient:
                 current_labels = current_labels.split(",")
             elif not isinstance(current_labels, list):
                 current_labels = [current_labels]
+
+            normalized_labels = []
+            normalized_seen = set()
+            for item in list(current_labels or []):
+                if isinstance(item, dict):
+                    candidate = item.get("name") or item.get("label") or item.get("value") or item.get("id")
+                else:
+                    candidate = item
+                clean = str(candidate or "").strip()
+                token = clean.upper()
+                if not clean or token in normalized_seen:
+                    continue
+                normalized_seen.add(token)
+                normalized_labels.append(clean)
+
+            target_tag = str(tag or "").strip()
+            if target_tag and target_tag.upper() not in normalized_seen:
+                normalized_labels.append(target_tag)
             
-            new_labels = list(current_labels)
-            if tag not in new_labels:
-                new_labels.append(tag)
-            
-            ok = self.update_deal(int(entity_id), {"label": new_labels})
+            ok = self.update_deal(int(entity_id), {"label": normalized_labels})
             if not ok:
                 self.logger.error(f"[ADD_TAG_FALHA_UPDATE] deal_id={entity_id} tag={tag}")
             return ok
@@ -835,10 +1144,18 @@ class PipedriveClient:
         normalized_tag = str(new_tag or "").strip()
         if target_person_id <= 0 or not target_field_key or not normalized_tag:
             return False
+        if target_field_key == "tags_sdr":
+            return self.add_person_label_incremental(target_person_id, normalized_tag)
         try:
             person = self.get_person(target_person_id)
         except Exception:
             person = {}
+        if not person and self._last_call_was_transient(f"persons/{target_person_id}"):
+            self.logger.warning(
+                f"[PIPEDRIVE_PERSON_TAG_SKIP] person_id={target_person_id} field={target_field_key} "
+                f"tag={normalized_tag} status={int(self.last_http_status or 0)} endpoint={self.last_http_endpoint}"
+            )
+            return False
         current_raw = str((person or {}).get(target_field_key) or "").strip()
         tokens = [item.strip() for item in re.split(r"[,\n;|]+", current_raw) if item.strip()]
         normalized_tokens = {item.lower(): item for item in tokens}
@@ -846,6 +1163,33 @@ class PipedriveClient:
             tokens.append(normalized_tag)
         merged = ", ".join(tokens)
         return self.update_person(target_person_id, {target_field_key: merged})
+
+    def add_person_label_incremental(self, person_id: int, new_tag: str) -> bool:
+        target_person_id = int(person_id or 0)
+        normalized_tag = str(new_tag or "").strip()
+        if target_person_id <= 0 or not normalized_tag:
+            return False
+        if not self.ensure_person_labels([normalized_tag]):
+            return False
+        try:
+            person = self.get_person(target_person_id)
+        except Exception:
+            person = {}
+        if not person and self._last_call_was_transient(f"persons/{target_person_id}"):
+            self.logger.warning(
+                f"[PIPEDRIVE_PERSON_TAG_SKIP] person_id={target_person_id} tag={normalized_tag} "
+                f"status={int(self.last_http_status or 0)} endpoint={self.last_http_endpoint}"
+            )
+            return False
+        current_labels = self.resolve_label_ids(
+            (person or {}).get(self.PERSON_TAGS_FIELD) or (person or {}).get("label"),
+            self.get_person_labels(),
+        )
+        target_labels = self.resolve_label_ids([normalized_tag], self.get_person_labels())
+        merged = sorted({*current_labels, *target_labels})
+        if not merged:
+            return False
+        return self.update_person(target_person_id, {self.PERSON_TAGS_FIELD: merged})
 
     def ensure_person_labels(self, labels: List[str]) -> bool:
         target_labels = [self._normalize_label_token(item) for item in labels if self._normalize_label_token(item)]

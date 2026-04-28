@@ -1,0 +1,1078 @@
+{
+  "date": "2026-04-27",
+  "planned_leads": [
+    {
+      "id": 2973,
+      "stage_id": 8,
+      "nome": "Contato Greenline Saúde",
+      "empresa": "GREEN MOVEIS",
+      "phone": "1131790000",
+      "phones": [
+        "1131790000"
+      ],
+      "telefones": [
+        "1131790000"
+      ],
+      "email": "",
+      "person_id": 5547,
+      "super_minas": true,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2976,
+      "stage_id": 8,
+      "nome": "IMPERIO DOS BALOES",
+      "empresa": "IMPERIO DOS BALOES",
+      "phone": "3194403372",
+      "phones": [
+        "3194403372"
+      ],
+      "telefones": [
+        "3194403372"
+      ],
+      "email": "patricont13@gmail.com",
+      "person_id": 5560,
+      "super_minas": true,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3006,
+      "stage_id": 8,
+      "nome": "Red Horse Participacoes Societarias",
+      "empresa": "Red Horse Participacoes Societarias",
+      "phone": "1436621414",
+      "phones": [
+        "1436621414"
+      ],
+      "telefones": [
+        "1436621414"
+      ],
+      "email": "juliano@agroinforme.com.br",
+      "person_id": 5562,
+      "super_minas": true,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2549,
+      "stage_id": 8,
+      "nome": "Grupo Mueller",
+      "empresa": "Grupo Mueller",
+      "phone": "08007471692",
+      "phones": [
+        "08007471692"
+      ],
+      "telefones": [
+        "08007471692"
+      ],
+      "email": "sac@mueller.ind.br",
+      "person_id": 5593,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2630,
+      "stage_id": 8,
+      "nome": "Belmiro De Figueiredo Gomes",
+      "empresa": "Assai Atacadista",
+      "phone": "1134115000",
+      "phones": [
+        "1134115000"
+      ],
+      "telefones": [
+        "1134115000"
+      ],
+      "email": "paralegal@assai.com.br",
+      "person_id": 3640,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2647,
+      "stage_id": 8,
+      "nome": "Luciano Possette",
+      "empresa": "Grupo Pernambucanas",
+      "phone": "1130039160",
+      "phones": [
+        "1130039160"
+      ],
+      "telefones": [
+        "1130039160"
+      ],
+      "email": "notafiscal@pernambucanas.com.br",
+      "person_id": 3657,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2732,
+      "stage_id": 8,
+      "nome": "Marcelo Baptista De Oliveira",
+      "empresa": "Grupo Protege",
+      "phone": "11971984663",
+      "phones": [
+        "11971984663"
+      ],
+      "telefones": [
+        "11971984663"
+      ],
+      "email": "fiscal.corp@protege.com.br",
+      "person_id": 3711,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2752,
+      "stage_id": 8,
+      "nome": "Rodrigo Aguzzoli Travi",
+      "empresa": "Ledax Energia Inteligente Em Recuperacao Judicial",
+      "phone": "1145024402",
+      "phones": [
+        "1145024402"
+      ],
+      "telefones": [
+        "1145024402"
+      ],
+      "email": "contato@ledax.com",
+      "person_id": 2083,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2770,
+      "stage_id": 8,
+      "nome": "Eliseo Santiago Perez Fernandez",
+      "empresa": "Grupo Jbs Friboi",
+      "phone": "1131444000",
+      "phones": [
+        "1131444000"
+      ],
+      "telefones": [
+        "1131444000"
+      ],
+      "email": "tributos.rfb@jbs.com.br",
+      "person_id": 3738,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2777,
+      "stage_id": 8,
+      "nome": "Diego Parodi",
+      "empresa": "Latisa",
+      "phone": "4430462600",
+      "phones": [
+        "4430462600"
+      ],
+      "telefones": [
+        "4430462600"
+      ],
+      "email": "contador@grupoagrolatina.com.br",
+      "person_id": 3743,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2787,
+      "stage_id": 8,
+      "nome": "N/A",
+      "empresa": "Eric Augusto De Sa",
+      "phone": "1117141580",
+      "phones": [
+        "1117141580"
+      ],
+      "telefones": [
+        "1117141580"
+      ],
+      "email": "comercial@ericaugustodesa.com.br",
+      "person_id": 3753,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2788,
+      "stage_id": 8,
+      "nome": "N/A",
+      "empresa": "Leandro Bezerra Da Silva Santos",
+      "phone": "1147311455",
+      "phones": [
+        "1147311455"
+      ],
+      "telefones": [
+        "1147311455"
+      ],
+      "email": "leandro1familia@gmail.com",
+      "person_id": 3754,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2797,
+      "stage_id": 8,
+      "nome": "N/A",
+      "empresa": "Laura Dos Santos Xavier",
+      "phone": "35999737279",
+      "phones": [
+        "35999737279"
+      ],
+      "telefones": [
+        "35999737279"
+      ],
+      "email": "sveltespice@outlook.com",
+      "person_id": 3763,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2809,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - CELIA MARIA COELHO DOS PASSOS",
+      "empresa": "Shopping Campo & Lar",
+      "phone": "48988420330",
+      "phones": [
+        "48988420330"
+      ],
+      "telefones": [
+        "48988420330"
+      ],
+      "email": "",
+      "person_id": 4610,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2810,
+      "stage_id": 8,
+      "nome": "Diretor - SEBASTIAO DE PASSOS FERREIRA, Diretor - ANTONIO CARLOS DA COSTA, Diretor - MARCELO MARTINS BORBA, Conselheiro de Administração - RICARDO KAZUO TAKATA, Conselheiro de Administração - CARLOS ALBERTO BARROS DE CASTRO, Conselheiro de Administração -",
+      "empresa": "COLORADO SHOPPING",
+      "phone": "62981235562",
+      "phones": [
+        "62981235562"
+      ],
+      "telefones": [
+        "62981235562"
+      ],
+      "email": "",
+      "person_id": 4609,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2814,
+      "stage_id": 8,
+      "nome": "Sócio Menor (Assistido/Representado) - KAROLINE APARECIDA DE BRITO MANHANI, Administrador - ROSA MARIA DE BRITO MANHANI, Administrador - APARECIDO DONIZETE MANHANI",
+      "empresa": "AGRO SHOPPING",
+      "phone": "66999842172",
+      "phones": [
+        "66999842172"
+      ],
+      "telefones": [
+        "66999842172"
+      ],
+      "email": "",
+      "person_id": 4616,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2815,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - DENISE PEREIRA DA SILVA COSTA",
+      "empresa": "Pet Shopping Mundo Animal",
+      "phone": "83987655510",
+      "phones": [
+        "83987655510"
+      ],
+      "telefones": [
+        "83987655510"
+      ],
+      "email": "",
+      "person_id": 4614,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2817,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - NILSON ALVES BARBOSA",
+      "empresa": "ESQUINAO SHOPPING 10",
+      "phone": "77981504356",
+      "phones": [
+        "77981504356"
+      ],
+      "telefones": [
+        "77981504356"
+      ],
+      "email": "",
+      "person_id": 4618,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2818,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - ALEX APARECIDO CAMARA DE FREITAS, Sócio - FLAVIA LEAO SARAIVA DOS SANTOS",
+      "empresa": "Endoshopping Comercio De Produtos Medicos E Hospitalares",
+      "phone": "1145443442",
+      "phones": [
+        "1145443442",
+        "11994544344"
+      ],
+      "telefones": [
+        "1145443442",
+        "11994544344"
+      ],
+      "email": "falecomalexfreitas@gmail.com",
+      "person_id": 4619,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2851,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - JOSE MARIA SOUSA SILVA",
+      "empresa": "Arezzo Shopping Pamplona Comercio Varejista",
+      "phone": "96981034646",
+      "phones": [
+        "96981034646"
+      ],
+      "telefones": [
+        "96981034646"
+      ],
+      "email": "",
+      "person_id": 4654,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2859,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - CATARINA CAROLINE VEIGA BRANDAO",
+      "empresa": "Shopping Das Pecas",
+      "phone": "1141671717",
+      "phones": [
+        "1141671717"
+      ],
+      "telefones": [
+        "1141671717"
+      ],
+      "email": "brandaocatarina@outlook.com",
+      "person_id": 4663,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2882,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - ROSIOLANDA TEIXEIRA E FONSECA",
+      "empresa": "Arezzo Shopping Villa Lobos Comercio Varejista",
+      "phone": "96981034646",
+      "phones": [
+        "96981034646"
+      ],
+      "telefones": [
+        "96981034646"
+      ],
+      "email": "",
+      "person_id": 4684,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2890,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - SIMONE DOS REIS SANCHES",
+      "empresa": "Shopping Da Moda Comercio De Vestuario",
+      "phone": "1140281075",
+      "phones": [
+        "1140281075"
+      ],
+      "telefones": [
+        "1140281075"
+      ],
+      "email": "",
+      "person_id": 4692,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2919,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - TARCIANA AURELIANO TOSCANO DE OLIVEIRA",
+      "empresa": "Subway Tambia Shopping",
+      "phone": "83993222526",
+      "phones": [
+        "83993222526"
+      ],
+      "telefones": [
+        "83993222526"
+      ],
+      "email": "",
+      "person_id": 4724,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2926,
+      "stage_id": 8,
+      "nome": "Sócio - ATS PARTICIPACOES LTDA, Administrador - THIAGO AURELIANO TOSCANO SILVA",
+      "empresa": "Spoleto Manaira Shopping",
+      "phone": "83993222526",
+      "phones": [
+        "83993222526"
+      ],
+      "telefones": [
+        "83993222526"
+      ],
+      "email": "",
+      "person_id": 4730,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2936,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - WAMBASTHER ALVES, Sócio - ELIDA DA SILVA OLIVEIRA",
+      "empresa": "Shopping Filtros Magazine",
+      "phone": "62996704729",
+      "phones": [
+        "62996704729"
+      ],
+      "telefones": [
+        "62996704729"
+      ],
+      "email": "",
+      "person_id": 4744,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2937,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - DENIZE SPERANDIO CAMPOS FERRAREZ",
+      "empresa": "Campinho Casa Shopping",
+      "phone": "3235541877",
+      "phones": [
+        "3235541877",
+        "32999004335"
+      ],
+      "telefones": [
+        "3235541877",
+        "32999004335"
+      ],
+      "email": "",
+      "person_id": 4746,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2939,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - PAULO FERNANDO GUIMARAES MARINO CAETANO, Sócio - JULIANO RODRIGUES REZENDE MARCACINE",
+      "empresa": "CLUBE DE TIRO E CACA SHOPPING DAS ARMAS",
+      "phone": "3433218513",
+      "phones": [
+        "3433218513",
+        "34996782019"
+      ],
+      "telefones": [
+        "3433218513",
+        "34996782019"
+      ],
+      "email": "",
+      "person_id": 4745,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2940,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - HENRIQUE ALVES DEROIDE",
+      "empresa": "Holding Partner Rosa",
+      "phone": "19991140004",
+      "phones": [
+        "19991140004",
+        "1936081906"
+      ],
+      "telefones": [
+        "19991140004",
+        "1936081906"
+      ],
+      "email": "",
+      "person_id": 4750,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2943,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - HERONES MACHADO RIBEIRO JUNIOR",
+      "empresa": "Kings Salvador Shopping Da Bahia",
+      "phone": "71999438507",
+      "phones": [
+        "71999438507"
+      ],
+      "telefones": [
+        "71999438507"
+      ],
+      "email": "",
+      "person_id": 4754,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2944,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - CORINA RUIZ",
+      "empresa": "Cvc Tiete Plaza Shopping",
+      "phone": "11968454985",
+      "phones": [
+        "11968454985"
+      ],
+      "telefones": [
+        "11968454985"
+      ],
+      "email": "",
+      "person_id": 4755,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2945,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - ANTONIO ERIVANDO ALEXANDRE GOMES, Sócio-Administrador - ANTONIA ALEXANDRE RIBEIRO GOMES",
+      "empresa": "Shopping Das Variedades",
+      "phone": "89999348950",
+      "phones": [
+        "89999348950"
+      ],
+      "telefones": [
+        "89999348950"
+      ],
+      "email": "",
+      "person_id": 4756,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2947,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - JOMAR GOES NUNES, Sócio Menor (Assistido/Representado) - JOAO VICTOR PIRES NUNES",
+      "empresa": "Pizza Makers",
+      "phone": "71992260477",
+      "phones": [
+        "71992260477"
+      ],
+      "telefones": [
+        "71992260477"
+      ],
+      "email": "",
+      "person_id": 4758,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2948,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - JIEFENG GUAN",
+      "empresa": "Shop Das Cidades",
+      "phone": "12996339094",
+      "phones": [
+        "12996339094"
+      ],
+      "telefones": [
+        "12996339094"
+      ],
+      "email": "",
+      "person_id": 4642,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2949,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - MAURO JOSE BRAGA",
+      "empresa": "Terra D Ouro",
+      "phone": "19988679797",
+      "phones": [
+        "19988679797"
+      ],
+      "telefones": [
+        "19988679797"
+      ],
+      "email": "",
+      "person_id": 4759,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2950,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - CARLOS ATILA SALES E SILVA",
+      "empresa": "Cacau Show Sobral Shopping",
+      "phone": "85987758444",
+      "phones": [
+        "85987758444"
+      ],
+      "telefones": [
+        "85987758444"
+      ],
+      "email": "",
+      "person_id": 4760,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2951,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - GERALDO NARESSI",
+      "empresa": "Clube Morena Rosa Bourbon Shopping Sao Paulo",
+      "phone": "11994549947",
+      "phones": [
+        "11994549947"
+      ],
+      "telefones": [
+        "11994549947"
+      ],
+      "email": "",
+      "person_id": 4763,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2952,
+      "stage_id": 8,
+      "nome": "Administrador - ELIANE IGNACIO MOTT, Sócio - RAPHAEL AUGUSTO IGNACIO MOTT, Sócio - PHELIPE CESAR IGNACIO MOTT",
+      "empresa": "GRILETTO PLAZA SHOPPING CARAPICUIBA",
+      "phone": "11982108610",
+      "phones": [
+        "11982108610"
+      ],
+      "telefones": [
+        "11982108610"
+      ],
+      "email": "",
+      "person_id": 4761,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2953,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - RAFAEL MARTINELLI COLOMBO",
+      "empresa": "LOJAS CALCI SHOPPING LAJEADO",
+      "phone": "5137161280",
+      "phones": [
+        "5137161280",
+        "51980493100"
+      ],
+      "telefones": [
+        "5137161280",
+        "51980493100"
+      ],
+      "email": "",
+      "person_id": 4762,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 2955,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - EDILSON FERREIRA DE ANDRADE, Sócio-Administrador - ROSELI DE OLIVEIRA ANDRADE",
+      "empresa": "J Andrade Madeireira",
+      "phone": "75999475171",
+      "phones": [
+        "75999475171"
+      ],
+      "telefones": [
+        "75999475171"
+      ],
+      "email": "",
+      "person_id": 4766,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3031,
+      "stage_id": 8,
+      "nome": "Andreia",
+      "empresa": "Almatech Manutencao Instalacao De Estruturas Metalicas E Alvenaria Em Geral",
+      "phone": "1120243283",
+      "phones": [
+        "1120243283"
+      ],
+      "telefones": [
+        "1120243283"
+      ],
+      "email": "you@example.com",
+      "person_id": 535,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3055,
+      "stage_id": 8,
+      "nome": "Contato Casa do Pão de Queijo",
+      "empresa": "Casa Do Pao De Queijo",
+      "phone": "1130303600",
+      "phones": [
+        "1130303600"
+      ],
+      "telefones": [
+        "1130303600"
+      ],
+      "email": "",
+      "person_id": 5544,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3070,
+      "stage_id": 8,
+      "nome": "Copafer Comercial",
+      "empresa": "Copafer Comercial",
+      "phone": "1134058500",
+      "phones": [
+        "1134058500"
+      ],
+      "telefones": [
+        "1134058500"
+      ],
+      "email": "candinho@candinho.com.br",
+      "person_id": 5569,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3085,
+      "stage_id": 8,
+      "nome": "Responsável",
+      "empresa": "Eskimo Casimiro De Abreu Comercio Varejista",
+      "phone": "22998754115",
+      "phones": [
+        "22998754115"
+      ],
+      "telefones": [
+        "22998754115"
+      ],
+      "email": "atendimento@rbr.cnt.br",
+      "person_id": 3319,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3109,
+      "stage_id": 8,
+      "nome": "RAFAEL BOEING",
+      "empresa": "Intelbras",
+      "phone": "4821060006",
+      "phones": [
+        "4821060006"
+      ],
+      "telefones": [
+        "4821060006"
+      ],
+      "email": "grupo.tributario@intelbras.com.br",
+      "person_id": 5264,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3131,
+      "stage_id": 8,
+      "nome": "Jose Mauro Trazzini",
+      "empresa": "Mauro Comercio De Pisos E Azulejos",
+      "phone": "1125516600",
+      "phones": [
+        "1125516600"
+      ],
+      "telefones": [
+        "1125516600"
+      ],
+      "email": "ede.mendonca@hotmail.com",
+      "person_id": 3534,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3135,
+      "stage_id": 8,
+      "nome": "LUANA AMORIM ARRUDA",
+      "empresa": "Minasia Consultoria E Turismo",
+      "phone": "1144627757",
+      "phones": [
+        "1144627757"
+      ],
+      "telefones": [
+        "1144627757"
+      ],
+      "email": "sac@minasia.com.br",
+      "person_id": 5288,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3146,
+      "stage_id": 8,
+      "nome": "Jeorge Sodré",
+      "empresa": "Norac Do Brasil Industria E Comercio De Produtos Alimenticios",
+      "phone": "11982395467",
+      "phones": [
+        "11982395467",
+        "51991839986",
+        "1130162855",
+        "1155552953",
+        "41988388608",
+        "6635446070",
+        "71987494035",
+        "1141745678",
+        "1121411765",
+        "85999891248",
+        "98981510421"
+      ],
+      "telefones": [
+        "11982395467",
+        "51991839986",
+        "1130162855",
+        "1155552953",
+        "41988388608",
+        "6635446070",
+        "71987494035",
+        "1141745678",
+        "1121411765",
+        "85999891248",
+        "98981510421"
+      ],
+      "email": "natalia@preciosofruto.com.br",
+      "person_id": 4580,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3191,
+      "stage_id": 8,
+      "nome": "Marcus Da Silva Freitas",
+      "empresa": "Sol E Neve Gelados",
+      "phone": "3388262293",
+      "phones": [
+        "3388262293"
+      ],
+      "telefones": [
+        "3388262293"
+      ],
+      "email": "",
+      "person_id": 4399,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3211,
+      "stage_id": 8,
+      "nome": "BRUNO SANTOS LOPES CANDIDO",
+      "empresa": "VIPE PRODUTOS E SERVICOS",
+      "phone": "11998243432",
+      "phones": [
+        "11998243432"
+      ],
+      "telefones": [
+        "11998243432"
+      ],
+      "email": "brunoslcandido@gmail.com",
+      "person_id": 5330,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3213,
+      "stage_id": 8,
+      "nome": "Jeorge Sodré",
+      "empresa": "Volvo Car Br",
+      "phone": "11982395467",
+      "phones": [
+        "11982395467",
+        "51991839986",
+        "1130162855",
+        "1155552953",
+        "41988388608",
+        "6635446070",
+        "71987494035",
+        "1141745678",
+        "1121411765",
+        "85999891248",
+        "98981510421"
+      ],
+      "telefones": [
+        "11982395467",
+        "51991839986",
+        "1130162855",
+        "1155552953",
+        "41988388608",
+        "6635446070",
+        "71987494035",
+        "1141745678",
+        "1121411765",
+        "85999891248",
+        "98981510421"
+      ],
+      "email": "natalia@preciosofruto.com.br",
+      "person_id": 4580,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    }
+  ],
+  "planned_ids": [
+    2973,
+    2976,
+    3006,
+    2549,
+    2630,
+    2647,
+    2732,
+    2752,
+    2770,
+    2777,
+    2787,
+    2788,
+    2797,
+    2809,
+    2810,
+    2814,
+    2815,
+    2817,
+    2818,
+    2851,
+    2859,
+    2882,
+    2890,
+    2919,
+    2926,
+    2936,
+    2937,
+    2939,
+    2940,
+    2943,
+    2944,
+    2945,
+    2947,
+    2948,
+    2949,
+    2950,
+    2951,
+    2952,
+    2953,
+    2955,
+    3031,
+    3055,
+    3070,
+    3085,
+    3109,
+    3131,
+    3135,
+    3146,
+    3191,
+    3211,
+    3213
+  ],
+  "ultima_execucao": "2026-04-27T15:43:41.299809"
+}

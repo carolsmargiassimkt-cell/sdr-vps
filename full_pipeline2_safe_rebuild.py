@@ -9,11 +9,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from crm.crm_orchestrator import CRMEnrichmentLoop, _clean_company_display_name, _normalizar_telefone_br
+from crm.crm_orchestrator import CRMEnrichmentLoop, _clean_company_display_name, _normalizar_telefone_br, extrair_nome_fantasia
 from crm.pipedrive_client import PipedriveClient
 
 
 PIPELINE_ID = 2
+SUPER_MINAS_LABEL_IDS = {"175", "162", "176", "177"}
+SUPER_MINAS_LABEL_NAMES = {"SUPER_MINAS", "SUPER MINAS", "SUPERMINAS", "SUPER_MINAS_OPORTUNIDADE"}
 DEFAULT_BATCH_SIZE = 20
 DEFAULT_BATCH_DELAY_SEC = 15.0
 DEFAULT_DEAL_TIMEOUT_SEC = 180.0
@@ -27,10 +29,23 @@ def _chunked(items: List[Dict[str, Any]], size: int) -> Iterable[List[Dict[str, 
 
 
 class Pipeline2SafeRebuild:
-    def __init__(self, base_dir: Path, *, batch_size: int, batch_delay_sec: float) -> None:
+    def __init__(
+        self,
+        base_dir: Path,
+        *,
+        batch_size: int,
+        batch_delay_sec: float,
+        super_minas_only: bool = False,
+        exclude_super_minas: bool = False,
+        initial_fetch_retries: int = DEFAULT_INITIAL_FETCH_RETRIES,
+        initial_fetch_delay_sec: float = DEFAULT_INITIAL_FETCH_DELAY_SEC,
+        max_masters: int = 0,
+    ) -> None:
         self.base_dir = Path(base_dir)
         self.batch_size = max(1, int(batch_size))
         self.batch_delay_sec = max(0.0, float(batch_delay_sec))
+        self.super_minas_only = bool(super_minas_only)
+        self.exclude_super_minas = bool(exclude_super_minas)
         self.logger = self._build_logger()
         self.crm = PipedriveClient(logger=self.logger)
         self.loop = CRMEnrichmentLoop(self.crm, self.logger, self.base_dir)
@@ -43,8 +58,9 @@ class Pipeline2SafeRebuild:
         self.person_cache: Dict[int, Dict[str, Any]] = {}
         self.org_snapshot_cache: Dict[int, Dict[str, Any]] = {}
         self.deal_timeout_sec = DEFAULT_DEAL_TIMEOUT_SEC
-        self.initial_fetch_retries = DEFAULT_INITIAL_FETCH_RETRIES
-        self.initial_fetch_delay_sec = DEFAULT_INITIAL_FETCH_DELAY_SEC
+        self.initial_fetch_retries = max(1, int(initial_fetch_retries or DEFAULT_INITIAL_FETCH_RETRIES))
+        self.initial_fetch_delay_sec = max(5.0, float(initial_fetch_delay_sec or DEFAULT_INITIAL_FETCH_DELAY_SEC))
+        self.max_masters = max(0, int(max_masters or 0))
 
     def _build_logger(self) -> logging.Logger:
         logs_dir = self.base_dir / "logs"
@@ -67,7 +83,10 @@ class Pipeline2SafeRebuild:
         self.logger.info(str(message))
 
     def run(self) -> int:
-        self.log("[RUN_START] pipeline=2")
+        self.log(
+            f"[RUN_START] pipeline=2 super_minas_only={int(self.super_minas_only)} "
+            f"exclude_super_minas={int(self.exclude_super_minas)}"
+        )
         self._reset_runtime_caches()
         deals = self._fetch_pipeline_deals()
         if not deals:
@@ -80,6 +99,10 @@ class Pipeline2SafeRebuild:
             self.log("[RUN_ABORT] motivo=sem_master_deals")
             return 1
         masters = self._prioritize_masters(masters)
+        if self.max_masters > 0:
+            original_total = len(masters)
+            masters = masters[: self.max_masters]
+            self.log(f"[MASTER_LIMIT] max={self.max_masters} selecionados={len(masters)} total={original_total}")
 
         counters = {
             "masters": 0,
@@ -128,8 +151,18 @@ class Pipeline2SafeRebuild:
             output = [
                 dict(deal)
                 for deal in list(deals or [])
-                if isinstance(deal, dict) and int(deal.get("pipeline_id") or 0) == PIPELINE_ID
+                if isinstance(deal, dict)
+                and int(deal.get("pipeline_id") or 0) == PIPELINE_ID
+                and str(deal.get("status") or "").strip().lower() == "open"
             ]
+            if self.super_minas_only:
+                filtered = [dict(deal) for deal in output if self._is_super_minas_deal(deal)]
+                self.log(f"[FETCH_FILTER] pipeline=2 open={len(output)} super_minas={len(filtered)}")
+                output = filtered
+            elif self.exclude_super_minas:
+                filtered = [dict(deal) for deal in output if not self._is_super_minas_deal(deal)]
+                self.log(f"[FETCH_FILTER] pipeline=2 open={len(output)} sem_super_minas={len(filtered)}")
+                output = filtered
             if output:
                 self.log(f"[FETCH_OK] pipeline=2 deals={len(output)}")
                 return output
@@ -143,6 +176,29 @@ class Pipeline2SafeRebuild:
             break
         self.log("[FETCH_OK] pipeline=2 deals=0")
         return []
+
+    def _is_super_minas_deal(self, deal: Dict[str, Any]) -> bool:
+        raw_label = (deal or {}).get("label")
+        raw_items = raw_label if isinstance(raw_label, list) else [raw_label]
+        tokens = set()
+        raw_ids = set()
+        for item in raw_items:
+            candidates: List[Any]
+            if isinstance(item, dict):
+                candidates = [item.get("id"), item.get("label"), item.get("name"), item.get("value"), item.get("text")]
+            else:
+                candidates = [item]
+            for candidate in candidates:
+                clean = str(candidate or "").strip()
+                if not clean:
+                    continue
+                tokens.add(clean.upper().replace("-", "_").replace(" ", "_"))
+                if clean.isdigit():
+                    raw_ids.add(clean)
+        normalized_super = {str(item).strip().upper().replace("-", "_") for item in SUPER_MINAS_LABEL_NAMES}
+        if tokens & normalized_super:
+            return True
+        return bool(raw_ids & SUPER_MINAS_LABEL_IDS)
 
     def _initial_cleanup(self, deals: List[Dict[str, Any]]) -> None:
         self.log("[LIMPEZA_INICIAL]")
@@ -319,9 +375,128 @@ class Pipeline2SafeRebuild:
                     f"[DEAL_MASTER_DEFINIDO] master={int((master or {}).get('id') or 0)} "
                     f"duplicados={','.join(str(int((deal or {}).get('id') or 0)) for deal in duplicate_deals)}"
                 )
-                self.loop._consolidate_duplicates_into_master(master, duplicate_deals)
+                self._consolidate_duplicates_into_master(master, duplicate_deals)
             masters.append(master)
         return masters
+
+    def _consolidate_duplicates_into_master(self, master: Dict[str, Any], duplicates: List[Dict[str, Any]]) -> None:
+        master_deal_id = int((master or {}).get("id") or 0)
+        master_org = (master or {}).get("org_id") or {}
+        master_org_id = self.loop._extract_id(master_org)
+        if not master_deal_id or not master_org_id:
+            return
+
+        master_org_payload: Dict[str, Any] = {}
+        master_org_data = self._get_cached_org(master_org_id, deal=master)
+        master_cnpj = re.sub(r"\D+", "", str(self.crm.extract_cnpj(master_org_data) or ""))
+        master_name = str((master_org_data or {}).get("name") or "").strip()
+        migrated_items: List[str] = []
+
+        for duplicate in list(duplicates or []):
+            duplicate_id = int((duplicate or {}).get("id") or 0)
+            duplicate_stage_id = int((duplicate or {}).get("stage_id") or 0)
+            duplicate_org = (duplicate or {}).get("org_id") or {}
+            duplicate_org_id = self.loop._extract_id(duplicate_org)
+            duplicate_org_data = self._get_cached_org(duplicate_org_id, deal=duplicate) if duplicate_org_id else {}
+            duplicate_cnpj = re.sub(r"\D+", "", str(self.crm.extract_cnpj(duplicate_org_data) or ""))
+            duplicate_name = str((duplicate_org_data or {}).get("name") or "").strip()
+
+            if not master_cnpj and duplicate_cnpj:
+                master_org_payload.update(
+                    self.crm.build_org_fields(
+                        duplicate_cnpj,
+                        str((duplicate_org_data or {}).get(self.crm.CNAE_FIELD_KEY) or "").strip(),
+                    )
+                )
+                master_cnpj = duplicate_cnpj
+                migrated_items.append(f"cnpj:{duplicate_id}")
+
+            preferred_name = extrair_nome_fantasia(duplicate_name, None, duplicate_name)
+            if preferred_name and (
+                self.loop._is_generic_org_name(master_name)
+                or len(_clean_company_display_name(preferred_name).split())
+                < len(_clean_company_display_name(master_name).split() or [master_name])
+            ):
+                master_org_payload["name"] = preferred_name
+                master_name = preferred_name
+                migrated_items.append(f"nome:{duplicate_id}")
+
+            duplicate_people = []
+            if duplicate_org_id > 0:
+                duplicate_people = self._get_cached_org_people(duplicate_org_id)
+                for person in list(duplicate_people or []):
+                    self.loop._ensure_participant(master, person)
+            if duplicate_people:
+                migrated_items.append(f"pessoas:{duplicate_id}")
+
+            note_lines = [
+                f"Consolidado do deal duplicado #{duplicate_id}.",
+                f"Empresa: {duplicate_name or str((duplicate_org or {}).get('name') or '').strip()}",
+            ]
+            if duplicate_cnpj:
+                note_lines.append(f"CNPJ: {duplicate_cnpj}")
+            if duplicate_people:
+                people_summary: List[str] = []
+                for person in list(duplicate_people or [])[:5]:
+                    person_name = str((person or {}).get("name") or "").strip()
+                    phones = []
+                    for item in (person or {}).get("phone") or []:
+                        value = item.get("value") if isinstance(item, dict) else item
+                        phone = _normalizar_telefone_br(value, self.loop.whatsapp)
+                        if phone:
+                            phones.append(phone)
+                    emails = []
+                    for item in (person or {}).get("email") or []:
+                        value = item.get("value") if isinstance(item, dict) else item
+                        email = str(value or "").strip().lower()
+                        if email:
+                            emails.append(email)
+                    summary = person_name or "Sem nome"
+                    if phones:
+                        summary += f" | tel: {', '.join(phones[:3])}"
+                    if emails:
+                        summary += f" | email: {', '.join(emails[:3])}"
+                    people_summary.append(summary)
+                if people_summary:
+                    note_lines.append("Contatos migrados:")
+                    note_lines.extend(people_summary)
+
+            self.loop._safe_pipedrive_call(
+                lambda lines=note_lines: self.crm.add_note(deal_id=master_deal_id, content="\n".join(lines))
+            )
+
+            duplicate_payload: Dict[str, Any] = {
+                "status": "lost",
+                "status_bot": "perdido",
+                "lost_reason": f"duplicado_master_{master_deal_id}",
+            }
+            if duplicate_stage_id > 0:
+                duplicate_payload["stage_id"] = duplicate_stage_id
+            duplicate_lost = self.loop._safe_pipedrive_call(
+                lambda deal_id=duplicate_id, payload=dict(duplicate_payload): self.crm.update_deal(deal_id, payload)
+            )
+            if duplicate_lost:
+                self.log(
+                    f"[DEAL_DUPLICADO_PERDIDO] deal={duplicate_id} master={master_deal_id} "
+                    f"stage={duplicate_stage_id or 'na'}"
+                )
+                self.loop._safe_pipedrive_call(
+                    lambda deal_id=duplicate_id, master_id=master_deal_id: self.crm.add_note(
+                        deal_id=deal_id,
+                        content=f"Deal duplicado movido para perdido. Master preservado: #{master_id}.",
+                    )
+                )
+
+        sanitized_payload = {key: value for key, value in master_org_payload.items() if value not in (None, "", [], {})}
+        if sanitized_payload:
+            updated = self.loop._safe_pipedrive_call(
+                lambda org_id=master_org_id, payload=dict(sanitized_payload): self.crm.update_organization(org_id, payload)
+            )
+            if updated:
+                self.log(f"[DADOS_MIGRADOS_MASTER] master={master_deal_id} itens={','.join(migrated_items) or 'org'}")
+                return
+        if migrated_items:
+            self.log(f"[DADOS_MIGRADOS_MASTER] master={master_deal_id} itens={','.join(migrated_items)}")
 
     def _duplicate_group_key_fast(self, deal: Dict[str, Any]) -> str:
         org = deal.get("org_id") or {}
@@ -563,8 +738,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Reconstrucao segura do enrichment do pipeline 2")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--batch-delay-sec", type=float, default=DEFAULT_BATCH_DELAY_SEC)
+    parser.add_argument("--super-minas-only", action="store_true")
+    parser.add_argument("--exclude-super-minas", action="store_true")
+    parser.add_argument("--initial-fetch-retries", type=int, default=DEFAULT_INITIAL_FETCH_RETRIES)
+    parser.add_argument("--initial-fetch-delay-sec", type=float, default=DEFAULT_INITIAL_FETCH_DELAY_SEC)
+    parser.add_argument("--max-masters", type=int, default=0)
     args = parser.parse_args()
-    runner = Pipeline2SafeRebuild(Path(__file__).resolve().parent, batch_size=args.batch_size, batch_delay_sec=args.batch_delay_sec)
+    if args.super_minas_only and args.exclude_super_minas:
+        parser.error("--super-minas-only e --exclude-super-minas nao podem ser usados juntos")
+    runner = Pipeline2SafeRebuild(
+        Path(__file__).resolve().parent,
+        batch_size=args.batch_size,
+        batch_delay_sec=args.batch_delay_sec,
+        super_minas_only=bool(args.super_minas_only),
+        exclude_super_minas=bool(args.exclude_super_minas),
+        initial_fetch_retries=int(args.initial_fetch_retries or DEFAULT_INITIAL_FETCH_RETRIES),
+        initial_fetch_delay_sec=float(args.initial_fetch_delay_sec or DEFAULT_INITIAL_FETCH_DELAY_SEC),
+        max_masters=int(args.max_masters or 0),
+    )
     return runner.run()
 
 

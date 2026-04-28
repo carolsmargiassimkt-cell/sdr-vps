@@ -1,3 +1,33 @@
+
+def _session_guard_allows_inbound(data):
+    try:
+        import json, os, time
+        guard_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "whatsapp_session_guard.json")
+        if not os.path.exists(guard_path):
+            return True
+        with open(guard_path, "r", encoding="utf-8") as f:
+            guard = json.load(f) or {}
+        started_at = int(float(guard.get("session_started_at") or 0))
+        if started_at <= 0:
+            return True
+        ts = data.get("timestamp") or data.get("messageTimestamp") or data.get("ts")
+        try:
+            msg_ts = int(float(ts))
+            if msg_ts > 1000000000000:
+                msg_ts = msg_ts // 1000
+        except Exception:
+            print("[SESSION_GUARD_NO_VALID_TIMESTAMP] bloqueando inbound sem timestamp confiavel")
+            return False
+        return msg_ts >= (started_at - 300)
+    except Exception as e:
+        print(f"[SESSION_GUARD_CHECK_ERROR] {e}")
+        return True
+
+
+def _force_positive_intent(text):
+    t = (text or "").lower()
+    kws = ["ok", "tá bom", "ta bom", "sim", "beleza", "pode ser"]
+    return any(k in t for k in kws)
 import hashlib
 import json
 import logging
@@ -6,6 +36,7 @@ import re
 import sys
 import time
 import unicodedata
+import uuid
 from datetime import datetime
 from threading import Lock
 
@@ -15,6 +46,12 @@ from flask import Flask, jsonify, request
 from crm.pipedrive_client import PipedriveClient
 from logic.whatsapp_pitch_engine import WhatsAppPitchEngine
 from services.whatsapp_service import WhatsAppService
+
+try:
+    from config.config_loader import get_config_value
+except Exception:
+    def get_config_value(_key, default=""):
+        return default
 
 
 app = Flask(__name__)
@@ -28,18 +65,116 @@ except Exception:
 pitch = WhatsAppPitchEngine(config=None)
 whatsapp = WhatsAppService()
 crm = PipedriveClient()
-crm.ensure_deal_labels(["cad1", "respondido"])
+crm.ensure_deal_labels(
+    [
+        "respondido",
+        *[f"WHATSAPP_CAD{i}" for i in range(1, 7)],
+        *[f"EMAIL_CAD{i}" for i in range(1, 7)],
+    ]
+)
 
-BLOCKLIST_FILE = "logs/whatsapp_manual_blocklist.json"
-PROCESSED_FILE = "inbound_processed.json"
-PROCESSED_LOCK_FILE = "inbound_processed.json.lock"
-HISTORY_FILE = "logs/whatsapp_message_history.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+LOGS_DIR = os.path.join(BASE_DIR, "logs")
+BLOCKLIST_FILE = os.path.join(LOGS_DIR, "whatsapp_manual_blocklist.json")
+PROCESSED_FILE = os.path.join(BASE_DIR, "inbound_processed.json")
+PROCESSED_LOCK_FILE = os.path.join(BASE_DIR, "inbound_processed.json.lock")
+HISTORY_FILE = os.path.join(LOGS_DIR, "whatsapp_message_history.json")
+EMAIL_PENDING_CONFIRMATIONS_FILE = os.path.join(DATA_DIR, "email_pending_confirmations.json")
+EMAIL_QUEUE_FILE = os.path.join(DATA_DIR, "email_handoff_queue.json")
+AGENT_DECIDE_UPSTREAM_URL = str(
+    os.getenv("AGENT_DECIDE_UPSTREAM_URL")
+    or get_config_value("agent_decide_upstream_url", "")
+    or ""
+).strip()
+AGENT_DECIDE_TIMEOUT_SEC = max(
+    1.0,
+    min(
+        15.0,
+        float(
+            os.getenv("AGENT_DECIDE_TIMEOUT_SEC")
+            or get_config_value("agent_decide_timeout_sec", 4)
+            or 4
+        ),
+    ),
+)
+BOTPRESS_BASE_URL = str(
+    os.getenv("BOTPRESS_BASE_URL")
+    or get_config_value("botpress_base_url", "http://127.0.0.1:3100")
+    or "http://127.0.0.1:3100"
+).rstrip("/")
+BOTPRESS_BOT_ID = str(
+    os.getenv("BOTPRESS_BOT_ID")
+    or get_config_value("botpress_bot_id", "default")
+    or "default"
+).strip() or "default"
+BOTPRESS_TIMEOUT_SEC = max(
+    1.0,
+    min(
+        15.0,
+        float(
+            os.getenv("BOTPRESS_TIMEOUT_SEC")
+            or get_config_value("botpress_timeout_sec", 8)
+            or 8
+        ),
+    ),
+)
+
+
+def is_agent_decide_enabled():
+    return str(os.getenv("AGENT_DECIDE_ENABLED", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_bool(value):
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def is_hard_negative_message(message):
+    txt = str(message or "").strip().lower()
+    txt = unicodedata.normalize("NFKD", txt).encode("ascii", "ignore").decode("ascii")
+    patterns = [
+        r"\bnao\s+temos\s+interesse\b",
+        r"\bnao\s+tenho\s+interesse\b",
+        r"\bnao\s+tenho\s+interes+\b",
+        r"\bsem\s+interesse\b",
+        r"\bnao\s+queremos\b",
+        r"\bnao\s+quero\b",
+        r"\bnao\s+me\s+interessa\b",
+        r"\bnao\s+gostaria\b",
+        r"\bnao\s+preciso\b",
+        r"\bnao\s+tenho\s+interesse\s+no\s+momento\b",
+        r"\bpode\s+me\s+remover\b",
+        r"\btira(r)?\s+meu\s+contato\b",
+        r"\bretira(r)?\s+meu\s+numero\b",
+        r"\bnao\s+chama(r)?\s+mais\b",
+        r"\bpare\b",
+        r"\bstop\b",
+        r"\bnao\s+tenho\s+interesse,\b",
+        r"\bagradeco\b",
+        r"\bagradeco\s+mas\s+nao\b",
+        r"\bobrigad[oa],?\s+mas\s+nao\b",
+        r"\bremove\b",
+        r"\bnao\s+me\s+chame\b",
+        r"\bnao\s+autorizei\b",
+        r"\bsem\s+interesse\b",
+        r"\bnao\s+faz\s+sentido\b",
+        r"\bnao\s+preciso\b",
+    ]
+    return any(re.search(p, txt) for p in patterns)
+
+def is_test_whitelist_phone(phone):
+    return str(phone) in TEST_WHITELIST
+
 TEST_WHITELIST = {"5535920002020", "35920002020", "5511998804191", "11998804191"}
 CRM_CACHE_TTL_SECONDS = 24 * 60 * 60
 REPLY_WINDOW_SECONDS = 30 * 60
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/auto")
-OPENROUTER_TOKEN = os.getenv("OPENROUTER_API_KEY") or getattr(WhatsAppPitchEngine, "OPENROUTER_TOKEN", "")
+GEMINI_MODEL = str(
+    os.getenv("GEMINI_MODEL")
+    or get_config_value("gemini_model", "gemini-1.5-flash")
+    or "gemini-1.5-flash"
+).strip() or "gemini-1.5-flash"
 lead_cache = {}
 reply_guard = {}
 reply_guard_lock = Lock()
@@ -50,29 +185,42 @@ FORA_HORARIO_MENSAGEM = "Oi, aqui é a Carol da Mand. Não estou disponível no 
 def dentro_do_horario():
     agora = datetime.now()
     if agora.weekday() <= 4:
-        return agora.hour < 17 or (agora.hour == 17 and agora.minute <= 30)
+        return 9 <= agora.hour < 18
     return False
+
+
+def _blocklist_entry_phone(item):
+    if not isinstance(item, dict):
+        return ""
+    for field_name in ("telefone", "phone", "number"):
+        normalized = whatsapp.normalize_phone(item.get(field_name))
+        if normalized:
+            return normalized
+    return ""
 
 
 def append_to_blocklist(phone, reason):
     try:
-        os.makedirs("logs", exist_ok=True)
+        os.makedirs(LOGS_DIR, exist_ok=True)
         data = []
         if os.path.exists(BLOCKLIST_FILE):
             with open(BLOCKLIST_FILE, "r", encoding="utf-8-sig") as f:
                 loaded = json.load(f)
                 if isinstance(loaded, list):
                     data = loaded
-        if not any(str(item.get("telefone")) == phone for item in data if isinstance(item, dict)):
+        normalized_phone = whatsapp.normalize_phone(phone)
+        if not normalized_phone:
+            return False
+        if not any(_blocklist_entry_phone(item) == normalized_phone for item in data if isinstance(item, dict)):
             data.append({
-                "telefone": phone,
+                "telefone": normalized_phone,
                 "reason": reason,
                 "tag": "blocked_automatic",
                 "created_at": datetime.now().isoformat(),
             })
             with open(BLOCKLIST_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            print(f"[BLOCKLIST_ADICIONADO] telefone={phone} motivo={reason}")
+            print(f"[BLOCKLIST_ADICIONADO] telefone={normalized_phone} motivo={reason}")
             return True
     except Exception as e:
         print(f"[ERRO_BLOCKLIST] {e}")
@@ -147,11 +295,13 @@ def load_manual_blocklist():
         if os.path.exists(BLOCKLIST_FILE):
             with open(BLOCKLIST_FILE, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
-                return {
-                    whatsapp.normalize_phone(item["telefone"])
-                    for item in data
-                    if isinstance(item, dict) and item.get("telefone")
-                }
+                blocked = set()
+                for item in list(data or []):
+                    normalized = _blocklist_entry_phone(item)
+                    if not normalized:
+                        continue
+                    blocked.update(whatsapp.phone_variants(normalized))
+                return blocked
     except Exception:
         pass
     return set()
@@ -169,13 +319,49 @@ def load_history():
     return {}
 
 
+def load_json_file(path, fallback):
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, type(fallback)):
+                    return loaded
+    except Exception:
+        pass
+    return fallback
+
+
+def save_json_file(path, payload):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def load_email_pending_confirmations():
+    payload = load_json_file(EMAIL_PENDING_CONFIRMATIONS_FILE, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_email_pending_confirmations(payload):
+    save_json_file(EMAIL_PENDING_CONFIRMATIONS_FILE, payload if isinstance(payload, dict) else {})
+
+
+def load_email_queue():
+    payload = load_json_file(EMAIL_QUEUE_FILE, [])
+    return payload if isinstance(payload, list) else []
+
+
+def save_email_queue(payload):
+    save_json_file(EMAIL_QUEUE_FILE, payload if isinstance(payload, list) else [])
+
+
 def save_history(history):
-    os.makedirs("logs", exist_ok=True)
+    os.makedirs(LOGS_DIR, exist_ok=True)
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f)
 
 
-def append_history(phone, direction, message, step=0):
+def append_history(phone, direction, message, step=0, source=""):
     history = load_history()
     items = history.get(phone, [])
     items.append({
@@ -183,6 +369,7 @@ def append_history(phone, direction, message, step=0):
         "message": str(message or "").strip(),
         "step": int(step or 0),
         "created_at": datetime.now().isoformat(),
+        "source": str(source or "").strip().lower(),
     })
     history[phone] = items[-30:]
     save_history(history)
@@ -210,6 +397,31 @@ def has_recent_history_entry(phone, direction, message, within_seconds=600):
         if str(item.get("direction") or "").strip().lower() != target_direction:
             continue
         if str(item.get("message") or "").strip() != target_message:
+            continue
+        created_at = str(item.get("created_at") or "").strip()
+        if not created_at:
+            return True
+        try:
+            created = datetime.fromisoformat(created_at)
+        except Exception:
+            return True
+        if (now - created).total_seconds() <= within_seconds:
+            return True
+    return False
+
+
+def has_recent_confirmed_outbound_entry(phone, message, within_seconds=600):
+    history = load_history().get(phone, [])
+    target_message = str(message or "").strip()
+    if not target_message:
+        return False
+    now = datetime.now()
+    for item in reversed(history):
+        if str(item.get("direction") or "").strip().lower() != "out":
+            continue
+        if str(item.get("message") or "").strip() != target_message:
+            continue
+        if str(item.get("source") or "").strip().lower() not in {"sync", "outbound_sync", "webhook_sync", "manual_sync"}:
             continue
         created_at = str(item.get("created_at") or "").strip()
         if not created_at:
@@ -279,7 +491,37 @@ def infer_step_from_deals(deals):
 
 def is_opt_out(message):
     normalized = re.sub(r"\s+", " ", str(message or "").strip().lower())
-    return any(token in normalized for token in ("pare", "não quero", "nao quero", "sair"))
+    return any(
+        token in normalized
+        for token in (
+            "pare",
+            "não quero",
+            "nao quero",
+            "não queremos",
+            "nao queremos",
+            "não temos interesse",
+            "nao temos interesse",
+            "não tenho interesse",
+            "nao tenho interesse",
+            "sem interesse",
+            "agradeço",
+            "agradeco",
+            "sair",
+            "remove",
+            "não me chame",
+            "nao me chame",
+            "não me procure",
+            "nao me procure",
+            "não autorizei",
+            "nao autorizei",
+            "não faz sentido",
+            "nao faz sentido",
+            "não preciso",
+            "nao preciso",
+            "obrigado, mas não",
+            "obrigado mas nao",
+        )
+    )
 
 
 def normalize_intent_text(message):
@@ -287,6 +529,73 @@ def normalize_intent_text(message):
     decomposed = unicodedata.normalize("NFKD", text)
     ascii_text = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
     return re.sub(r"\s+", " ", ascii_text).strip()
+
+
+def _gemini_api_keys():
+    keys = []
+    for candidate in (
+        os.getenv("GEMINI_API_KEY_1", ""),
+        os.getenv("GEMINI_API_KEY_2", ""),
+        os.getenv("GEMINI_API_KEY", ""),
+        get_config_value("gemini_api_key_primary", ""),
+        get_config_value("gemini_api_key_fallback", ""),
+        get_config_value("gemini_api_key", ""),
+    ):
+        token = str(candidate or "").strip()
+        if token and token not in keys:
+            keys.append(token)
+    return keys
+
+
+def _extract_json_payload(raw_text):
+    text = str(raw_text or "").strip()
+    if not text:
+        return {}
+    cleaned = re.sub(r"^```(?:json)?|```$", "", text, flags=re.IGNORECASE).strip()
+    try:
+        payload = json.loads(cleaned)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+    if not match:
+        return {}
+    try:
+        payload = json.loads(match.group(0))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _gemini_generate_text(prompt, *, max_output_tokens=120, temperature=0):
+    prompt_text = str(prompt or "").strip()
+    if not prompt_text:
+        return "", "empty_prompt"
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
+        "generationConfig": {
+            "temperature": float(temperature or 0),
+            "maxOutputTokens": max(1, int(max_output_tokens or 120)),
+        },
+    }
+    for api_key in _gemini_api_keys():
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+            response = requests.post(url, params={"key": api_key}, json=payload, timeout=8)
+            if int(response.status_code or 0) >= 400:
+                continue
+            body = response.json() if response.content else {}
+            candidates = list((body or {}).get("candidates") or [])
+            if not candidates:
+                continue
+            parts = (((candidates[0] or {}).get("content") or {}).get("parts") or [])
+            for part in parts:
+                maybe_text = str((part or {}).get("text") or "").strip()
+                if maybe_text:
+                    return maybe_text, "gemini"
+        except Exception:
+            continue
+    return "", "missing_key_or_error"
 
 
 def detect_bot_menu_rule(message):
@@ -351,91 +660,47 @@ def detect_bot_menu_rule(message):
     return False, ""
 
 
-def classify_inbound_intent_openrouter(message):
-    api_key = str(OPENROUTER_TOKEN or "").strip()
-    if not api_key:
-        return "unknown", "missing_token"
-    payload = {
-        "model": OPENROUTER_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Classifique a mensagem recebida no WhatsApp. Responda APENAS JSON puro "
-                    "{\"intent\":\"bot_menu|human|unknown\",\"reason\":\"...\"}. Use bot_menu para "
-                    "resposta automatica, menu numerado, URA, assistente virtual ou atendimento automatico "
-                    "em que o SDR nao deve responder. Use human para pessoa respondendo livremente."
-                ),
-            },
-            {"role": "user", "content": str(message or "").strip()[:2000]},
-        ],
-        "temperature": 0,
-    }
-    try:
-        response = requests.post(
-            OPENROUTER_URL,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=8,
-        )
-        if response.status_code != 200:
-            return "unknown", f"http_{response.status_code}"
-        body = response.json()
-        content = (((body.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
-        content = re.sub(r"^```(?:json)?|```$", "", content, flags=re.IGNORECASE).strip()
-        parsed = json.loads(content)
-        intent = str(parsed.get("intent") or "").strip().lower()
-        reason = str(parsed.get("reason") or "").strip()
-        if intent in {"bot_menu", "human", "unknown"}:
-            return intent, reason
-    except Exception as exc:
-        return "unknown", f"erro={exc}"
+def classify_inbound_intent_gemini(message):
+    prompt = (
+        "Classifique a mensagem recebida no WhatsApp. Responda APENAS JSON puro "
+        "{\"intent\":\"bot_menu|human|unknown\",\"reason\":\"...\"}.\n"
+        "Use `bot_menu` para resposta automatica, menu numerado, URA, assistente virtual ou "
+        "atendimento automatico em que o SDR nao deve responder livremente.\n"
+        "Use `human` para pessoa respondendo livremente.\n"
+        "Mensagem:\n"
+        f"{str(message or '').strip()[:2000]}"
+    )
+    raw_text, reason = _gemini_generate_text(prompt, max_output_tokens=80, temperature=0)
+    if not raw_text:
+        return "unknown", reason
+    parsed = _extract_json_payload(raw_text)
+    intent = str(parsed.get("intent") or "").strip().lower()
+    detail = str(parsed.get("reason") or "").strip() or reason
+    if intent in {"bot_menu", "human", "unknown"}:
+        return intent, detail
     return "unknown", "invalid_payload"
 
 
-def choose_bot_menu_option_openrouter(message):
-    api_key = str(OPENROUTER_TOKEN or "").strip()
-    if not api_key:
-        return "", "missing_token"
-    payload = {
-        "model": OPENROUTER_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Voce recebe um menu/URA de WhatsApp. Escolha a melhor resposta curta e EXATA para navegar "
-                    "ate um humano, vendas, comercial ou compras. Responda APENAS JSON puro "
-                    "{\"reply\":\"token_exato\",\"reason\":\"...\"}. "
-                    "Se o menu pedir um numero, devolva so o numero. "
-                    "Se o menu pedir uma palavra, devolva so a palavra exata do menu. "
-                    "Priorize nesta ordem: humano/atendente, comercial/vendas, compras, representante/consultor, "
-                    "sac/atendimento. Nao invente resposta fora do menu. "
-                    "So use \"atendente\" ou \"menu\" se isso realmente aparecer como opcao valida."
-                ),
-            },
-            {"role": "user", "content": str(message or "").strip()[:2500]},
-        ],
-        "temperature": 0,
-    }
-    try:
-        response = requests.post(
-            OPENROUTER_URL,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=8,
-        )
-        if response.status_code != 200:
-            return "", f"http_{response.status_code}"
-        body = response.json()
-        content = (((body.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
-        content = re.sub(r"^```(?:json)?|```$", "", content, flags=re.IGNORECASE).strip()
-        parsed = json.loads(content)
-        reply = str(parsed.get("reply") or "").strip()
-        reason = str(parsed.get("reason") or "").strip()
-        if re.fullmatch(r"[0-9]{1,2}|[#*]|[A-Za-z0-9][A-Za-z0-9 _./-]{0,40}", reply, flags=re.IGNORECASE):
-            return reply, reason or "openrouter"
-    except Exception as exc:
-        return "", f"erro={exc}"
+def choose_bot_menu_option_gemini(message):
+    prompt = (
+        "Voce recebe um menu/URA de WhatsApp. Escolha a melhor resposta curta e EXATA para navegar "
+        "ate um humano, vendas, comercial ou compras. Responda APENAS JSON puro "
+        "{\"reply\":\"token_exato\",\"reason\":\"...\"}.\n"
+        "Se o menu pedir um numero, devolva so o numero.\n"
+        "Se o menu pedir uma palavra, devolva so a palavra exata do menu.\n"
+        "Priorize nesta ordem: humano/atendente, comercial/vendas, compras, representante/consultor, sac/atendimento.\n"
+        "Nao invente resposta fora do menu.\n"
+        "Menu:\n"
+        f"{str(message or '').strip()[:2500]}"
+    )
+    raw_text, reason = _gemini_generate_text(prompt, max_output_tokens=80, temperature=0)
+    if not raw_text:
+        return "", reason
+    parsed = _extract_json_payload(raw_text)
+    reply = str(parsed.get("reply") or "").strip()
+    detail = str(parsed.get("reason") or "").strip() or reason
+    if re.fullmatch(r"[0-9]{1,2}|[#*]|[A-Za-z0-9][A-Za-z0-9 _./-]{0,40}", reply, flags=re.IGNORECASE):
+        return reply, detail
     return "", "invalid_payload"
 
 
@@ -497,9 +762,9 @@ def choose_bot_menu_option(message):
         if first_keyword:
             return first_keyword, "fallback:first_keyword"
 
-    reply, reason = choose_bot_menu_option_openrouter(message)
+    reply, reason = choose_bot_menu_option_gemini(message)
     if reply:
-        return reply, f"openrouter:{reason}"
+        return reply, f"gemini:{reason}"
 
     normalized = normalize_intent_text(message)
     keyword_fallbacks = [
@@ -556,9 +821,9 @@ def should_ignore_bot_menu(message):
     )
     if not needs_ai_check:
         return False, "rule_clean"
-    intent, reason = classify_inbound_intent_openrouter(message)
-    print(f"[INTENT_OPENROUTER] intent={intent} reason={reason}")
-    return intent == "bot_menu", f"openrouter:{reason}"
+    intent, reason = classify_inbound_intent_gemini(message)
+    print(f"[INTENT_GEMINI] intent={intent} reason={reason}")
+    return intent == "bot_menu", f"gemini:{reason}"
 
 
 def detect_closing_intent(message):
@@ -569,10 +834,14 @@ def detect_closing_intent(message):
     no_interest_tokens = (
         "sem interesse",
         "sem interesse nisso",
+        "não temos interesse",
+        "nao temos interesse",
         "não tenho interesse",
         "nao tenho interesse",
         "não me interessa",
         "nao me interessa",
+        "não queremos",
+        "nao queremos",
         "não quero",
         "nao quero",
         "nao queroo",
@@ -595,6 +864,16 @@ def detect_closing_intent(message):
         "pode parar",
         "não precisa",
         "nao precisa",
+        "agradeço",
+        "agradeco",
+        "remove",
+        "pare",
+        "não me chame",
+        "nao me chame",
+        "não autorizei",
+        "nao autorizei",
+        "obrigado, mas não",
+        "obrigado mas nao",
     )
     if any(token in normalized for token in no_interest_tokens):
         return "no_interest"
@@ -605,6 +884,23 @@ def detect_closing_intent(message):
         "telefone errado",
         "ligou errado",
         "falou com a pessoa errada",
+        "não sou dessa empresa",
+        "nao sou dessa empresa",
+        "não trabalho aí",
+        "nao trabalho ai",
+        "não conheço essa empresa",
+        "nao conheco essa empresa",
+        "empresa errada",
+        "não é daqui",
+        "nao e daqui",
+        "não faço parte",
+        "nao faco parte",
+        "sou ex funcionário",
+        "sou ex funcionario",
+        "não tenho vínculo",
+        "nao tenho vinculo",
+        "desconheço",
+        "desconheco",
     )
     if any(token in normalized for token in wrong_number_tokens):
         return "wrong_number"
@@ -667,6 +963,20 @@ def detect_positive_intent(message):
         "manda mais informacao",
         "manda mais informação",
         "quero saber mais",
+        "sim",
+        "pode",
+        "quero",
+        "quero saber",
+        "pode me mandar",
+        "faz sentido",
+        "podemos conversar",
+        "ok",
+        "tá bom",
+        "ta bom",
+        "beleza",
+        "pode ser",
+        "com certeza",
+        "claro",
     )
     return any(token in normalized for token in positive_tokens)
 
@@ -685,6 +995,20 @@ def detect_neutral_intent(message):
         "sobre o que e",
         "qual assunto",
         "do que se trata isso",
+        "obrigado",
+        "obrigada",
+        "agradeço",
+        "agradeco",
+        "tenha um bom dia",
+        "tenha um ótimo dia",
+        "tenha um otimo dia",
+        "boa semana",
+        "bom final de semana",
+        "ótimo final de semana",
+        "otimo final de semana",
+        "bom fds",
+        "vlw",
+        "valeu",
     )
     return any(token in normalized for token in neutral_tokens)
 
@@ -717,6 +1041,509 @@ def detect_scheduling_intent(message):
     return any(token in normalized for token in tokens)
 
 
+def classify_business_intent_gemini(message):
+    prompt = (
+        "Classifique a mensagem comercial em exatamente um rotulo: "
+        "nao_interessado, numero_errado, empresa_incompativel, agendamento, interesse, duvida, neutro. "
+        "Responda somente com o rotulo.\n"
+        "Regras:\n"
+        "- Se houver qualquer sinal claro de sem interesse, escolha `nao_interessado`.\n"
+        "- Se houver indicio claro de numero/pessoa errada, escolha `numero_errado`.\n"
+        "- Se a empresa/setor for incompatível, escolha `empresa_incompativel`.\n"
+        "- Se houver proposta/aceite de horario, dia, reuniao ou call, escolha `agendamento`.\n"
+        "- Se houver abertura para conversar, escolha `interesse`.\n"
+        "- Se a pessoa estiver pedindo explicacao, escolha `duvida`.\n"
+        "- Se nada estiver claro, escolha `neutro`.\n\n"
+        f"Mensagem: {str(message or '').strip()[:2000]}"
+    )
+    raw_text, reason = _gemini_generate_text(prompt, max_output_tokens=24, temperature=0)
+    label = normalize_intent_text(raw_text)
+    if "nao_interessado" in label or "sem interesse" in label:
+        return "nao_interessado", reason
+    if "numero_errado" in label or "numero errado" in label:
+        return "numero_errado", reason
+    if "empresa_incompativel" in label or "empresa incompativel" in label:
+        return "empresa_incompativel", reason
+    if "agendamento" in label:
+        return "agendamento", reason
+    if "interesse" in label:
+        return "interesse", reason
+    if "duvida" in label:
+        return "duvida", reason
+    if "neutro" in label:
+        return "neutro", reason
+    return "", reason
+
+
+def build_agent_decision(data):
+    payload = dict(data or {})
+    text = str(payload.get("text") or payload.get("message") or "").strip()
+    channel = str(payload.get("channel") or payload.get("canal") or "whatsapp").strip().lower() or "whatsapp"
+    phone = whatsapp.normalize_phone(payload.get("phone") or payload.get("telefone") or "")
+    history = payload.get("history") if isinstance(payload.get("history"), list) else []
+    lead_name = str(payload.get("name") or payload.get("nome") or "").strip()
+    lead_company = str(payload.get("company") or payload.get("empresa") or "").strip()
+    generic_names = {"", "cliente", "lead", "contato", "responsavel", "responsável"}
+    lead = {"name": lead_name, "nome": lead_name, "empresa": lead_company, "phone": phone, "telefone": phone}
+    reason = "rule_fallback"
+    confidence = 0.75
+    reply = ""
+    action = "reply_with_pitch"
+    intent = "neutro"
+
+    closing_key = detect_closing_intent(text)
+    nonlead_intent = str(pitch.detect_nonlead_intent(text) or "").strip().lower()
+    stateful_intent = str(pitch.detect_stateful_intent(text) or "").strip().lower()
+
+    if is_hard_negative_message(text) or is_opt_out(text) or closing_key == "no_interest" or nonlead_intent == "nao_interessado":
+        intent = "nao_interessado"
+        action = "close_and_block"
+        reply = "Entendi, obrigado por avisar. Vou retirar você daqui para não incomodar."
+        reason = "hard_negative"
+        confidence = 0.99
+    elif closing_key in {"wrong_number", "unknown_person"} or nonlead_intent == "numero_errado":
+        intent = "numero_errado"
+        action = "close_and_block"
+        reply = "Entendi, desculpa pelo contato. Vou retirar você daqui para não incomodar."
+        reason = f"closing:{closing_key}" if closing_key else f"nonlead:{nonlead_intent}"
+        confidence = 0.99
+    elif detect_referral_intent(text):
+        intent = "indicacao"
+        action = "close_and_block"
+        reply = "Perfeito, obrigado pela indicação. Vou seguir por esse contato e não te incomodo mais por aqui."
+        reason = "referral_rule"
+        confidence = 0.98
+    elif nonlead_intent in {"empresa_incompativel", "setor_errado"}:
+        intent = str(nonlead_intent or "empresa_incompativel")
+        action = "pause_automation"
+        reason = f"nonlead:{nonlead_intent}"
+        confidence = 0.98
+    elif detect_scheduling_intent(text) or stateful_intent.startswith("agendamento"):
+        intent = "agendamento"
+        action = "schedule"
+        reply = "Perfeito. Me fala só o melhor horário para eu organizar isso direitinho."
+        reason = "schedule_rule"
+        confidence = 0.95
+    elif detect_positive_intent(text):
+        intent = "interesse"
+        action = "continue_conversation"
+        if normalize_intent_text(text) in {"pode sim", "sou eu", "sim", "claro", "pode falar", "pode", "fala", "pode perguntar"} and normalize_intent_text(lead_name) in generic_names:
+            reply = "Perfeito. Como posso te chamar?"
+        else:
+            inbound_messages = [str(item or "") for item in history if str(item or "").strip()] or [text]
+            reply = pitch.build_reply(lead, inbound_messages, current_step=1)
+        reason = "positive_rule"
+        confidence = 0.93
+    elif detect_neutral_intent(text):
+        intent = "duvida"
+        action = "hold"
+        reply = ""
+        reason = "neutral_rule"
+        confidence = 0.9
+    else:
+        gemini_intent, gemini_reason = classify_business_intent_gemini(text)
+        if gemini_intent:
+            intent = gemini_intent
+            reason = f"gemini:{gemini_reason}"
+            confidence = 0.72
+        
+        if intent == "nao_interessado":
+            action = "close_and_block"
+            reply = "Entendi, obrigado por avisar. Vou retirar você daqui para não incomodar."
+        elif intent == "numero_errado":
+            action = "close_and_block"
+            reply = "Entendi, desculpa pelo contato. Vou retirar você daqui para não incomodar."
+        elif intent == "indicacao":
+            action = "close_and_block"
+            reply = "Perfeito, obrigado pela indicação. Vou seguir por esse contato e não te incomodo mais por aqui."
+        elif intent == "empresa_incompativel":
+            action = "pause_automation"
+            reply = ""
+        elif intent == "agendamento":
+            action = "schedule"
+            reply = "Perfeito. Me fala só o melhor horário para eu organizar isso direitinho."
+        elif intent == "interesse":
+            action = "continue_conversation"
+            inbound_messages = [str(item or "") for item in history if str(item or "").strip()] or [text]
+            reply = pitch.build_reply(lead, inbound_messages, current_step=1)
+        else:
+            action = "hold"
+            reply = ""
+
+    decision = {
+        "intent": intent,
+        "action": action,
+        "reply": str(reply or "").strip(),
+        "confidence": float(confidence),
+        "reason": reason,
+        "channel": channel,
+        "phone": phone,
+        "deal_id": int(payload.get("deal_id") or 0),
+    }
+    print(
+        f"[AGENT_DECIDE] canal={channel} deal={decision['deal_id']} "
+        f"intent={intent} action={action} confidence={confidence:.2f} reason={reason}"
+    )
+    return decision
+
+
+def build_local_agent_decision(data):
+    payload = dict(data or {})
+    text = str(payload.get("message_text") or payload.get("text") or payload.get("message") or "").strip()
+    channel = str(payload.get("channel") or payload.get("canal") or "whatsapp").strip().lower() or "whatsapp"
+    phone = whatsapp.normalize_phone(payload.get("phone") or payload.get("telefone") or "")
+    email = str(payload.get("email") or "").strip().lower()
+    history = payload.get("conversation_history") if isinstance(payload.get("conversation_history"), list) else []
+    if not history and isinstance(payload.get("history"), list):
+        history = payload.get("history")
+    lead_name = str(payload.get("name") or payload.get("nome") or "").strip()
+    lead_company = str(payload.get("company") or payload.get("empresa") or "").strip()
+    source = str(payload.get("source") or "").strip().lower()
+    cadence_step = max(0, int(payload.get("cadence_step") or 0))
+    current_tags = {str(item or "").strip().upper() for item in list(payload.get("current_tags") or []) if str(item or "").strip()}
+    status_bot = normalize_intent_text(payload.get("status_bot") or "")
+    generic_names = {"", "cliente", "lead", "contato", "responsavel", "responsÃ¡vel"}
+    lead = {"name": lead_name, "nome": lead_name, "empresa": lead_company, "phone": phone, "telefone": phone}
+    reason = "rule_fallback"
+    confidence = 0.75
+    reply = ""
+    action = "reply_with_pitch"
+    intent = "neutro"
+    should_send = channel == "whatsapp"
+    should_blocklist = False
+    should_pause_automation = False
+    should_move_stage = False
+    should_create_activity = False
+
+    blocked_current_tags = {
+        "RESPONDIDO",
+        "CONVERSANDO",
+        "SEM_INTERESSE",
+        "SEM INTERESSE",
+        "NUMERO_ERRADO",
+        "NÚMERO_ERRADO",
+        "NUMERO ERRADO",
+        "CONTATO_INDICADO",
+        "CONTATO INDICADO",
+        "LEAD_ENCERRADO",
+        "LEAD ENCERRADO",
+    }
+    if (current_tags & blocked_current_tags) or status_bot in {"encerrado", "lead_sem_interesse", "numero_nao_corresponde", "stop"}:
+        print(f"[AUTO_REPLY_BLOQUEADO_TAG_CRM] telefone={phone} tags={sorted(current_tags & blocked_current_tags)} status_bot={status_bot}")
+        intent = "lead_encerrado"
+        action = "hold"
+        reason = "lead_closed"
+        confidence = 0.99
+        should_send = False
+        should_pause_automation = True
+    elif not text and source.startswith("email_outbound"):
+        intent = "cadencia_email"
+        action = "continue_cadence"
+        reason = "email_outbound_preflight"
+        confidence = 0.84
+        should_send = True
+    elif not text and cadence_step > 0:
+        intent = "cadencia_aberta"
+        action = "continue_cadence"
+        reason = "cadence_context_only"
+        confidence = 0.7
+        should_send = channel == "email"
+    else:
+        closing_key = detect_closing_intent(text)
+        nonlead_intent = str(pitch.detect_nonlead_intent(text) or "").strip().lower()
+        stateful_intent = str(pitch.detect_stateful_intent(text) or "").strip().lower()
+
+        if is_hard_negative_message(text) or is_opt_out(text) or closing_key == "no_interest" or nonlead_intent == "nao_interessado":
+            intent = "nao_interessado"
+            action = "close_and_block"
+            reply = "Entendi, obrigado por avisar. Vou retirar você daqui para não incomodar."
+            reason = "hard_negative"
+            confidence = 0.99
+            should_blocklist = True
+            should_pause_automation = True
+            should_move_stage = True
+            should_send = bool(reply)
+        elif closing_key in {"wrong_number", "unknown_person"} or nonlead_intent == "numero_errado":
+            intent = "numero_errado"
+            action = "close_and_block"
+            reply = "Entendi, desculpa pelo contato. Vou retirar você daqui para não incomodar."
+            reason = f"closing:{closing_key}" if closing_key else f"nonlead:{nonlead_intent}"
+            confidence = 0.99
+            should_blocklist = True
+            should_pause_automation = True
+            should_move_stage = True
+            should_send = bool(reply)
+        elif detect_referral_intent(text):
+            intent = "indicacao"
+            action = "close_and_block"
+            reply = "Perfeito, obrigado pela indicação. Vou seguir por esse contato e não te incomodo mais por aqui."
+            reason = "referral_rule"
+            confidence = 0.98
+            should_blocklist = True
+            should_pause_automation = True
+            should_move_stage = True
+            should_send = bool(reply)
+        elif nonlead_intent in {"empresa_incompativel", "setor_errado"}:
+            intent = str(nonlead_intent or "empresa_incompativel")
+            action = "pause_automation"
+            reason = f"nonlead:{nonlead_intent}"
+            confidence = 0.98
+            should_pause_automation = True
+            should_send = False
+        elif detect_scheduling_intent(text) or stateful_intent.startswith("agendamento"):
+            intent = "agendamento"
+            action = "schedule"
+            reply = "Perfeito. Me fala só o melhor horário para eu organizar isso direitinho."
+            reason = "schedule_rule"
+            confidence = 0.95
+            should_move_stage = True
+            should_create_activity = True
+            should_send = bool(reply)
+        elif detect_positive_intent(text):
+            intent = "interesse"
+            action = "continue_conversation"
+            if normalize_intent_text(text) in {"pode sim", "sou eu", "sim", "claro", "pode falar", "pode", "fala", "pode perguntar"} and normalize_intent_text(lead_name) in generic_names:
+                reply = "Perfeito. Como posso te chamar?"
+            else:
+                inbound_messages = [str((item or {}).get("message") or item or "").strip() for item in history if str((item or {}).get("message") or item or "").strip()] or [text]
+                reply = pitch.build_reply(lead, inbound_messages, current_step=1)
+            reason = "positive_rule"
+            confidence = 0.93
+            should_pause_automation = True
+            should_send = bool(reply)
+        elif detect_neutral_intent(text):
+            intent = "duvida"
+            action = "hold"
+            reply = ""
+            reason = "neutral_rule"
+            confidence = 0.9
+            should_pause_automation = True
+            should_send = False
+        else:
+            gemini_intent, gemini_reason = classify_business_intent_gemini(text)
+            if gemini_intent:
+                intent = gemini_intent
+                reason = f"gemini:{gemini_reason}"
+                confidence = 0.72
+            
+            if intent == "nao_interessado":
+                action = "close_and_block"
+                reply = "Entendi, obrigado por avisar. Vou retirar você daqui para não incomodar."
+                should_blocklist = True
+                should_pause_automation = True
+                should_move_stage = True
+                should_send = bool(reply)
+            elif intent == "numero_errado":
+                action = "close_and_block"
+                reply = "Entendi, desculpa pelo contato. Vou retirar você daqui para não incomodar."
+                should_blocklist = True
+                should_pause_automation = True
+                should_move_stage = True
+                should_send = bool(reply)
+            elif intent == "indicacao":
+                action = "close_and_block"
+                reply = "Perfeito, obrigado pela indicação. Vou seguir por esse contato e não te incomodo mais por aqui."
+                should_blocklist = True
+                should_pause_automation = True
+                should_move_stage = True
+                should_send = bool(reply)
+            elif intent == "empresa_incompativel":
+                action = "pause_automation"
+                should_pause_automation = True
+                should_send = False
+            elif intent == "agendamento":
+                action = "schedule"
+                reply = "Perfeito. Me fala só o melhor horário para eu organizar isso direitinho."
+                should_move_stage = True
+                should_create_activity = True
+                should_send = bool(reply)
+            elif intent == "interesse":
+                action = "continue_conversation"
+                inbound_messages = [str((item or {}).get("message") or item or "").strip() for item in history if str((item or {}).get("message") or item or "").strip()] or [text]
+                reply = pitch.build_reply(lead, inbound_messages, current_step=1)
+                should_pause_automation = True
+                should_send = bool(reply)
+            else:
+                action = "hold"
+                reply = ""
+                should_pause_automation = False
+                should_send = False
+
+    return {
+        "intent": intent,
+        "confidence": float(confidence),
+        "action": action,
+        "reply": str(reply or "").strip(),
+        "should_send": bool(should_send),
+        "should_blocklist": bool(should_blocklist),
+        "should_pause_automation": bool(should_pause_automation),
+        "should_move_stage": bool(should_move_stage),
+        "should_create_activity": bool(should_create_activity),
+        "reason": reason,
+        "channel": channel,
+        "phone": phone,
+        "email": email,
+        "deal_id": int(payload.get("deal_id") or 0),
+        "person_id": int(payload.get("person_id") or 0),
+        "org_id": int(payload.get("org_id") or 0),
+        "message_text": text,
+        "source": source,
+    }
+
+
+def _normalize_agent_decision_payload(raw_payload, fallback):
+    payload = dict(raw_payload or {})
+    normalized = dict(fallback or {})
+    normalized["intent"] = str(payload.get("intent") or fallback.get("intent") or "neutro").strip().lower() or "neutro"
+    normalized["confidence"] = float(payload.get("confidence") or fallback.get("confidence") or 0.0)
+    normalized["action"] = str(payload.get("action") or fallback.get("action") or "hold").strip().lower() or "hold"
+    normalized["reply"] = str(payload.get("reply") or fallback.get("reply") or "").strip()
+    normalized["should_send"] = _as_bool(payload.get("should_send", fallback.get("should_send")))
+    normalized["should_blocklist"] = _as_bool(payload.get("should_blocklist", fallback.get("should_blocklist")))
+    normalized["should_pause_automation"] = _as_bool(payload.get("should_pause_automation", fallback.get("should_pause_automation")))
+    normalized["should_move_stage"] = _as_bool(payload.get("should_move_stage", fallback.get("should_move_stage")))
+    normalized["should_create_activity"] = _as_bool(payload.get("should_create_activity", fallback.get("should_create_activity")))
+    normalized["reason"] = str(payload.get("reason") or fallback.get("reason") or "").strip()
+    return normalized
+
+
+def _extract_botpress_texts(body):
+    texts = []
+    responses = list((body or {}).get("responses") or [])
+    for item in responses:
+        if not isinstance(item, dict):
+            continue
+        for field_name in ("text", "reply", "message"):
+            value = str(item.get(field_name) or "").strip()
+            if value:
+                texts.append(value)
+                break
+        payload = item.get("payload")
+        if isinstance(payload, dict):
+            value = str(payload.get("text") or payload.get("reply") or "").strip()
+            if value:
+                texts.append(value)
+    return texts
+
+
+def build_botpress_agent_decision(data):
+    payload = dict(data or {})
+    fallback = build_local_agent_decision(payload)
+    message_text = str(payload.get("message_text") or payload.get("text") or payload.get("message") or "").strip()
+    channel = str(payload.get("channel") or "whatsapp").strip().lower() or "whatsapp"
+    phone = whatsapp.normalize_phone(payload.get("phone") or payload.get("telefone") or "")
+    email = str(payload.get("email") or "").strip().lower()
+    identity = phone or email or str(payload.get("deal_id") or payload.get("person_id") or "lead")
+    botpress_payload = {
+        "userId": identity,
+        "message": message_text or f"[{channel}]",
+        "name": str(payload.get("name") or payload.get("nome") or "").strip(),
+        "channel": channel,
+        "deal_id": int(payload.get("deal_id") or 0),
+        "person_id": int(payload.get("person_id") or 0),
+        "org_id": int(payload.get("org_id") or 0),
+        "source": str(payload.get("source") or "").strip(),
+        "metadata": {
+            "conversation_history": payload.get("conversation_history") or [],
+            "current_tags": payload.get("current_tags") or [],
+            "status_bot": payload.get("status_bot") or "",
+            "cadence_step": int(payload.get("cadence_step") or 0),
+        },
+    }
+    url = f"{BOTPRESS_BASE_URL}/api/v1/bots/{BOTPRESS_BOT_ID}/converse"
+    print(
+        f"[BOTPRESS_AGENT_REQUEST] channel={channel} deal={int(payload.get('deal_id') or 0)} "
+        f"person={int(payload.get('person_id') or 0)} text_len={len(message_text)} url={url}"
+    )
+    response = requests.post(url, json=botpress_payload, timeout=BOTPRESS_TIMEOUT_SEC)
+    if int(response.status_code or 0) != 200:
+        raise RuntimeError(f"botpress_status_{int(response.status_code or 0)}")
+    body = response.json() if response.content else {}
+    texts = _extract_botpress_texts(body)
+    parsed = {}
+    for candidate in texts:
+        parsed = _extract_json_payload(candidate)
+        if parsed:
+            break
+    if parsed:
+        decision = _normalize_agent_decision_payload(parsed, fallback)
+        print(
+            f"[BOTPRESS_AGENT_RESPONSE] channel={channel} deal={decision.get('deal_id') or 0} "
+            f"intent={decision.get('intent')} action={decision.get('action')} mode=json"
+        )
+        return decision
+    reply = "\n".join(texts).strip()
+    decision = dict(fallback)
+    if reply:
+        decision["reply"] = reply
+        decision["should_send"] = bool(reply) if channel == "whatsapp" else bool(decision.get("should_send"))
+        decision["reason"] = "botpress_text_reply"
+    print(
+        f"[BOTPRESS_AGENT_RESPONSE] channel={channel} deal={decision.get('deal_id') or 0} "
+        f"intent={decision.get('intent')} action={decision.get('action')} mode=text"
+    )
+    return decision
+
+
+def resolve_agent_decision(data, *, caller="unknown"):
+    payload = dict(data or {})
+    fallback = build_local_agent_decision(payload)
+    channel = str(payload.get("channel") or "whatsapp").strip().lower() or "whatsapp"
+    message_text = str(payload.get("message_text") or payload.get("message") or payload.get("text") or "").strip()
+    print(
+        f"[AGENT_DECIDE_REQUEST] caller={caller} channel={channel} deal={int(payload.get('deal_id') or 0)} "
+        f"person={int(payload.get('person_id') or 0)} source={str(payload.get('source') or '-').strip() or '-'} "
+        f"text_len={len(message_text)} enabled={1 if is_agent_decide_enabled() else 0}"
+    )
+
+    upstream_url = AGENT_DECIDE_UPSTREAM_URL.rstrip("/")
+    if not is_agent_decide_enabled() or not upstream_url:
+        decision = dict(fallback)
+        print(
+            f"[AGENT_DECIDE_RESPONSE] caller={caller} channel={channel} deal={decision.get('deal_id') or 0} "
+            f"intent={decision.get('intent')} action={decision.get('action')} "
+            f"should_send={1 if decision.get('should_send') else 0} source=local"
+        )
+        return decision
+
+    if upstream_url in {"http://127.0.0.1:5001/agent/decide", "http://localhost:5001/agent/decide"}:
+        print(f"[AGENT_DECIDE_FALLBACK] caller={caller} motivo=self_targeted_upstream")
+        decision = dict(fallback)
+        print(
+            f"[AGENT_DECIDE_RESPONSE] caller={caller} channel={channel} deal={decision.get('deal_id') or 0} "
+            f"intent={decision.get('intent')} action={decision.get('action')} "
+            f"should_send={1 if decision.get('should_send') else 0} source=local"
+        )
+        return decision
+
+    try:
+        response = requests.post(upstream_url, json=payload, timeout=AGENT_DECIDE_TIMEOUT_SEC)
+        if int(response.status_code or 0) != 200:
+            raise RuntimeError(f"status_{int(response.status_code or 0)}")
+        body = response.json() if response.content else {}
+        candidate = body.get("decision") if isinstance(body, dict) and isinstance(body.get("decision"), dict) else body
+        decision = _normalize_agent_decision_payload(candidate, fallback)
+        print(
+            f"[AGENT_DECIDE_RESPONSE] caller={caller} channel={channel} deal={decision.get('deal_id') or 0} "
+            f"intent={decision.get('intent')} action={decision.get('action')} "
+            f"should_send={1 if decision.get('should_send') else 0} source=upstream"
+        )
+        return decision
+    except Exception as exc:
+        print(f"[AGENT_DECIDE_FALLBACK] caller={caller} motivo={exc}")
+        decision = dict(fallback)
+        print(
+            f"[AGENT_DECIDE_RESPONSE] caller={caller} channel={channel} deal={decision.get('deal_id') or 0} "
+            f"intent={decision.get('intent')} action={decision.get('action')} "
+            f"should_send={1 if decision.get('should_send') else 0} source=fallback_local"
+        )
+        return decision
+
+
+def build_agent_decision(data):
+    return resolve_agent_decision(data, caller="route")
+
+
 def resolve_stage_by_keywords(*keyword_groups):
     try:
         stages = crm.get_stages()
@@ -736,6 +1563,35 @@ def resolve_stage_by_keywords(*keyword_groups):
             if all(str(keyword or "").strip().lower() in stage_name for keyword in keywords):
                 return int(stage.get("id") or 0)
     return 0
+
+
+def resolve_terminal_stage_id():
+    return (
+        resolve_stage_by_keywords(("perdid",),)
+        or resolve_stage_by_keywords(("arquiv",),)
+        or resolve_stage_by_keywords(("falta",),)
+    )
+
+
+def move_related_deals_to_terminal_stage(lead_state, reason=""):
+    stage_id = resolve_terminal_stage_id()
+    if not stage_id:
+        print(f"[STAGE_PERDIDO_FALHA] motivo=stage_nao_encontrado reason={reason or '-'}")
+        return False
+    moved = False
+    for deal in related_deals_from_state(lead_state):
+        deal_id = extract_entity_id((deal or {}).get("id"))
+        if deal_id <= 0:
+            continue
+        try:
+            ok = bool(crm.update_stage(deal_id=deal_id, stage_id=stage_id))
+        except Exception as exc:
+            print(f"[STAGE_PERDIDO_FALHA] deal={deal_id} erro={exc}")
+            ok = False
+        if ok:
+            moved = True
+            print(f"[STAGE_PERDIDO_OK] deal={deal_id} stage={stage_id} reason={reason or '-'}")
+    return moved
 
 
 def move_related_deals_to_scheduled(lead_state):
@@ -759,6 +1615,37 @@ def move_related_deals_to_scheduled(lead_state):
     return moved
 
 
+def create_scheduling_activity_for_lead(lead_state, summary):
+    current_person = dict((lead_state or {}).get("person") or {})
+    person_id = extract_entity_id(current_person.get("id"))
+    due_date = datetime.now().date().isoformat()
+    note_text = str(summary or "").strip() or "Lead pediu agendamento."
+    created = False
+    for deal in related_deals_from_state(lead_state):
+        deal_id = extract_entity_id((deal or {}).get("id"))
+        if deal_id <= 0:
+            continue
+        try:
+            ok = bool(
+                crm.create_activity(
+                    subject="Reuniao solicitada por inbound",
+                    type="meeting",
+                    deal_id=deal_id,
+                    person_id=person_id,
+                    note=note_text,
+                    due_date=due_date,
+                    done=0,
+                )
+            )
+        except Exception as exc:
+            print(f"[ATIVIDADE_AGENDAMENTO_FALHA] deal={deal_id} erro={exc}")
+            ok = False
+        if ok:
+            created = True
+            print(f"[ATIVIDADE_AGENDAMENTO_OK] deal={deal_id} person={person_id}")
+    return created
+
+
 def related_deals_from_state(lead_state):
     current_person = dict((lead_state or {}).get("person") or {})
     current_person_id = extract_entity_id(current_person.get("id"))
@@ -768,7 +1655,86 @@ def related_deals_from_state(lead_state):
     return []
 
 
+def clear_email_runtime_state(*, deal_ids=None, person_id=0, email="", phone=""):
+    target_deal_ids = {int(item or 0) for item in list(deal_ids or []) if int(item or 0) > 0}
+    target_person_id = int(person_id or 0)
+    target_email = str(email or "").strip().lower()
+    target_phone = whatsapp.normalize_phone(phone)
+    removed_pending = 0
+    removed_queue = 0
+
+    pending = load_email_pending_confirmations()
+    filtered_pending = {}
+    for event_id, item in dict(pending or {}).items():
+        payload = dict(item or {})
+        item_deal_id = int(payload.get("deal_id") or 0)
+        item_person_id = int(payload.get("person_id") or 0)
+        item_email = str(payload.get("email") or "").strip().lower()
+        item_phone = whatsapp.normalize_phone(payload.get("phone") or payload.get("telefone") or "")
+        matches = (
+            (target_deal_ids and item_deal_id in target_deal_ids)
+            or (target_person_id > 0 and item_person_id == target_person_id)
+            or (target_email and item_email == target_email)
+            or (target_phone and item_phone == target_phone)
+        )
+        if matches:
+            removed_pending += 1
+            continue
+        filtered_pending[str(event_id)] = payload
+    if removed_pending:
+        save_email_pending_confirmations(filtered_pending)
+
+    queue = load_email_queue()
+    filtered_queue = []
+    for item in list(queue or []):
+        payload = dict(item or {})
+        item_deal_id = int(payload.get("id") or payload.get("deal_id") or 0)
+        item_person_id = int(payload.get("person_id") or 0)
+        item_email = str(payload.get("email") or "").strip().lower()
+        item_phone = whatsapp.normalize_phone(payload.get("phone") or payload.get("telefone") or "")
+        matches = (
+            (target_deal_ids and item_deal_id in target_deal_ids)
+            or (target_person_id > 0 and item_person_id == target_person_id)
+            or (target_email and item_email == target_email)
+            or (target_phone and item_phone == target_phone)
+        )
+        if matches:
+            removed_queue += 1
+            continue
+        filtered_queue.append(payload)
+    if removed_queue:
+        save_email_queue(filtered_queue)
+
+    if removed_pending or removed_queue:
+        print(
+            f"[EMAIL_RUNTIME_LIMPO] deals={sorted(target_deal_ids)} person={target_person_id or 0} "
+            f"email={target_email or '-'} phone={target_phone or '-'} "
+            f"fila={removed_queue} pendencias={removed_pending}"
+        )
+    return {"queue_removed": removed_queue, "pending_removed": removed_pending}
+
+
+def clear_email_runtime_state_for_lead(lead_state, phone=""):
+    current_person = dict((lead_state or {}).get("person") or {})
+    deal_ids = []
+    for deal in list(related_deals_from_state(lead_state) or []):
+        deal_id = extract_entity_id((deal or {}).get("id"))
+        if deal_id > 0:
+            deal_ids.append(deal_id)
+    emails = person_email_values(current_person)
+    target_phone = whatsapp.normalize_phone(phone) or next(iter(person_phone_values(current_person)), "")
+    return clear_email_runtime_state(
+        deal_ids=deal_ids,
+        person_id=extract_entity_id(current_person.get("id")),
+        email=emails[0] if emails else "",
+        phone=target_phone,
+    )
+
+
 def append_crm_note_for_lead(lead_state, note_text):
+    if is_test_whitelist_phone((lead_state or {}).get('phone')):
+        print(f"[CRM_BYPASS_TESTE] telefone={(lead_state or {}).get('phone')} acao=append_note")
+        return True
     if not str(note_text or "").strip():
         return False
     related_deals = related_deals_from_state(lead_state)
@@ -788,25 +1754,254 @@ def append_crm_note_for_lead(lead_state, note_text):
     return noted
 
 
-def update_crm_status_for_lead(lead_state, status_bot):
-    current_person = dict((lead_state or {}).get("person") or {})
-    current_person_id = extract_entity_id(current_person.get("id"))
-    updated = False
+def add_respondido_tag_for_lead(lead_state):
+    if is_test_whitelist_phone((lead_state or {}).get("phone")):
+        print(f"[CRM_BYPASS_TESTE] telefone={(lead_state or {}).get('phone')} acao=add_tag tag=RESPONDIDO")
+        return True
+    tagged = False
     for deal in list(related_deals_from_state(lead_state) or []):
         deal_id = extract_entity_id((deal or {}).get("id"))
         if deal_id <= 0:
             continue
         try:
-            ok = crm.update_deal(deal_id, {crm.STATUS_BOT_FIELD: str(status_bot or "").strip()})
+            ok = crm.add_tag("deal", deal_id, "RESPONDIDO")
+        except Exception:
+            ok = False
+        tagged = tagged or bool(ok)
+    return tagged
+
+
+def add_conversa_tag_for_lead(lead_state):
+    if is_test_whitelist_phone((lead_state or {}).get("phone")):
+        print(f"[CRM_BYPASS_TESTE] telefone={(lead_state or {}).get('phone')} acao=add_tag tag=CONVERSANDO")
+        return True
+    tagged = False
+    for deal in list(related_deals_from_state(lead_state) or []):
+        deal_id = extract_entity_id((deal or {}).get("id"))
+        if deal_id <= 0:
+            continue
+        try:
+            ok = crm.add_tag("deal", deal_id, "CONVERSANDO")
+        except Exception:
+            ok = False
+        tagged = tagged or bool(ok)
+    return tagged
+
+
+def _normalize_status_bot_value(status_bot):
+    normalized = str(status_bot or "").strip().lower()
+    aliases = {
+        "sem_interesse": "lead_sem_interesse",
+        "nao_interessado": "lead_sem_interesse",
+        "lead_sem_interesse": "lead_sem_interesse",
+        "numero_errado": "numero_nao_corresponde",
+        "wrong_number": "numero_nao_corresponde",
+        "unknown_person": "numero_nao_corresponde",
+        "numero_nao_corresponde": "numero_nao_corresponde",
+        "interesse": "lead_interessado",
+        "respondido": "lead_interessado",
+        "lead_interessado": "lead_interessado",
+        "aguardando_horario": "lead_sem_contato",
+        "lead_sem_contato": "lead_sem_contato",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def update_crm_status_for_lead(lead_state, status_bot):
+    current_person = dict((lead_state or {}).get("person") or {})
+    target_phone = whatsapp.normalize_phone(
+        (lead_state or {}).get("phone")
+        or next(iter(person_phone_values(current_person)), "")
+    )
+    if is_test_whitelist_phone(target_phone):
+        print(f"[CRM_BYPASS_TESTE] telefone={(lead_state or {}).get('phone')} acao=update_status status={status_bot}")
+        return True
+    current_person_id = extract_entity_id(current_person.get("id"))
+    updated = False
+    normalized_status = _normalize_status_bot_value(status_bot)
+    for deal in list(related_deals_from_state(lead_state) or []):
+        deal_id = extract_entity_id((deal or {}).get("id"))
+        if deal_id <= 0:
+            continue
+        try:
+            ok = crm.update_deal(deal_id, {crm.STATUS_BOT_FIELD: normalized_status})
         except Exception:
             ok = False
         updated = updated or bool(ok)
-    if current_person_id > 0:
-        try:
-            crm.update_person(current_person_id, {crm.STATUS_BOT_FIELD: str(status_bot or "").strip()})
-        except Exception:
-            pass
     return updated
+
+
+def resolve_lead_state_from_payload(payload):
+    data = dict(payload or {})
+    phone = whatsapp.normalize_phone(data.get("phone") or data.get("telefone") or "")
+    email = str(data.get("email") or "").strip().lower()
+    deal_id = int(data.get("deal_id") or 0)
+    person_id = int(data.get("person_id") or 0)
+
+    if phone:
+        try:
+            state = validate_lead_with_cache(phone)
+            if isinstance(state, dict):
+                return state
+        except Exception as exc:
+            print(f"[ERRO_RESOLVE_LEAD_PHONE] telefone={phone} erro={exc}")
+
+    deal = {}
+    if deal_id > 0:
+        try:
+            deal = crm.get_deal_details(deal_id) or {}
+        except Exception as exc:
+            print(f"[ERRO_RESOLVE_DEAL] deal={deal_id} erro={exc}")
+        if not person_id:
+            person_id = extract_entity_id((deal or {}).get("person_id"))
+
+    person = {}
+    if person_id > 0:
+        try:
+            person = crm.get_person_details(person_id) or {}
+        except Exception as exc:
+            print(f"[ERRO_RESOLVE_PERSON] person={person_id} erro={exc}")
+
+    if not person and email:
+        try:
+            person = crm.find_person(email=email) or {}
+        except Exception as exc:
+            print(f"[ERRO_RESOLVE_PERSON_EMAIL] email={email} erro={exc}")
+
+    if not person and phone and phone in TEST_WHITELIST:
+        person = {"id": -1, "name": "Teste", "phone": [{"value": phone}], "email": [{"value": email}] if email else []}
+
+    deals = []
+    if deal:
+        deals = [deal]
+    else:
+        resolved_person_id = extract_entity_id((person or {}).get("id"))
+        resolved_org_id = extract_entity_id((person or {}).get("org_id"))
+        if resolved_person_id > 0 or resolved_org_id > 0:
+            try:
+                deals = crm.find_open_deals_by_person_or_org(person_id=resolved_person_id, org_id=resolved_org_id)
+            except Exception as exc:
+                print(f"[ERRO_RESOLVE_DEALS] person={resolved_person_id} org={resolved_org_id} erro={exc}")
+
+    return {
+        "valid": bool(person or deals or phone in TEST_WHITELIST or email or deal_id or person_id),
+        "person": person or {"id": person_id or -1, "name": data.get("name") or data.get("nome") or "Lead"},
+        "deals": deals or ([deal] if deal else []),
+        "bypass": bool(phone in TEST_WHITELIST),
+        "source": "email_inbound",
+    }
+
+
+def build_lead_payload_from_state(phone, lead_state):
+    current_person = dict((lead_state or {}).get("person") or {})
+    deals = list((lead_state or {}).get("deals") or [])
+    primary_deal = dict(deals[0] or {}) if deals else {}
+    emails = person_email_values(current_person)
+    return {
+        "name": str(current_person.get("name") or "").strip(),
+        "nome": str(current_person.get("name") or "").strip(),
+        "empresa": str(
+            primary_deal.get("org_name")
+            or primary_deal.get("title")
+            or (current_person.get("org_id") or {}).get("name")
+            or ""
+        ).strip(),
+        "email": emails[0] if emails else "",
+        "phone": whatsapp.normalize_phone(phone),
+        "telefone": whatsapp.normalize_phone(phone),
+    }
+
+
+def serialize_conversation_history(items):
+    serialized = []
+    for item in list(items or []):
+        if isinstance(item, dict):
+            serialized.append(
+                {
+                    "direction": str(item.get("direction") or "").strip().lower(),
+                    "message": str(item.get("message") or "").strip(),
+                    "step": int(item.get("step") or 0),
+                    "created_at": str(item.get("created_at") or "").strip(),
+                    "source": str(item.get("source") or "").strip().lower(),
+                }
+            )
+            continue
+        message = str(item or "").strip()
+        if message:
+            serialized.append({"direction": "", "message": message, "step": 0, "created_at": "", "source": ""})
+    return serialized
+
+
+def current_tags_from_lead_state(lead_state):
+    tags = set()
+    options = crm.get_deal_labels()
+    current_person = dict((lead_state or {}).get("person") or {})
+    if extract_entity_id(current_person.get("id")) > 0 or extract_entity_id(current_person.get("org_id")) > 0:
+        deals = related_deals_from_state(lead_state)
+    else:
+        deals = list((lead_state or {}).get("deals") or [])
+    for deal in list(deals or []):
+        try:
+            tags.update(crm.resolve_label_tokens((deal or {}).get("label"), options))
+        except Exception:
+            continue
+    return sorted(tag for tag in tags if str(tag or "").strip())
+
+
+def status_bot_from_lead_state(lead_state):
+    current_person = dict((lead_state or {}).get("person") or {})
+    deals = list((lead_state or {}).get("deals") or [])
+    for deal in list(deals or []):
+        value = str((deal or {}).get("status_bot") or (deal or {}).get(crm.STATUS_BOT_FIELD) or "").strip()
+        if value:
+            return value
+    return str(current_person.get("status_bot") or current_person.get(crm.STATUS_BOT_FIELD) or "").strip()
+
+
+def latest_inbound_message(history):
+    for item in reversed(list(history or [])):
+        if str((item or {}).get("direction") or "").strip().lower() != "in":
+            continue
+        message = str((item or {}).get("message") or "").strip()
+        if message:
+            return message
+    return ""
+
+
+def build_agent_decide_payload(
+    *,
+    channel,
+    lead_state,
+    message_text,
+    history,
+    cadence_step,
+    source,
+    phone="",
+    email="",
+):
+    current_person = dict((lead_state or {}).get("person") or {})
+    deals = list((lead_state or {}).get("deals") or [])
+    primary_deal = dict(deals[0] or {}) if deals else {}
+    fallback_phone = whatsapp.normalize_phone(phone)
+    if not fallback_phone:
+        fallback_phone = next(iter(person_phone_values(current_person)), "")
+    payload = build_lead_payload_from_state(fallback_phone, lead_state)
+    return {
+        "channel": str(channel or "whatsapp").strip().lower() or "whatsapp",
+        "phone": whatsapp.normalize_phone(phone or payload.get("phone") or ""),
+        "email": str(email or payload.get("email") or "").strip().lower(),
+        "deal_id": extract_entity_id(primary_deal.get("id")),
+        "person_id": extract_entity_id(current_person.get("id")),
+        "org_id": extract_entity_id(current_person.get("org_id")),
+        "message_text": str(message_text or "").strip(),
+        "conversation_history": serialize_conversation_history(history),
+        "current_tags": current_tags_from_lead_state(lead_state),
+        "status_bot": status_bot_from_lead_state(lead_state),
+        "cadence_step": max(0, int(cadence_step or 0)),
+        "source": str(source or "").strip().lower(),
+        "name": str(payload.get("name") or "").strip(),
+        "company": str(payload.get("empresa") or "").strip(),
+    }
 
 
 def registrar_aguardando_horario(phone, message, msg_id="", timestamp="", source="", lead_state=None):
@@ -864,15 +2059,25 @@ def handle_closing_intent(phone, message, closing_key, lead_state=None):
         "wrong_number": "numero_errado",
         "unknown_person": "numero_errado",
     }.get(str(closing_key or "").strip(), "encerrado")
-    append_to_blocklist(f"55{phone}", block_reason)
+    append_to_blocklist(phone, block_reason)
+    whatsapp.clear_after_hours_pending(phone)
+    clear_email_runtime_state_for_lead(lead_state, phone=phone)
     if closing_key == "no_interest":
         print(f"[INTENT_NEGATIVO] telefone={phone}")
-        update_crm_status_for_lead(lead_state, "sem_interesse")
-        append_crm_note_for_lead(lead_state, "Lead informou nao ter interesse. Movido para blocklist.")
+        update_crm_status_for_lead(lead_state, "lead_sem_interesse")
+        add_respondido_tag_for_lead(lead_state)
+        for deal in list(related_deals_from_state(lead_state) or []):
+            crm.add_tag("deal", extract_entity_id(deal.get("id")), "SEM_INTERESSE")
+        move_related_deals_to_terminal_stage(lead_state, reason="sem_interesse")
+        append_crm_note_for_lead(lead_state, f"Lead informou nao ter interesse. Texto: {str(message or '').strip()}")
     elif closing_key in {"wrong_number", "unknown_person"}:
         print(f"[INTENT_ERRADO] telefone={phone}")
-        update_crm_status_for_lead(lead_state, "numero_errado")
-        append_crm_note_for_lead(lead_state, "Contato incorreto. Numero bloqueado.")
+        update_crm_status_for_lead(lead_state, "numero_nao_corresponde")
+        add_respondido_tag_for_lead(lead_state)
+        for deal in list(related_deals_from_state(lead_state) or []):
+            crm.add_tag("deal", extract_entity_id(deal.get("id")), "NUMERO_ERRADO")
+        move_related_deals_to_terminal_stage(lead_state, reason="numero_errado")
+        append_crm_note_for_lead(lead_state, f"Contato incorreto. Texto recebido: {str(message or '').strip()}")
     history = append_history(phone, "in", message, step=0)
     print(f"[RESPOSTA_GERADA] telefone={phone} texto={closing_message}")
     if has_recent_history_entry(phone, "out", closing_message, within_seconds=7200):
@@ -881,7 +2086,7 @@ def handle_closing_intent(phone, message, closing_key, lead_state=None):
     if not can_emit_reply(phone, closing_message, within_seconds=REPLY_WINDOW_SECONDS):
         print(f"[DUPLICIDADE_BLOQUEADA_TEXTO] {phone}")
         return True
-    ok = whatsapp.send_message(phone, closing_message)
+    ok = whatsapp.send_message(phone, closing_message, bypass_manual_blocklist=True)
     if ok:
         append_history(phone, "out", closing_message, step=infer_step_from_history(history))
         print(f"[RESPOSTA_ENVIADA] {phone}")
@@ -906,8 +2111,9 @@ def is_system_jid(raw_phone):
 def processed_key(phone, msg_id, message):
     if msg_id:
         return f"{phone}:{msg_id}"
-    digest = hashlib.md5(f"{phone}:{message}".encode("utf-8")).hexdigest()
-    return f"{phone}:{digest}"
+    # Se nao tem msg_id, gera um unico baseado em tempo para permitir mensagens iguais ("ok", "sim")
+    unique_suffix = f"{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
+    return f"{phone}:auto_{unique_suffix}"
 
 
 def extract_entity_id(field):
@@ -959,17 +2165,123 @@ def detect_referral_intent(message):
         "responsavel e",
         "responsavel eh",
         "responsável é",
+        "fala com fulano",
+        "chama esse número",
+        "chama esse numero",
+        "o responsável é",
+        "o responsavel e",
+        "quem cuida disso é",
+        "quem cuida disso e",
+        "procura o joão",
+        "procura o joao",
+        "contato é",
+        "contato e",
+        "telefone dele é",
+        "telefone dele e",
+        "email dele é",
+        "email dele e",
+        "pode falar com",
     )
-    if any(pattern in normalized for pattern in direct_patterns):
+    if any(token in normalized for token in direct_patterns):
         return True
     if re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}", str(message or ""), flags=re.IGNORECASE):
-        if any(token in normalized for token in ("gerente", "compras", "comercial", "marketing", "responsavel", "responsÃ¡vel", "setor", "departamento", "segue", "contato")):
+        if any(token in normalized for token in ("gerente", "compras", "comercial", "marketing", "responsavel", "responsável", "setor", "departamento", "segue", "contato")):
             return True
         return True
 
     has_contact = "contato" in normalized
     has_target_area = any(token in normalized for token in ("marketing", "comercial", "responsavel", "responsável"))
     return has_contact and has_target_area
+
+
+def maybe_handle_inbound_agent_decision(*, phone, message, source, lead_state, lead, history, current_step, key):
+    if not is_agent_decide_enabled():
+        return None
+
+    try:
+        inbound_messages = [
+            item.get("message", "")
+            for item in list(history or [])
+            if str(item.get("direction") or "").strip().lower() == "in"
+        ]
+        decision = resolve_agent_decision(
+            build_agent_decide_payload(
+                channel="whatsapp",
+                lead_state=lead_state,
+                message_text=message,
+                history=history,
+                cadence_step=current_step,
+                source=source,
+                phone=phone,
+            ),
+            caller="inbound",
+        )
+    except Exception as exc:
+        print(f"[AGENT_DECIDE_ERRO] Fallback local devido a erro: {exc}")
+        return None
+
+    intent = str(decision.get("intent") or "").strip().lower()
+    action = str(decision.get("action") or "").strip().lower()
+    print(
+        f"[AGENT_DECIDE_ACTION] caller=inbound phone={phone} deal={int(decision.get('deal_id') or 0)} "
+        f"intent={intent or '-'} action={action or '-'} send={1 if decision.get('should_send') else 0} "
+        f"blocklist={1 if decision.get('should_blocklist') else 0} pause={1 if decision.get('should_pause_automation') else 0}"
+    )
+
+    if intent == "nao_interessado":
+        handle_closing_intent(phone, message, "no_interest", lead_state)
+        commit_processed_key(key)
+        return {"ok": True, "confirmed": True, **decision}
+    if intent == "numero_errado":
+        handle_closing_intent(phone, message, "wrong_number", lead_state)
+        commit_processed_key(key)
+        return {"ok": True, "confirmed": True, **decision}
+    if intent == "indicacao":
+        handle_referral_redirect(phone, message, lead_state)
+        commit_processed_key(key)
+        return {"ok": True, "confirmed": True, **decision}
+
+    if intent in {"interesse", "duvida", "neutro", "agendamento"}:
+        add_respondido_tag_for_lead(lead_state)
+        add_conversa_tag_for_lead(lead_state)
+    if decision.get("should_pause_automation"):
+        clear_email_runtime_state_for_lead(lead_state, phone=phone)
+    if intent == "agendamento" or action == "schedule":
+        if decision.get("should_move_stage"):
+            move_related_deals_to_scheduled(lead_state)
+        if decision.get("should_create_activity"):
+            create_scheduling_activity_for_lead(lead_state, f"Inbound WhatsApp com pedido de agendamento: {message}")
+        append_crm_note_for_lead(lead_state, f"Inbound WhatsApp com pedido de agendamento. Texto: {message}")
+
+    if not decision.get("should_send"):
+        whatsapp.clear_after_hours_pending(phone)
+        commit_processed_key(key)
+        return {"ok": True, "confirmed": True, **decision}
+
+    reply = str(decision.get("reply") or "").strip() or pitch.build_reply(lead, inbound_messages, current_step=current_step)
+    print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
+    if has_recent_history_entry(phone, "out", reply, within_seconds=1800):
+        print(f"[DUPLICADO_HISTORY_OUTBOUND] {phone} ignorado")
+        commit_processed_key(key)
+        return {"ok": True, "confirmed": True, "duplicated": True, **decision}
+    if not can_emit_reply(phone, reply, within_seconds=REPLY_WINDOW_SECONDS):
+        print(f"[DUPLICIDADE_BLOQUEADA_TEXTO] {phone}")
+        commit_processed_key(key)
+        return {"ok": True, "confirmed": True, **decision}
+
+    if not whatsapp.healthcheck():
+        print("[AVISO] API pode estar offline, mas tentando enviar mesmo assim...")
+    ok = whatsapp.send_message(phone, reply)
+    if not ok:
+        release_reply_guard(phone)
+        print(f"[FALHA_ENVIO] {phone}")
+        return {"ok": False, "confirmed": False, **decision}
+
+    append_history(phone, "out", reply, step=current_step)
+    whatsapp.clear_after_hours_pending(phone)
+    print(f"[RESPOSTA_ENVIADA] {phone}")
+    commit_processed_key(key)
+    return {"ok": True, "confirmed": True, **decision, "reply": reply}
 
 
 def extract_phone_candidates(message, current_phone=""):
@@ -1100,7 +2412,7 @@ def find_or_create_referral_person(target_phones, target_emails, current_person,
         if [item.get("value") for item in merged_emails] != existing_emails:
             update_payload["email"] = merged_emails
         if update_payload:
-            crm.update_person(person_id, update_payload)
+            None if is_test_whitelist_phone(phone) else crm.update_person(person_id, update_payload)
             referral_person = crm.get_person_details(person_id) or referral_person
             print(
                 f"[REFERRAL_CRM_ATUALIZADO] person={person_id} "
@@ -1147,7 +2459,13 @@ def handle_referral_redirect(phone, message, lead_state):
     referral_name = extract_referral_name(message)
     history = append_history(phone, "in", message, step=0)
     print(f"[INTENT_INDICACAO] telefone={phone}")
-    reply = "Perfeito, obrigado por indicar! Vou falar com ele(a)."
+    
+    # Bloquear o número original (Requirement 8)
+    append_to_blocklist(phone, "indicacao")
+    whatsapp.clear_after_hours_pending(phone)
+    clear_email_runtime_state_for_lead(lead_state, phone=phone)
+
+    reply = "Perfeito, obrigado pela indicação. Vou seguir por esse contato e não te incomodo mais por aqui."
     print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
     if not has_recent_history_entry(phone, "out", reply, within_seconds=1800):
         if not can_emit_reply(phone, reply, within_seconds=REPLY_WINDOW_SECONDS):
@@ -1196,7 +2514,7 @@ def handle_referral_redirect(phone, message, lead_state):
         update_crm_status_for_lead(lead_state, "encerrado")
         if current_person_id > 0:
             try:
-                crm.create_note(
+                None if is_test_whitelist_phone(phone) else crm.create_note(
                     person_id=current_person_id,
                     content=f"Contato redirecionado. Novos contatos salvos no CRM: {contact_summary}.",
                 )
@@ -1222,6 +2540,42 @@ def handle_referral_redirect(phone, message, lead_state):
         print(f"[REFERRAL_FALHA_PARTICIPANTE] deal={deal_id} destino={target_phone or target_email}")
         return False
 
+    # ATUALIZA O DEAL: RESET CADENCIA PARA O NOVO PARTICIPANTE
+    try:
+        # Busca labels atuais para remover as de cadencia
+        deal_details = crm.get_deal_details(deal_id) or {}
+        current_labels_raw = deal_details.get("label") or ""
+        
+        # Converte para lista de IDs
+        current_label_ids = []
+        if isinstance(current_labels_raw, list):
+            current_label_ids = [str(l) for l in current_labels_raw]
+        elif isinstance(current_labels_raw, str):
+            current_label_ids = [l.strip() for l in current_labels_raw.split(",") if l.strip()]
+        
+        # Filtra labels: remove RESPONDIDO e CADencias
+        all_options = crm.get_deal_labels()
+        id_to_name = {str(opt.get("id")): str(opt.get("label") or opt.get("name") or "").upper() for opt in all_options}
+        name_to_id = {str(opt.get("label") or opt.get("name") or "").upper(): str(opt.get("id")) for opt in all_options}
+        
+        new_label_ids = []
+        for lid in current_label_ids:
+            lname = id_to_name.get(lid, "")
+            if "CAD" in lname or "RESPONDIDO" == lname or "CONVERSANDO" == lname:
+                continue
+            new_label_ids.append(lid)
+        
+        # Adiciona tag de origem de indicacao
+        crm.add_tag("deal", deal_id, "CONTATO_INDICADO")
+
+        update_payload = {
+            "label": ",".join(new_label_ids)
+        }
+        crm.update_deal(deal_id, update_payload)
+        print(f"[REFERRAL_DEAL_UPDATED] deal={deal_id} new_labels={len(new_label_ids)}")
+    except Exception as e:
+        print(f"[REFERRAL_DEAL_UPDATE_ERRO] {e}")
+
     if target_phone:
         set_cached_lead(
             target_phone,
@@ -1231,11 +2585,13 @@ def handle_referral_redirect(phone, message, lead_state):
             bypass=False,
             source="referral",
         )
-    append_to_blocklist(f"55{phone}", "referral_redirect")
+    
+    # Blocklist do contato original
+    append_to_blocklist(phone, "referral_redirect")
     print(f"[BLOCKLIST_NUMERO] telefone={phone}")
     print(f"[INTENT_REDIRECIONADO] telefone={phone}")
     print(f"[CONTATO_REDIRECIONADO] origem={phone} destino={target_phone or target_email} deal={deal_id}")
-    update_crm_status_for_lead(lead_state, "encerrado")
+    # update_crm_status_for_lead(lead_state, "encerrado")
     append_crm_note_for_lead(
         lead_state,
         f"Encaminhado para outro responsavel. Novos contatos salvos no CRM: {contact_summary}.",
@@ -1317,6 +2673,232 @@ def health():
     return jsonify({"ok": True})
 
 
+@app.route("/agent/decide", methods=["POST"])
+def agent_decide():
+    try:
+        data = request.json or {}
+        if not data:
+            return jsonify({"ok": False, "error": "empty_payload"}), 400
+        decision = build_agent_decision(data)
+        return jsonify({"ok": True, **decision})
+    except Exception as e:
+        print("[ERRO_AGENT_DECIDE]", str(e))
+        return jsonify({"ok": False, "error": "agent_decide_failed"}), 500
+
+
+@app.route("/agent/decide/botpress", methods=["POST"])
+def agent_decide_botpress():
+    try:
+        data = request.json or {}
+        if not data:
+            return jsonify({"ok": False, "error": "empty_payload"}), 400
+        decision = build_botpress_agent_decision(data)
+        return jsonify({"ok": True, **decision})
+    except Exception as e:
+        print("[ERRO_AGENT_DECIDE_BOTPRESS]", str(e))
+        return jsonify({"ok": False, "error": "agent_decide_botpress_failed"}), 500
+
+
+def _maybe_mark_hybrid_cadence_exhausted(deal_id, cadence_step):
+    target_deal_id = int(deal_id or 0)
+    target_step = int(cadence_step or 0)
+    if target_deal_id <= 0 or target_step < 6:
+        return False
+    try:
+        deal = crm.get_deal_details(target_deal_id) or {}
+    except Exception as exc:
+        print(f"[HYBRID_EXAUSTAO_FALHA] deal={target_deal_id} erro={exc}")
+        return False
+
+    try:
+        tokens = crm.resolve_label_tokens(deal.get("label"), crm.get_deal_labels())
+    except Exception:
+        tokens = set()
+    if "RESPONDIDO" in tokens:
+        return False
+
+    history_key = f"email:deal={target_deal_id}"
+    history_items = load_history().get(history_key, [])
+    if any(str(item.get("direction") or "").strip().lower() == "in" for item in list(history_items or []) if isinstance(item, dict)):
+        return False
+
+    stage_id = resolve_terminal_stage_id()
+    stage_ok = bool(crm.update_stage(deal_id=target_deal_id, stage_id=stage_id)) if stage_id > 0 else False
+    status_ok = bool(crm.update_deal(target_deal_id, {"status_bot": "tentativa_esgotada"}))
+    note_ok = bool(crm.add_note(deal_id=target_deal_id, content="Tentativa de contato esgotada apos 6 cadencias hibridas."))
+    print(
+        f"[HYBRID_EXAUSTAO] deal={target_deal_id} cadence={target_step} "
+        f"stage_ok={1 if stage_ok else 0} status_ok={1 if status_ok else 0} note_ok={1 if note_ok else 0}"
+    )
+    return bool(stage_ok or status_ok or note_ok)
+
+
+@app.route("/email/callback", methods=["POST"])
+@app.route("/email/confirm", methods=["POST"])
+def email_callback():
+    try:
+        data = request.json or {}
+        event_id = str(data.get("event_id") or data.get("id") or "").strip()
+        callback_status = normalize_intent_text(
+            data.get("status")
+            or data.get("delivery_status")
+            or data.get("result")
+            or data.get("state")
+            or ""
+        )
+        pending = load_email_pending_confirmations()
+        item = dict(pending.get(event_id) or {})
+        if not item and event_id:
+            history_key = f"email:deal={int(data.get('deal_id') or 0)}"
+            history_message = str(data.get("cadence_tag") or data.get("message") or "").strip() or f"EMAIL_CAD{int(data.get('cadence_step') or 0)}"
+            if has_recent_history_entry(history_key, "out", history_message, within_seconds=7 * 24 * 3600):
+                print(f"[EMAIL_CALLBACK_DUPLICADO] event_id={event_id}")
+                return jsonify({"ok": True, "duplicated": True})
+            print(f"[EMAIL_CALLBACK_DESCONHECIDO] event_id={event_id or '-'} status={callback_status or '-'}")
+            return jsonify({"ok": True, "ignored": True})
+
+        deal_id = int(item.get("deal_id") or data.get("deal_id") or 0)
+        person_id = int(item.get("person_id") or data.get("person_id") or 0)
+        cadence_step = max(1, int(item.get("cadence_step") or data.get("cadence_step") or 1))
+        cadence_tag = str(item.get("cadence_tag") or data.get("cadence_tag") or f"EMAIL_CAD{cadence_step}").strip() or f"EMAIL_CAD{cadence_step}"
+        email = str(item.get("email") or data.get("email") or "").strip().lower()
+        history_key = f"email:deal={deal_id}"
+        history_message = f"EMAIL_CAD{cadence_step}"
+        success_values = {"sent", "confirmed", "delivered", "success", "ok", "email_sent"}
+
+        if callback_status not in success_values:
+            pending.pop(event_id, None)
+            save_email_pending_confirmations(pending)
+            print(
+                f"[EMAIL_CALLBACK_SEM_CONFIRMACAO] event_id={event_id or '-'} deal={deal_id} "
+                f"email={email or '-'} status={callback_status or '-'}"
+            )
+            return jsonify({"ok": True, "confirmed": False})
+
+        if not has_recent_history_entry(history_key, "out", history_message, within_seconds=30 * 24 * 3600):
+            append_history(history_key, "out", history_message, step=cadence_step, source="manual_sync")
+
+        tag_ok = bool(crm.add_tag("deal", deal_id, cadence_tag)) if deal_id > 0 else False
+        status_ok = bool(crm.update_deal(deal_id, {"status_bot": "contato_iniciado"})) if deal_id > 0 else False
+        note_ok = bool(
+            crm.add_note(
+                deal_id=deal_id,
+                content=f"E-mail enviado na cadencia {cadence_step}. Confirmado por callback do n8n."
+            )
+        ) if deal_id > 0 else False
+        pending.pop(event_id, None)
+        save_email_pending_confirmations(pending)
+        _maybe_mark_hybrid_cadence_exhausted(deal_id, cadence_step)
+        print(
+            f"[EMAIL_CONFIRMADO] event_id={event_id or '-'} deal={deal_id} email={email or '-'} "
+            f"cadencia={cadence_step} tag_ok={1 if tag_ok else 0} status_ok={1 if status_ok else 0} note_ok={1 if note_ok else 0}"
+        )
+        return jsonify({"ok": True, "confirmed": True})
+    except Exception as e:
+        print("[ERRO_EMAIL_CALLBACK]", str(e))
+        return jsonify({"ok": False, "error": "email_callback_failed"}), 500
+
+
+@app.route("/email/inbound", methods=["POST"])
+def email_inbound():
+    try:
+        data = request.json or {}
+        if not data:
+            return jsonify({"ok": False, "error": "empty_payload"}), 400
+
+        text = str(data.get("text") or data.get("message") or data.get("body") or "").strip()
+        if not text:
+            return jsonify({"ok": False, "error": "missing_text"}), 400
+
+        deal_id = int(data.get("deal_id") or 0)
+        person_id = int(data.get("person_id") or 0)
+        email = str(data.get("email") or "").strip().lower()
+        phone = whatsapp.normalize_phone(data.get("phone") or data.get("telefone") or "")
+        source_id = str(data.get("message_id") or data.get("event_id") or data.get("id") or "").strip()
+        identity = email or phone or f"deal:{deal_id or person_id or 0}"
+        key = processed_key(identity, source_id, text)
+
+        fd = None
+        try:
+            fd = acquire_lock(PROCESSED_LOCK_FILE)
+            refreshed = load_processed()
+            if key in refreshed:
+                print(f"[DUPLICADO_EMAIL_INBOUND] key={key}")
+                return jsonify({"ok": True, "confirmed": True, "duplicated": True})
+        finally:
+            if fd is not None:
+                release_lock(fd, PROCESSED_LOCK_FILE)
+
+        lead_state = resolve_lead_state_from_payload(data)
+        clear_email_runtime_state(
+            deal_ids=[deal_id] if deal_id > 0 else [],
+            person_id=person_id or extract_entity_id((lead_state.get("person") or {}).get("id")),
+            email=email,
+            phone=phone,
+        )
+        history_key = f"email:deal={deal_id}" if deal_id > 0 else (f"email:person={person_id}" if person_id > 0 else f"email:{identity}")
+        append_history(history_key, "in", text, step=0, source="email_inbound")
+        decision = build_agent_decision(
+            {
+                **data,
+                "channel": "email",
+                "text": text,
+                "message": text,
+                "deal_id": deal_id,
+                "person_id": person_id,
+                "email": email,
+                "phone": phone,
+            }
+        )
+        intent = str(decision.get("intent") or "").strip().lower()
+        note_prefix = "Inbound email"
+
+        if intent == "nao_interessado":
+            if phone:
+                append_to_blocklist(phone, "sem_interesse_email")
+                whatsapp.clear_after_hours_pending(phone)
+            add_respondido_tag_for_lead(lead_state)
+            update_crm_status_for_lead(lead_state, "lead_sem_interesse")
+            move_related_deals_to_terminal_stage(lead_state, reason="email_sem_interesse")
+            append_crm_note_for_lead(lead_state, f"{note_prefix} negativo. Texto: {text}")
+        elif intent == "numero_errado":
+            if phone:
+                append_to_blocklist(phone, "numero_errado_email")
+                whatsapp.clear_after_hours_pending(phone)
+            add_respondido_tag_for_lead(lead_state)
+            update_crm_status_for_lead(lead_state, "numero_nao_corresponde")
+            move_related_deals_to_terminal_stage(lead_state, reason="email_numero_errado")
+            append_crm_note_for_lead(lead_state, f"{note_prefix} numero errado. Texto: {text}")
+        elif intent in {"empresa_incompativel", "setor_errado"}:
+            add_respondido_tag_for_lead(lead_state)
+            update_crm_status_for_lead(lead_state, "lead_sem_interesse")
+            move_related_deals_to_terminal_stage(lead_state, reason="email_empresa_incompativel")
+            append_crm_note_for_lead(lead_state, f"{note_prefix} empresa incompativel. Texto: {text}")
+        elif intent == "agendamento":
+            add_respondido_tag_for_lead(lead_state)
+            update_crm_status_for_lead(lead_state, "lead_interessado")
+            move_related_deals_to_scheduled(lead_state)
+            create_scheduling_activity_for_lead(lead_state, f"{note_prefix} com pedido de agendamento: {text}")
+            append_crm_note_for_lead(lead_state, f"{note_prefix} com pedido de agendamento. Texto: {text}")
+        elif intent == "interesse":
+            add_respondido_tag_for_lead(lead_state)
+            update_crm_status_for_lead(lead_state, "lead_interessado")
+            append_crm_note_for_lead(lead_state, f"{note_prefix} com interesse. Texto: {text}")
+        elif intent in {"duvida", "neutro"}:
+            add_respondido_tag_for_lead(lead_state)
+            append_crm_note_for_lead(lead_state, f"{note_prefix} com duvida/interacao. Texto: {text}")
+
+        commit_processed_key(key)
+        print(
+            f"[EMAIL_INBOUND_PROCESSADO] deal={deal_id} person={person_id} email={email or '-'} "
+            f"intent={intent or '-'} action={decision.get('action') or '-'}"
+        )
+        return jsonify({"ok": True, "confirmed": True, **decision})
+    except Exception as e:
+        print("[ERRO_EMAIL_INBOUND]", str(e))
+        return jsonify({"ok": False, "error": "email_inbound_failed"}), 500
+
+
 @app.route("/history/outbound", methods=["POST"])
 def sync_outbound_history():
     try:
@@ -1334,11 +2916,11 @@ def sync_outbound_history():
             print(f"[OUTBOUND_SEM_TEXTO_IGNORADO] {phone}")
             return jsonify({"ok": True, "ignored": True})
 
-        if has_recent_history_entry(phone, "out", message, within_seconds=180):
+        if has_recent_confirmed_outbound_entry(phone, message, within_seconds=180):
             print(f"[OUTBOUND_MANUAL_DUPLICADO] {phone}")
             return jsonify({"ok": True, "duplicated": True})
 
-        history = append_history(phone, "out", message, step=0)
+        history = append_history(phone, "out", message, step=0, source="sync")
         print(f"[OUTBOUND_MANUAL_SINCRONIZADO] {phone}")
         return jsonify({"ok": True, "items": len(history)})
     except Exception as e:
@@ -1388,6 +2970,9 @@ def inbox():
         phone = whatsapp.normalize_phone(str(phone_raw).split("@")[0])
         message = str(message_raw).strip()
         print(f"[INBOUND_RECEBIDO] {phone}: {message}")
+        if not _session_guard_allows_inbound(data):
+            print(f"[INBOUND_OLD_SESSION_IGNORED] telefone={phone} texto={message}")
+            return jsonify({"ok": True, "ignored": True, "reason": "old_session"})
         if not whatsapp.is_valid_phone(phone):
             whatsapp.mark_invalid(phone, "invalid_phone_inbound")
             return jsonify({"ok": True})
@@ -1399,23 +2984,96 @@ def inbox():
 
         if phone in load_manual_blocklist() and phone not in TEST_WHITELIST:
             print(f"[BLOQUEADO_MANUAL] {phone} ignorado")
+            commit_processed_key(processed_key(phone, msg_id, message))
             return jsonify({"ok": True})
 
+        # --- NOVA LOGICA DE ANALISE ANTES DE DEDUPLICACAO ---
+        print(f"[INBOUND_ANALISE] {phone}: {message}")
+        
+        # Detecta intent logo no inicio para o log obrigatorio
+        current_intent = "neutro"
+        if is_hard_negative_message(message): current_intent = "nao_interessado_hard"
+        elif is_opt_out(message): current_intent = "nao_interessado_optout"
+        elif detect_closing_intent(message): current_intent = "fechamento_" + detect_closing_intent(message)
+        elif detect_referral_intent(message): current_intent = "indicacao"
+        elif detect_scheduling_intent(message): current_intent = "agendamento"
+        elif detect_positive_intent(message): current_intent = "interesse"
+        elif detect_neutral_intent(message): current_intent = "duvida"
+        
+        print(f"[INTENT_DETECTED] telefone={phone} intent={current_intent} texto={message}")
+
+        
         key = processed_key(phone, msg_id, message)
+        is_duplicated = False
         fd = None
         try:
             fd = acquire_lock(PROCESSED_LOCK_FILE)
             refreshed = load_processed()
+
             if key in refreshed:
-                print(f"[DUPLICADO_INBOUND] Mensagem {key} já processada.")
-                return jsonify({"ok": True, "confirmed": True, "duplicated": True})
+                print(f"[DUPLICADO_STRICT] Mensagem {key} já processada.")
+
+                intent_safe = locals().get("intent_name") or locals().get("intent") or ""
+
+                if intent_safe not in ("interesse", "positive_interest", "fechamento_wrong_number", "wrong_contact", "fechamento_sem_interesse", "optout"):
+                    print(f"[DUPLICADO_STRICT_IGNORADO] Mensagem {key} já processada. Ignorando execução.")
+                    return jsonify({"confirmed": True, "duplicated": True, "ok": True})
+
+                print(f"[DUPLICADO_REPROCESSAR_CRITICO] telefone={phone} intent={intent_safe} texto={text}")
+
+            else:
+                refreshed.add(key)
+                save_processed(refreshed)
+
         finally:
             if fd is not None:
                 release_lock(fd, PROCESSED_LOCK_FILE)
 
-        print(f"[INBOUND] {phone}: {message}")
+        
+        if is_duplicated and not force_process:
+            return jsonify({"ok": True, "confirmed": True, "duplicated": True})
 
-        if not dentro_do_horario():
+        print(f"[INBOUND_EXECUTANDO] {phone}: {message}")
+
+        if is_hard_negative_message(message):
+            try:
+                lead_state = validate_lead_with_cache(phone)
+            except Exception as e:
+                print(f"[ERRO_CRM_FIND] {e}")
+                lead_state = {
+                    "valid": True,
+                    "person": {"id": -1, "name": "Lead"},
+                    "deals": [],
+                    "bypass": True,
+                    "source": "error_fallback",
+                }
+            try:
+                whatsapp.blocklist_add(phone, reason="sem_interesse")
+            except Exception:
+                pass
+            append_to_blocklist(phone, "sem_interesse")
+            whatsapp.clear_after_hours_pending(phone)
+            print(f"[BLOCKLIST_ADICIONADO] telefone={phone} motivo=sem_interesse_hard_rule")
+            print(f"[INTENT_NEGATIVO_HARD_RULE] telefone={phone}")
+            try:
+                add_respondido_tag_for_lead(lead_state)
+                update_crm_status_for_lead(lead_state, "lead_sem_interesse")
+                clear_email_runtime_state_for_lead(lead_state, phone=phone)
+                move_related_deals_to_terminal_stage(lead_state, reason="sem_interesse_hard_rule")
+                append_crm_note_for_lead(lead_state, f"Lead informou nao ter interesse. Texto: {message}")
+            except Exception:
+                pass
+            reply = "Perfeito, obrigada por avisar. Vou encerrar por aqui para não incomodar."
+            print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
+            ok = whatsapp.send_message(phone, reply, bypass_manual_blocklist=True)
+            if ok:
+                append_history(phone, "out", reply, step=0)
+                print(f"[RESPOSTA_ENVIADA] {phone}")
+            commit_processed_key(key)
+            return jsonify({"ok": True, "status": "sem_interesse_hard_rule", "confirmed": bool(ok)})
+
+
+        if not dentro_do_horario() and not is_test_whitelist_phone(phone):
             lead_state = None
             try:
                 lead_state = validate_lead_with_cache(phone)
@@ -1434,10 +3092,12 @@ def inbox():
                 commit_processed_key(key)
             return jsonify(payload)
 
-        if has_recent_history_entry(phone, "in", message, within_seconds=900):
+        if False and has_recent_history_entry(phone, "in", message, within_seconds=900) and not is_test_whitelist_phone(phone):
             print(f"[DUPLICADO_HISTORY_INBOUND] {phone} ignorado")
-            commit_processed_key(key)
-            return jsonify({"ok": True})
+            if (locals().get("intent_name") or locals().get("intent") or "") in ("interesse", "positive_interest", "fechamento_wrong_number", "wrong_contact", "fechamento_sem_interesse", "optout"):
+                print(f"[HISTORY_REPROCESSAR_CRITICO] telefone={phone} texto={text}")
+            else:
+                return jsonify({"confirmed": True, "duplicated": True, "ok": True})
 
         if extract_phone_candidates(message, current_phone=phone) or extract_email_candidates(message):
             try:
@@ -1526,11 +3186,30 @@ def inbox():
                 commit_processed_key(key)
                 return jsonify({"ok": True})
 
+        lead = build_lead_payload_from_state(phone, lead_state)
+        clear_email_runtime_state_for_lead(lead_state, phone=phone)
+
         if is_opt_out(message):
             print(f"[INTENT_NEGATIVO] telefone={phone}")
-            append_to_blocklist(f"55{phone}", "opt_out")
-            update_crm_status_for_lead(lead_state, "sem_interesse")
-            append_crm_note_for_lead(lead_state, "Lead informou nao ter interesse. Movido para blocklist.")
+            closing_reply = "Perfeito, obrigada por avisar. Vou encerrar por aqui para não incomodar."
+            append_to_blocklist(phone, "opt_out")
+            whatsapp.clear_after_hours_pending(phone)
+            add_respondido_tag_for_lead(lead_state)
+            update_crm_status_for_lead(lead_state, "lead_sem_interesse")
+            move_related_deals_to_terminal_stage(lead_state, reason="opt_out")
+            append_crm_note_for_lead(lead_state, f"Lead informou nao ter interesse. Texto: {message}")
+            history = append_history(phone, "in", message, step=0)
+            if not has_recent_history_entry(phone, "out", closing_reply, within_seconds=1800):
+                if can_emit_reply(phone, closing_reply, within_seconds=REPLY_WINDOW_SECONDS):
+                    ok = whatsapp.send_message(phone, closing_reply, bypass_manual_blocklist=True)
+                    if ok:
+                        append_history(phone, "out", closing_reply, step=infer_step_from_history(history))
+                        print(f"[RESPOSTA_ENVIADA] {phone}")
+                    else:
+                        release_reply_guard(phone)
+                        print(f"[FALHA_ENVIO] {phone}")
+                else:
+                    print(f"[DUPLICIDADE_BLOQUEADA_TEXTO] {phone}")
             commit_processed_key(key)
             return jsonify({"ok": True})
 
@@ -1562,15 +3241,23 @@ def inbox():
             commit_processed_key(key)
             return jsonify({"ok": True})
 
-        if detect_positive_intent(message):
-            print(f"[INTENT_POSITIVO] telefone={phone}")
-            if detect_scheduling_intent(message):
+        if not is_agent_decide_enabled():
+            if detect_positive_intent(message):
+                print(f"[INTENT_POSITIVO] telefone={phone}")
+                add_respondido_tag_for_lead(lead_state)
+                if detect_scheduling_intent(message):
+                    move_related_deals_to_scheduled(lead_state)
+                    create_scheduling_activity_for_lead(lead_state, f"Inbound WhatsApp com pedido de agendamento: {message}")
+                    append_crm_note_for_lead(lead_state, f"Inbound WhatsApp com pedido de agendamento. Texto: {message}")
+            elif detect_neutral_intent(message):
+                print(f"[INTENT_NEUTRO] telefone={phone}")
+                add_respondido_tag_for_lead(lead_state)
+            elif detect_scheduling_intent(message):
+                print(f"[INTENT_AGENDAMENTO] telefone={phone}")
+                add_respondido_tag_for_lead(lead_state)
                 move_related_deals_to_scheduled(lead_state)
-        elif detect_neutral_intent(message):
-            print(f"[INTENT_NEUTRO] telefone={phone}")
-        elif detect_scheduling_intent(message):
-            print(f"[INTENT_AGENDAMENTO] telefone={phone}")
-            move_related_deals_to_scheduled(lead_state)
+                create_scheduling_activity_for_lead(lead_state, f"Inbound WhatsApp com pedido de agendamento: {message}")
+                append_crm_note_for_lead(lead_state, f"Inbound WhatsApp com pedido de agendamento. Texto: {message}")
 
         if source == "after_hours_resume" and has_recent_history_entry(phone, "in", message, within_seconds=48 * 3600):
             history = get_history_items(phone)
@@ -1582,13 +3269,42 @@ def inbox():
             for item in history
             if str(item.get("direction") or "").strip().lower() == "in"
         ]
-
-        reply = pitch.build_reply(
-            lead={"telefone": phone, "nome": person.get("name") or ""},
-            inbound_messages=inbound_messages,
+        agent_payload = maybe_handle_inbound_agent_decision(
+            phone=phone,
+            message=message,
+            source=source,
+            lead_state=lead_state,
+            lead=lead,
+            history=history,
             current_step=current_step,
+            key=key,
         )
-        print(f"[INTENT_DETECTADA] telefone={phone} step={current_step}")
+        if agent_payload is not None:
+            return jsonify(agent_payload)
+
+        latest_inbound = (message or "").strip().lower()
+        lead_name = str((lead or {}).get("name") or "").strip().lower()
+        generic_names = {"", "cliente", "lead", "contato", "responsavel", "responsável"}
+        positive_name_gate = (
+            latest_inbound in {"pode sim", "sou eu", "sim", "claro", "pode falar", "pode", "fala", "pode perguntar"}
+            or latest_inbound.startswith("pode sim")
+            or latest_inbound.startswith("sou eu")
+        )
+        negative_gate = any(x in latest_inbound for x in [
+            "nao estamos interessados", "não estamos interessados", "nao tenho interesse", "não tenho interesse",
+            "sem interesse", "nao interessado", "não interessado", "nao quero", "não quero",
+            "agradeco o interesse", "agradeço o interesse", "obrigado", "obrigada"
+        ])
+        if negative_gate:
+            reply = "Perfeito, obrigada por avisar. Vou encerrar por aqui para não incomodar."
+        elif positive_name_gate and lead_name in generic_names:
+            reply = "Perfeito. Como posso te chamar?"
+        else:
+            reply = pitch.build_reply(
+                lead,
+                inbound_messages,
+                current_step=current_step,
+            )
         print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
 
         if has_recent_history_entry(phone, "out", reply, within_seconds=1800):
@@ -1625,4 +3341,4 @@ def inbox():
 
 
 if __name__ == "__main__":
-    app.run(port=5000, threaded=True, use_reloader=False)
+    app.run(host="0.0.0.0", port=5001)

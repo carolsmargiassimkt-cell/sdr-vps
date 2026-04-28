@@ -1,0 +1,288 @@
+{
+  "date": "2026-04-28",
+  "planned_leads": [
+    {
+      "id": 2955,
+      "stage_id": 8,
+      "nome": "Sócio-Administrador - EDILSON FERREIRA DE ANDRADE, Sócio-Administrador - ROSELI DE OLIVEIRA ANDRADE",
+      "empresa": "J Andrade Madeireira",
+      "phone": "75999475171",
+      "phones": [
+        "75999475171"
+      ],
+      "telefones": [
+        "75999475171"
+      ],
+      "email": "",
+      "person_id": 4766,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3031,
+      "stage_id": 8,
+      "nome": "Andreia",
+      "empresa": "Almatech Manutencao Instalacao De Estruturas Metalicas E Alvenaria Em Geral",
+      "phone": "1120243283",
+      "phones": [
+        "1120243283"
+      ],
+      "telefones": [
+        "1120243283"
+      ],
+      "email": "you@example.com",
+      "person_id": 535,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3043,
+      "stage_id": 8,
+      "nome": "ANDRE OLIVIO MAYER",
+      "empresa": "Avacy Distribuidora E Comercio De Calcados",
+      "phone": "1161125393",
+      "phones": [
+        "1161125393"
+      ],
+      "telefones": [
+        "1161125393"
+      ],
+      "email": "",
+      "person_id": 5663,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3061,
+      "stage_id": 8,
+      "nome": "ANTONIO SAVIO MARTINS PEREIRA",
+      "empresa": "Cid Centro Integrado De Diagnostico",
+      "phone": "3138284400",
+      "phones": [
+        "3138284400"
+      ],
+      "telefones": [
+        "3138284400"
+      ],
+      "email": "",
+      "person_id": 5664,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3070,
+      "stage_id": 8,
+      "nome": "Copafer Comercial",
+      "empresa": "Copafer Comercial",
+      "phone": "1134058500",
+      "phones": [
+        "1134058500"
+      ],
+      "telefones": [
+        "1134058500"
+      ],
+      "email": "candinho@candinho.com.br",
+      "person_id": 5569,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3088,
+      "stage_id": 8,
+      "nome": "KUO CHUN LIN",
+      "empresa": "Ever Trust Importacao E Exportacao",
+      "phone": "1574049339",
+      "phones": [
+        "1574049339"
+      ],
+      "telefones": [
+        "1574049339"
+      ],
+      "email": "",
+      "person_id": 5666,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3093,
+      "stage_id": 8,
+      "nome": "RICARDO TARALO",
+      "empresa": "Farmavida 9 De Julho",
+      "phone": "1173533287",
+      "phones": [
+        "1173533287"
+      ],
+      "telefones": [
+        "1173533287"
+      ],
+      "email": "",
+      "person_id": 5668,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3109,
+      "stage_id": 8,
+      "nome": "RAFAEL BOEING",
+      "empresa": "Intelbras",
+      "phone": "4821060006",
+      "phones": [
+        "4821060006"
+      ],
+      "telefones": [
+        "4821060006"
+      ],
+      "email": "grupo.tributario@intelbras.com.br",
+      "person_id": 5264,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3114,
+      "stage_id": 8,
+      "nome": "RENATO HERSZENHAUT",
+      "empresa": "Klever Tecnologia Financeira",
+      "phone": "1168675046",
+      "phones": [
+        "1168675046"
+      ],
+      "telefones": [
+        "1168675046"
+      ],
+      "email": "",
+      "person_id": 5671,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3126,
+      "stage_id": 8,
+      "nome": "WELLINGTON ALMEIDA DE LIMA",
+      "empresa": "Mais Amor Alimentos Congelados",
+      "phone": "3133639795",
+      "phones": [
+        "3133639795"
+      ],
+      "telefones": [
+        "3133639795"
+      ],
+      "email": "",
+      "person_id": 5673,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3127,
+      "stage_id": 8,
+      "nome": "GISELA PIRES DE OLIVEIRA MARCHINI",
+      "empresa": "Marchini Do Brasil Administradora De Bens Proprios",
+      "phone": "1697930005",
+      "phones": [
+        "1697930005"
+      ],
+      "telefones": [
+        "1697930005"
+      ],
+      "email": "",
+      "person_id": 5674,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3128,
+      "stage_id": 8,
+      "nome": "EDUARDO PALU DE CORDOVA",
+      "empresa": "Market4U Mercados Autonomos",
+      "phone": "4199036219",
+      "phones": [
+        "4199036219"
+      ],
+      "telefones": [
+        "4199036219"
+      ],
+      "email": "",
+      "person_id": 5675,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3129,
+      "stage_id": 8,
+      "nome": "REINALDO JOAQUIM FELIZARDO NETO",
+      "empresa": "Master Gourmet Agro Industria E Comercio",
+      "phone": "3175258319",
+      "phones": [
+        "3175258319"
+      ],
+      "telefones": [
+        "3175258319"
+      ],
+      "email": "",
+      "person_id": 5676,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    },
+    {
+      "id": 3131,
+      "stage_id": 8,
+      "nome": "Jose Mauro Trazzini",
+      "empresa": "Mauro Comercio De Pisos E Azulejos",
+      "phone": "1125516600",
+      "phones": [
+        "1125516600"
+      ],
+      "telefones": [
+        "1125516600"
+      ],
+      "email": "ede.mendonca@hotmail.com",
+      "person_id": 3534,
+      "super_minas": false,
+      "cadence_step": 1,
+      "deal_cadence_step": 1,
+      "tentativas": 0
+    }
+  ],
+  "planned_ids": [
+    2955,
+    3031,
+    3043,
+    3061,
+    3070,
+    3088,
+    3093,
+    3109,
+    3114,
+    3126,
+    3127,
+    3128,
+    3129,
+    3131
+  ],
+  "ultima_execucao": "2026-04-28T11:38:06.760172"
+}

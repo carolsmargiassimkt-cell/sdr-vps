@@ -1,3 +1,66 @@
+
+function getTimestampSeconds(msg) {
+  try {
+    let ts =
+      msg?.messageTimestamp ??
+      msg?.message?.messageTimestamp ??
+      msg?.key?.messageTimestamp ??
+      msg?.timestamp ??
+      null;
+
+    if (!ts) return "";
+
+    if (typeof ts === "object" && typeof ts.toNumber === "function") ts = ts.toNumber();
+    if (typeof ts === "object" && typeof ts.low === "number") ts = ts.low;
+
+    let n = Number(ts);
+    if (!Number.isFinite(n) || n <= 0) return "";
+
+    if (n > 1000000000000) n = Math.floor(n / 1000);
+
+    return String(Math.floor(n));
+  } catch (e) {
+    console.log("[TS_ERROR]", e?.message || e);
+    return "";
+  }
+}
+
+
+function normalizeBaileysTimestamp(msg) {
+  const raw =
+    msg?.messageTimestamp ??
+    msg?.timestamp ??
+    msg?.message?.messageTimestamp ??
+    msg?.key?.messageTimestamp ??
+    null;
+
+  if (raw == null) return "";
+
+  try {
+    if (typeof raw === "number") return String(raw > 9999999999 ? Math.floor(raw / 1000) : raw);
+    if (typeof raw === "bigint") return String(Number(raw > 9999999999n ? raw / 1000n : raw));
+    if (typeof raw === "string") {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0) return "";
+      return String(n > 9999999999 ? Math.floor(n / 1000) : Math.floor(n));
+    }
+    if (typeof raw === "object") {
+      if (typeof raw.toNumber === "function") {
+        const n = raw.toNumber();
+        return String(n > 9999999999 ? Math.floor(n / 1000) : Math.floor(n));
+      }
+      if (typeof raw.low === "number") {
+        const n = raw.low;
+        return String(n > 9999999999 ? Math.floor(n / 1000) : Math.floor(n));
+      }
+    }
+  } catch (e) {
+    console.log("[TIMESTAMP_NORMALIZE_ERROR]", e?.message || e);
+  }
+
+  return "";
+}
+
 import http from 'http'
 import https from 'https'
 import fs from 'fs'
@@ -39,7 +102,7 @@ let reconnectAttempt = 0
 let connectionMode = 'booting'
 let needsQr = false
 let outboundQueue = Promise.resolve()
-let dailyLimit = 50
+let dailyLimit = parsePositiveInt(process.env.WHATSAPP_DAILY_LIMIT || process.env.MAX_DEALS_DIA, 70)
 let dailyCountDate = ''
 let dailySentCount = 0
 let authStateRef = null
@@ -57,18 +120,22 @@ const MAX_RECONNECT = 5
 const BACKLOG_SWEEP_INTERVAL_MS = 30000
 const BACKLOG_MIN_GAP_MS = 30000
 const BACKLOG_WATCH_TTL_MS = 24 * 60 * 60 * 1000
-const VPS_URL = String(process.env.VPS_URL || 'http://127.0.0.1:8001').replace(/\/+$/, '')
+const VPS_URL = String(process.env.VPS_URL || 'http://127.0.0.1:5001').replace(/\/+$/, '')
 const WA_PORT = Number(process.env.PORT || 3000)
 const WA_INSTANCE = String(process.env.WA_INSTANCE || (WA_PORT === 3001 ? 'WA2' : 'WA1')).trim() || 'WA1'
 const TEST_WHITELIST = new Set(['5535920002020', '35920002020'])
 const HISTORY_FILE = path.join('logs', 'whatsapp_message_history.json')
 const BACKLOG_STATE_FILE = path.join('logs', `whatsapp_backlog_state.${WA_INSTANCE.toLowerCase()}.json`)
+const INBOUND_RETRY_FILE = path.join('runtime', `inbound_retry_queue.${WA_INSTANCE.toLowerCase()}.json`)
 const AUTH_INFO_DIR = path.join(process.cwd(), 'auth_info_baileys')
 const PROCESS_LOCK_FILE = path.join(process.cwd(), `baileys.${WA_INSTANCE.toLowerCase()}.lock`)
 let backlogSweepTimer = null
 let backlogStateFlushTimer = null
+let inboundRetryFlushTimer = null
+let inboundRetryFlushInProgress = false
 let processLockFd = null
 let server = null
+const inboundRetryQueue = new Map()
 
 function clearReconnectTimer() {
     if (reconnectTimer) {
@@ -82,6 +149,35 @@ function clearConnectTimeoutTimer() {
         clearTimeout(connectTimeoutTimer)
         connectTimeoutTimer = null
     }
+}
+
+function clearInboundRetryFlushTimer() {
+    if (inboundRetryFlushTimer) {
+        clearInterval(inboundRetryFlushTimer)
+        inboundRetryFlushTimer = null
+    }
+}
+
+function parsePositiveInt(value, fallback) {
+    const parsed = Number.parseInt(String(value ?? '').trim(), 10)
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+function parseBoolean(value, fallback = false) {
+    if (typeof value === 'boolean') {
+        return value
+    }
+    const normalized = String(value ?? '').trim().toLowerCase()
+    if (!normalized) {
+        return fallback
+    }
+    if (['1', 'true', 'yes', 'y', 'on', 'sim'].includes(normalized)) {
+        return true
+    }
+    if (['0', 'false', 'no', 'n', 'off', 'nao', 'não'].includes(normalized)) {
+        return false
+    }
+    return fallback
 }
 
 function isTestWhitelistNumber(number) {
@@ -189,6 +285,138 @@ function loadPersistedBacklogState() {
         cleanupWatchedOutboundChats()
     } catch (_error) {
     }
+}
+
+function persistInboundRetryQueue() {
+    try {
+        fs.mkdirSync(path.dirname(INBOUND_RETRY_FILE), { recursive: true })
+        const payload = {
+            savedAt: new Date().toISOString(),
+            items: Array.from(inboundRetryQueue.entries()).map(([key, entry]) => [key, entry]),
+        }
+        fs.writeFileSync(INBOUND_RETRY_FILE, JSON.stringify(payload))
+    } catch (_error) {
+    }
+}
+
+function loadPersistedInboundRetryQueue() {
+    try {
+        if (!fs.existsSync(INBOUND_RETRY_FILE)) {
+            return
+        }
+        const raw = fs.readFileSync(INBOUND_RETRY_FILE, 'utf-8')
+        const parsed = JSON.parse(raw)
+        for (const [key, entry] of Array.isArray(parsed?.items) ? parsed.items : []) {
+            if (!key || !entry || typeof entry !== 'object') {
+                continue
+            }
+            inboundRetryQueue.set(String(key).trim(), entry)
+        }
+    } catch (_error) {
+    }
+}
+
+function buildInboundRetryKey(data) {
+    const msgId = String(data?.messageId || data?.id || '').trim()
+    const phone = normalizePhoneDigits(data?.phone || '') || String(data?.remoteJid || '').trim()
+    if (msgId) {
+        return `${phone}:${msgId}`
+    }
+    const text = String(data?.message || data?.text || '').trim()
+    return `${phone}:${text}`
+}
+
+function normalizeInboundRetryPayload(data) {
+    const msgId = String(data?.messageId || data?.id || '').trim()
+    const remoteJid = String(data?.remoteJid || '').trim()
+    const remoteJidAlt = String(data?.remoteJidAlt || '').trim()
+    return {
+        id: msgId,
+        messageId: msgId,
+        phone: normalizePhoneDigits(data?.phone || '') || resolvePhoneFromInboundJids(remoteJid, remoteJidAlt),
+        remoteJid,
+        remoteJidAlt,
+        message: String(data?.message || data?.text || '').trim(),
+        text: String(data?.text || data?.message || '').trim(),
+        timestamp: String(data?.timestamp || data?.messageTimestamp || '').trim(),
+        source: String(data?.source || 'retry_queue').trim() || 'retry_queue',
+    }
+}
+
+function queueInboundForRetry(data, reason = 'vps_unavailable') {
+    const payload = normalizeInboundRetryPayload(data)
+    const key = buildInboundRetryKey(payload)
+    if (!key || !payload.message) {
+        return
+    }
+    if (!payload.phone) {
+        console.log('[INBOUND_RETRY_DESCARTADO]', key, 'missing=phone')
+        return
+    }
+    const previous = inboundRetryQueue.get(key) || {}
+    inboundRetryQueue.set(key, {
+        ...previous,
+        payload,
+        reason: String(reason || 'vps_unavailable'),
+        updatedAt: new Date().toISOString(),
+        nextRetryAt: Date.now() + 5000,
+        attempts: Number(previous?.attempts || 0),
+    })
+    persistInboundRetryQueue()
+    console.log('[INBOUND_RETRY_ENFILEIRADO]', key, `reason=${reason}`)
+}
+
+async function flushInboundRetryQueue() {
+    if (inboundRetryFlushInProgress || inboundRetryQueue.size === 0) {
+        return
+    }
+    inboundRetryFlushInProgress = true
+    try {
+        const now = Date.now()
+        for (const [key, entry] of Array.from(inboundRetryQueue.entries())) {
+            if (Number(entry?.nextRetryAt || 0) > now) {
+                continue
+            }
+            const payload = normalizeInboundRetryPayload(entry?.payload || {})
+            if (!payload.phone || !payload.message) {
+                inboundRetryQueue.delete(key)
+                persistInboundRetryQueue()
+                continue
+            }
+            const attempt = Number(entry?.attempts || 0) + 1
+            console.log('[INBOUND_RETRY_TENTATIVA]', key, `attempt=${attempt}`)
+            const ok = await postToVps(payload)
+            if (ok) {
+                inboundRetryQueue.delete(key)
+                persistInboundRetryQueue()
+                console.log('[INBOUND_RETRY_CONFIRMADO]', key)
+                continue
+            }
+            const nextDelayMs = Math.min(60000, attempt * 5000)
+            inboundRetryQueue.set(key, {
+                ...entry,
+                payload,
+                attempts: attempt,
+                updatedAt: new Date().toISOString(),
+                nextRetryAt: Date.now() + nextDelayMs,
+            })
+            persistInboundRetryQueue()
+            console.log('[INBOUND_RETRY_FALHOU]', key, `attempt=${attempt}`, `next_retry_ms=${nextDelayMs}`)
+        }
+    } finally {
+        inboundRetryFlushInProgress = false
+    }
+}
+
+function ensureInboundRetryFlushTimer() {
+    if (inboundRetryFlushTimer) {
+        return
+    }
+    inboundRetryFlushTimer = setInterval(() => {
+        flushInboundRetryQueue().catch((error) => {
+            console.log('[INBOUND_RETRY_ERRO]', error?.message || String(error))
+        })
+    }, 5000)
 }
 
 function markWhatsAppDisconnected(mode = 'offline') {
@@ -445,7 +673,9 @@ async function postToVps(data) {
             console.log('[INBOUND_VPS_CONFIRMADO]', phone, `msg_id=${msgId}`)
             return true
         }
-        console.log('[INBOUND_VPS_FALHOU]', `status=${result?.statusCode || 0}`, phone, `msg_id=${msgId}`)
+        const errorCode = String(result?.body?.error || '').trim() || '-'
+        const missingFields = Array.isArray(result?.body?.missing_fields) ? result.body.missing_fields.join(',') : '-'
+        console.log('[INBOUND_VPS_FALHOU]', `status=${result?.statusCode || 0}`, phone, `msg_id=${msgId}`, `error=${errorCode}`, `missing=${missingFields}`)
         await sleep(delayMs)
     }
     return false
@@ -456,6 +686,9 @@ async function postToPythonWithDelay(data, source) {
     console.log('[DELAY_ENTRADA]', source, `delay=${delayMs}ms`)
     await sleep(delayMs)
     const ok = await postToVps(data)
+    if (!ok) {
+        queueInboundForRetry({ ...data, source }, `source_${source}`)
+    }
     return ok
 }
 
@@ -864,17 +1097,38 @@ function resolvePhoneFromLid(remoteJid) {
     return ''
 }
 
+function resolvePhoneFromInboundJids(remoteJid, remoteJidAlt = '') {
+    const primaryJid = String(remoteJid || '').trim()
+    const alternateJid = String(remoteJidAlt || '').trim()
+    if (!primaryJid.includes('@lid')) {
+        return normalizePhoneDigits(primaryJid.replace('@s.whatsapp.net', ''))
+    }
+    const alternatePhone = normalizePhoneDigits(alternateJid)
+    if (alternatePhone) {
+        return alternatePhone
+    }
+    return normalizePhoneDigits(resolvePhoneFromLid(primaryJid))
+}
+
 function buildInboundPayload(msg, source = 'realtime') {
     const remoteJid = msg?.key?.remoteJid || ''
-    const phone = normalizePhoneDigits(
-        remoteJid.includes('@lid')
-            ? resolvePhoneFromLid(remoteJid)
-            : remoteJid.replace('@s.whatsapp.net', ''),
-    )
+    const remoteJidAlt = msg?.key?.remoteJidAlt || msg?.remoteJidAlt || ''
+    const phone = resolvePhoneFromInboundJids(remoteJid, remoteJidAlt)
+    if (remoteJid.includes('@lid') && !phone) {
+        console.log(
+            '[INBOUND_SEM_PHONE_LID]',
+            remoteJid,
+            `remote_jid_alt=${remoteJidAlt || '-'}`,
+            `msg_id=${msg?.key?.id || ''}`,
+        )
+    }
     return {
+        timestamp: getTimestampSeconds(msg),
+        messageTimestamp: getTimestampSeconds(msg),
         id: msg?.key?.id || '',
         phone,
         remoteJid,
+        remoteJidAlt,
         message: extractText(msg),
         source,
     }
@@ -1048,7 +1302,7 @@ async function processBacklog(currentSock = sock, options = {}) {
                 if (!ok) {
                     console.log('[INBOUND_VPS_FALHOU]', jid, `msg_id=${msg?.key?.id || ''}`)
                     console.log('[NAO_CONFIRMADO_PYTHON]', jid, `msg_id=${msg?.key?.id || ''}`)
-                    releaseInboundKey(inboundKey)
+                    confirmInboundKey(inboundKey)
                     continue
                 }
                 console.log('[INBOUND_CONFIRMADO]', jid, `msg_id=${msg?.key?.id || ''}`)
@@ -1135,7 +1389,7 @@ async function processIncomingBatch(messages, source = 'realtime') {
             if (!ok) {
                 console.log('[INBOUND_VPS_FALHOU]', payload.phone, `msg_id=${msg?.key?.id || ''}`)
                 console.log('[NAO_CONFIRMADO_PYTHON]', payload.phone, `msg_id=${msg?.key?.id || ''}`)
-                releaseInboundKey(inboundKey)
+                confirmInboundKey(inboundKey)
                 continue
             }
             confirmInboundKey(inboundKey)
@@ -1174,6 +1428,8 @@ async function start() {
         console.log('[WA_STARTING]')
         isStarting = true
         loadPersistedBacklogState()
+        loadPersistedInboundRetryQueue()
+        ensureInboundRetryFlushTimer()
         markWhatsAppDisconnected('booting')
         WA_STATE.status = 'offline'
         clearConnectTimeoutTimer()
@@ -1247,6 +1503,11 @@ async function start() {
                 console.log('[BAILEYS_CONECTADO]')
                 console.log('[WA_STABLE]')
                 ensureBacklogSweep(sock)
+                setTimeout(() => {
+                    flushInboundRetryQueue().catch((error) => {
+                        console.log('[INBOUND_RETRY_ERRO]', error?.message || String(error))
+                    })
+                }, 1000)
                 setTimeout(() => {
                     processBacklog(sock, { force: true, reason: 'open' })
                 }, 4000)
@@ -1336,6 +1597,21 @@ async function start() {
             processIncomingBatch(messages, 'realtime')
         })
 
+        sock.ev.on('messages.update', (updates) => {
+            const items = Array.isArray(updates) ? updates : []
+            for (const item of items) {
+                const key = item?.key || {}
+                if (!key?.fromMe || !key?.id) {
+                    continue
+                }
+                const status = item?.update?.status
+                if (typeof status === 'undefined' || status === null) {
+                    continue
+                }
+                console.log('[WA_DELIVERY_UPDATE]', key.remoteJid || '', `msg_id=${key.id}`, `status=${status}`)
+            }
+        })
+
         const trackChatsAndSweep = (chatItems, reason) => {
             const items = Array.isArray(chatItems) ? chatItems : []
             let hasUnread = false
@@ -1398,6 +1674,30 @@ async function start() {
     }
 }
 
+function isLoopbackRequest(req) {
+    const address = String(req.socket?.remoteAddress || req.ip || '').trim()
+    return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+}
+
+function buildDiagInboundPayload(body = {}) {
+    const rawId = String(body?.id || body?.messageId || body?.msg_id || '').trim()
+    const remoteJid = String(body?.remoteJid || '').trim()
+    const remoteJidAlt = String(body?.remoteJidAlt || '').trim()
+    const message = String(body?.message || body?.text || '').trim()
+    return {
+        id: rawId,
+        messageId: rawId,
+        msg_id: rawId,
+        phone: normalizePhoneDigits(body?.phone || '') || resolvePhoneFromInboundJids(remoteJid, remoteJidAlt),
+        remoteJid,
+        remoteJidAlt,
+        message,
+        text: message,
+        timestamp: String(body?.timestamp || body?.messageTimestamp || getTimestampSeconds(msg) || '').trim(),
+        source: String(body?.source || 'diag').trim() || 'diag',
+    }
+}
+
 app.get('/', (_req, res) => {
     res.json({ ok: true })
 })
@@ -1415,6 +1715,65 @@ app.get('/status', (_req, res) => {
         qr_available: WA_STATE.qr_available === true,
         daily_limit: dailyLimit,
         sent_today: dailySentCount,
+    })
+})
+
+app.get('/_diag/resolve-lid', (req, res) => {
+    if (!isLoopbackRequest(req)) {
+        return res.status(403).json({ ok: false })
+    }
+    const remoteJid = String(req.query?.remoteJid || '').trim()
+    return res.json({
+        ok: true,
+        remoteJid,
+        phone: resolvePhoneFromLid(remoteJid),
+    })
+})
+
+app.get('/_diag/inbound-retry', (req, res) => {
+    if (!isLoopbackRequest(req)) {
+        return res.status(403).json({ ok: false })
+    }
+    return res.json({
+        ok: true,
+        queue_size: inboundRetryQueue.size,
+        items: Array.from(inboundRetryQueue.entries()).map(([key, entry]) => ({
+            key,
+            attempts: Number(entry?.attempts || 0),
+            nextRetryAt: Number(entry?.nextRetryAt || 0),
+            reason: String(entry?.reason || ''),
+            payload: normalizeInboundRetryPayload(entry?.payload || {}),
+        })),
+    })
+})
+
+app.post('/_diag/flush-inbound-retry', async (req, res) => {
+    if (!isLoopbackRequest(req)) {
+        return res.status(403).json({ ok: false })
+    }
+    await flushInboundRetryQueue()
+    return res.json({ ok: true, queue_size: inboundRetryQueue.size })
+})
+
+app.post('/_diag/inbound', async (req, res) => {
+    if (!isLoopbackRequest(req)) {
+        return res.status(403).json({ ok: false })
+    }
+    const payload = buildDiagInboundPayload(req.body || {})
+    const key = buildInboundRetryKey(payload)
+    const ok = await postToPythonWithDelay(payload, payload.source || 'diag')
+    return res.status(ok ? 200 : 202).json({
+        ok,
+        queued: inboundRetryQueue.has(key),
+        queue_size: inboundRetryQueue.size,
+        key,
+        payload: {
+            id: payload.id,
+            phone: payload.phone,
+            remoteJid: payload.remoteJid,
+            remoteJidAlt: payload.remoteJidAlt,
+            has_message: Boolean(payload.message),
+        },
     })
 })
 
@@ -1478,7 +1837,8 @@ app.post('/validate', async (req, res) => {
 app.post('/send', async (req, res) => {
     try {
         resetDailyCountersIfNeeded()
-        console.log('[WARMUP_ATIVO]', `limite=${dailyLimit}`, `enviados=${dailySentCount}`)
+        const countTowardsDailyLimit = parseBoolean((req.body || {}).count_towards_daily_limit, true)
+        console.log('[WARMUP_ATIVO]', `limite=${dailyLimit}`, `enviados=${dailySentCount}`, `contabiliza=${countTowardsDailyLimit ? 1 : 0}`)
         if (global.session_invalid || needsQr || WA_STATE.needs_qr) {
             console.log('[WA_BLOQUEADO_SEM_SESSAO]')
             throw new Error('SESSAO_INVALIDA_QR_NECESSARIO')
@@ -1519,7 +1879,7 @@ app.post('/send', async (req, res) => {
             console.log('[DUPLICIDADE_BLOQUEADA_TEXTO]', jid)
             return res.json({ status: 'duplicate_blocked' })
         }
-        if (dailySentCount >= dailyLimit) {
+        if (countTowardsDailyLimit && dailySentCount >= dailyLimit) {
             console.log('[ENVIO_BLOQUEADO_LIMITE]', `limite=${dailyLimit}`, `enviados=${dailySentCount}`)
             return res.status(429).json({ status: 'warmup_limit' })
         }
@@ -1536,9 +1896,12 @@ app.post('/send', async (req, res) => {
             } catch (_presenceError) {
             }
             const sent = await sock.sendMessage(jid, { text })
-            if (sent?.key?.id) {
-                resetDailyCountersIfNeeded()
-                dailySentCount += 1
+console.log('[ENVIO_RESULT_RAW]', jid, JSON.stringify(sent || {}))
+            if (sent?.key?.id && sent?.status && sent.status !== "PENDING") {
+                if (countTowardsDailyLimit) {
+                    resetDailyCountersIfNeeded()
+                    dailySentCount += 1
+                }
                 watchOutboundChat(jid)
             }
             return { sent, delayMs }
@@ -1546,7 +1909,7 @@ app.post('/send', async (req, res) => {
         if (!result?.sent || !result.sent.key || !result.sent.key.id) {
             throw new Error('ENVIO_FALHOU')
         }
-        console.log('[ENVIO_OK_REAL]', jid, `delay=${result.delayMs}ms`)
+        console.log('[ENVIO_OK_REAL]', jid, `msg_id=${result.sent.key.id}`, `delay=${result.delayMs}ms`)
         return res.json({ status: 'sent', delay_ms: result.delayMs, message_id: result.sent.key.id })
     } catch (e) {
         console.log('[ENVIO_FALHOU]', req.body?.number || '', e.message)
@@ -1567,18 +1930,23 @@ process.on('unhandledRejection', (err) => {
 })
 
 process.on('exit', () => {
+    clearInboundRetryFlushTimer()
     releaseProcessLock()
 })
 
 process.on('SIGINT', () => {
+    clearInboundRetryFlushTimer()
     releaseProcessLock()
     process.exit(0)
 })
 
 process.on('SIGTERM', () => {
+    clearInboundRetryFlushTimer()
     releaseProcessLock()
     process.exit(0)
 })
 
 startHttpServer()
+loadPersistedInboundRetryQueue()
+ensureInboundRetryFlushTimer()
 initBaileys()

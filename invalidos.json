@@ -1,0 +1,1827 @@
+[
+  {
+    "phone": "1150907233",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-24T17:19:00.219086"
+  },
+  {
+    "phone": "51813569",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:07.724994"
+  },
+  {
+    "phone": "986889790",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:09.275416"
+  },
+  {
+    "phone": "30329992",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:10.853878"
+  },
+  {
+    "phone": "3132711810",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:13.042034"
+  },
+  {
+    "phone": "992840204",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:14.091386"
+  },
+  {
+    "phone": "999465400",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:17.322036"
+  },
+  {
+    "phone": "8533533017",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:19.628761"
+  },
+  {
+    "phone": "5530262288",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:19.998110"
+  },
+  {
+    "phone": "4532648800",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:20.374525"
+  },
+  {
+    "phone": "1934049000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:20.928482"
+  },
+  {
+    "phone": "2424472850",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:21.294512"
+  },
+  {
+    "phone": "1146370369",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:21.663031"
+  },
+  {
+    "phone": "1144818421",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:22.230468"
+  },
+  {
+    "phone": "7530254114",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:22.618056"
+  },
+  {
+    "phone": "4933213000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:23.099486"
+  },
+  {
+    "phone": "6235151280",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:23.474687"
+  },
+  {
+    "phone": "1135447200",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:24.037898"
+  },
+  {
+    "phone": "1532499100",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:24.450196"
+  },
+  {
+    "phone": "1130421536",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:24.822104"
+  },
+  {
+    "phone": "1131467000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:25.551991"
+  },
+  {
+    "phone": "3234415341",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:26.105617"
+  },
+  {
+    "phone": "4933238360",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:26.471508"
+  },
+  {
+    "phone": "1150838020",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:26.849426"
+  },
+  {
+    "phone": "4333777400",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:27.366394"
+  },
+  {
+    "phone": "13981086413",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:27.572446"
+  },
+  {
+    "phone": "2132141318",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:28.326590"
+  },
+  {
+    "phone": "5130147700",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:28.913993"
+  },
+  {
+    "phone": "33653650",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:30.214751"
+  },
+  {
+    "phone": "21314941",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:33.386670"
+  },
+  {
+    "phone": "628547683862399159526435711250",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:35.016995"
+  },
+  {
+    "phone": "1126310160",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:36.984645"
+  },
+  {
+    "phone": "2134855000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:38.588928"
+  },
+  {
+    "phone": "988623422",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:39.839541"
+  },
+  {
+    "phone": "34618250",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:41.575627"
+  },
+  {
+    "phone": "1938161000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:43.393842"
+  },
+  {
+    "phone": "25376014",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:44.603827"
+  },
+  {
+    "phone": "968121350962328436456232614873",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:46.297166"
+  },
+  {
+    "phone": "19886797973237531150",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:47.833462"
+  },
+  {
+    "phone": "21375000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:49.419304"
+  },
+  {
+    "phone": "1836318000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:51.453222"
+  },
+  {
+    "phone": "3133892000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:53.023928"
+  },
+  {
+    "phone": "32491200",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:54.235443"
+  },
+  {
+    "phone": "35335216",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:55.846588"
+  },
+  {
+    "phone": "31320110",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:57.465534"
+  },
+  {
+    "phone": "32416716",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:02:59.238470"
+  },
+  {
+    "phone": "32243036",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:05.416049"
+  },
+  {
+    "phone": "999780578",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:07.066621"
+  },
+  {
+    "phone": "32217767",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:08.662056"
+  },
+  {
+    "phone": "997904396",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:10.219736"
+  },
+  {
+    "phone": "32912433",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:11.830186"
+  },
+  {
+    "phone": "982229275",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:13.415226"
+  },
+  {
+    "phone": "35150899",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:14.235582"
+  },
+  {
+    "phone": "32431534",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:15.032793"
+  },
+  {
+    "phone": "991954289",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:15.835044"
+  },
+  {
+    "phone": "32153995",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:16.696107"
+  },
+  {
+    "phone": "984270074",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:17.435007"
+  },
+  {
+    "phone": "34971146",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:18.235762"
+  },
+  {
+    "phone": "33613099",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:19.045821"
+  },
+  {
+    "phone": "32945047",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:19.797191"
+  },
+  {
+    "phone": "549186239554331166535433116653",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:20.627806"
+  },
+  {
+    "phone": "199114000419360819061936841929",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:21.462885"
+  },
+  {
+    "phone": "985475212",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:22.215736"
+  },
+  {
+    "phone": "21034058",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:23.035658"
+  },
+  {
+    "phone": "1639462000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:24.189897"
+  },
+  {
+    "phone": "32449911",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:24.821238"
+  },
+  {
+    "phone": "38745032",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:25.704102"
+  },
+  {
+    "phone": "47745200",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:26.447463"
+  },
+  {
+    "phone": "981086413",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:27.264528"
+  },
+  {
+    "phone": "32034442",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:28.832697"
+  },
+  {
+    "phone": "36351929",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:29.661401"
+  },
+  {
+    "phone": "981510421",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:30.450035"
+  },
+  {
+    "phone": "35393293",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:31.290841"
+  },
+  {
+    "phone": "31560872",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:32.050565"
+  },
+  {
+    "phone": "39310100",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:32.892680"
+  },
+  {
+    "phone": "21031066",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:33.614950"
+  },
+  {
+    "phone": "38932266",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:34.562623"
+  },
+  {
+    "phone": "8731990856",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:35.621991"
+  },
+  {
+    "phone": "36581100",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:36.284049"
+  },
+  {
+    "phone": "31508303",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:37.033443"
+  },
+  {
+    "phone": "32463808",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:37.900038"
+  },
+  {
+    "phone": "613362920061988580049433231437",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:38.692911"
+  },
+  {
+    "phone": "998032050",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:39.439482"
+  },
+  {
+    "phone": "33653500",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:41.069602"
+  },
+  {
+    "phone": "111111111111999999991111111111",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:41.889221"
+  },
+  {
+    "phone": "32961360",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:43.514713"
+  },
+  {
+    "phone": "33533017",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:44.281927"
+  },
+  {
+    "phone": "981188607",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:45.892241"
+  },
+  {
+    "phone": "19983243140",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:46.907046"
+  },
+  {
+    "phone": "55084400",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:47.590456"
+  },
+  {
+    "phone": "30212300",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:48.376171"
+  },
+  {
+    "phone": "44130725",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:49.165744"
+  },
+  {
+    "phone": "32812000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:49.969574"
+  },
+  {
+    "phone": "11999999999",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:51.757089"
+  },
+  {
+    "phone": "31132266",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:52.432277"
+  },
+  {
+    "phone": "20024367",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:53.234789"
+  },
+  {
+    "phone": "21881700",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:55.702326"
+  },
+  {
+    "phone": "50865000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:56.490365"
+  },
+  {
+    "phone": "991311572",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:03:58.335389"
+  },
+  {
+    "phone": "32571555",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:02.384243"
+  },
+  {
+    "phone": "45520210",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:03.197151"
+  },
+  {
+    "phone": "999561404",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:03.974034"
+  },
+  {
+    "phone": "988151351",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:04.767857"
+  },
+  {
+    "phone": "37573107",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:05.552123"
+  },
+  {
+    "phone": "35460300",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:06.406512"
+  },
+  {
+    "phone": "32874002",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:07.209677"
+  },
+  {
+    "phone": "996358585",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:08.026885"
+  },
+  {
+    "phone": "34069339",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:09.598588"
+  },
+  {
+    "phone": "33211407",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:10.369190"
+  },
+  {
+    "phone": "43698600",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:12.010898"
+  },
+  {
+    "phone": "991573937",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:13.613862"
+  },
+  {
+    "phone": "759947517175343650517534361555",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:14.464755"
+  },
+  {
+    "phone": "35442078",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:16.294761"
+  },
+  {
+    "phone": "21060555",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:17.131214"
+  },
+  {
+    "phone": "983582154",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:17.926930"
+  },
+  {
+    "phone": "999438507",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:18.727318"
+  },
+  {
+    "phone": "40660438",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:19.500378"
+  },
+  {
+    "phone": "42345090",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:20.323006"
+  },
+  {
+    "phone": "213448330021847158016133236049",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:21.090777"
+  },
+  {
+    "phone": "32310800",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:21.897385"
+  },
+  {
+    "phone": "32408767",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:22.672426"
+  },
+  {
+    "phone": "30793592",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:24.273378"
+  },
+  {
+    "phone": "996694895",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:25.101349"
+  },
+  {
+    "phone": "31161062",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:25.910569"
+  },
+  {
+    "phone": "35899200",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:26.682245"
+  },
+  {
+    "phone": "981693599",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:27.445552"
+  },
+  {
+    "phone": "986519894",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:29.910249"
+  },
+  {
+    "phone": "991061153",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:30.709265"
+  },
+  {
+    "phone": "988037400",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:31.516116"
+  },
+  {
+    "phone": "34395550",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:33.103191"
+  },
+  {
+    "phone": "32969640",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:33.889440"
+  },
+  {
+    "phone": "45443442",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:35.592351"
+  },
+  {
+    "phone": "996704808",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:36.379904"
+  },
+  {
+    "phone": "982123891",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:37.151227"
+  },
+  {
+    "phone": "1146154600",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:38.334208"
+  },
+  {
+    "phone": "1129232906",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:38.708754"
+  },
+  {
+    "phone": "37661350",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:39.394732"
+  },
+  {
+    "phone": "32823001",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:40.229532"
+  },
+  {
+    "phone": "29446268",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:40.980206"
+  },
+  {
+    "phone": "993609993",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:41.789928"
+  },
+  {
+    "phone": "1131557112",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:42.945344"
+  },
+  {
+    "phone": "35541877",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:43.607704"
+  },
+  {
+    "phone": "28594199",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:44.406593"
+  },
+  {
+    "phone": "613351554861982155486199510922",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:45.243027"
+  },
+  {
+    "phone": "36110059",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:46.035578"
+  },
+  {
+    "phone": "39772299",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:46.833133"
+  },
+  {
+    "phone": "30810431",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:49.454688"
+  },
+  {
+    "phone": "32918000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:50.269403"
+  },
+  {
+    "phone": "30220292",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:51.126584"
+  },
+  {
+    "phone": "46510400",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:51.912903"
+  },
+  {
+    "phone": "54126032",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:52.673781"
+  },
+  {
+    "phone": "994409630",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:53.489143"
+  },
+  {
+    "phone": "33319500",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:54.297638"
+  },
+  {
+    "phone": "36217000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:55.873370"
+  },
+  {
+    "phone": "35661144",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:56.716836"
+  },
+  {
+    "phone": "32971240",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:57.489878"
+  },
+  {
+    "phone": "16935778981639435586",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:58.310839"
+  },
+  {
+    "phone": "999148057",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:04:59.041451"
+  },
+  {
+    "phone": "6533265544",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:01.096952"
+  },
+  {
+    "phone": "984493839",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:01.760543"
+  },
+  {
+    "phone": "35121818",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:02.588422"
+  },
+  {
+    "phone": "1130399200",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:03.767373"
+  },
+  {
+    "phone": "01142796110114279650",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:04.460666"
+  },
+  {
+    "phone": "21031700",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:05.232732"
+  },
+  {
+    "phone": "999148321",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:06.041120"
+  },
+  {
+    "phone": "33667376",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:06.849846"
+  },
+  {
+    "phone": "988388608",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:07.636558"
+  },
+  {
+    "phone": "33860100",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:08.457603"
+  },
+  {
+    "phone": "36280912",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:09.212335"
+  },
+  {
+    "phone": "21669711",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:10.823893"
+  },
+  {
+    "phone": "996426964",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:11.655417"
+  },
+  {
+    "phone": "113149223496810346461131492234",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:13.231392"
+  },
+  {
+    "phone": "44388208",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:15.629000"
+  },
+  {
+    "phone": "999568086",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:16.442643"
+  },
+  {
+    "phone": "32785808",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:17.256242"
+  },
+  {
+    "phone": "33311500",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:18.039192"
+  },
+  {
+    "phone": "36652075",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:21.557035"
+  },
+  {
+    "phone": "71992547409",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:22.412178"
+  },
+  {
+    "phone": "6232838424",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:23.843941"
+  },
+  {
+    "phone": "34631500",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:24.511891"
+  },
+  {
+    "phone": "77816124247734212565",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:26.894683"
+  },
+  {
+    "phone": "1121216100",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:28.072814"
+  },
+  {
+    "phone": "999348950",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:28.733902"
+  },
+  {
+    "phone": "982974579",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:29.601293"
+  },
+  {
+    "phone": "79992133837999999999",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:31.134093"
+  },
+  {
+    "phone": "984053633",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:31.930373"
+  },
+  {
+    "phone": "981922000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:32.731700"
+  },
+  {
+    "phone": "31330399990",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:33.727912"
+  },
+  {
+    "phone": "11464683000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:34.601615"
+  },
+  {
+    "phone": "31321782610",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:37.238628"
+  },
+  {
+    "phone": "82552625680",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:38.975875"
+  },
+  {
+    "phone": "38898919",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:40.456701"
+  },
+  {
+    "phone": "19346692000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:42.222554"
+  },
+  {
+    "phone": "3134262532",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:44.065090"
+  },
+  {
+    "phone": "3132132234",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:45.923340"
+  },
+  {
+    "phone": "11508650000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:47.556229"
+  },
+  {
+    "phone": "999326477",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:50.751656"
+  },
+  {
+    "phone": "982145602",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:51.542877"
+  },
+  {
+    "phone": "26390670",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:53.280779"
+  },
+  {
+    "phone": "33284300",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:54.077328"
+  },
+  {
+    "phone": "59498141",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:54.931045"
+  },
+  {
+    "phone": "36413900",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:55.650933"
+  },
+  {
+    "phone": "31319000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:57.271846"
+  },
+  {
+    "phone": "35463671",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:58.097974"
+  },
+  {
+    "phone": "998001505",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:05:58.884345"
+  },
+  {
+    "phone": "1136958383",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:00.063551"
+  },
+  {
+    "phone": "25914006",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:00.698088"
+  },
+  {
+    "phone": "31344946620",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:01.766415"
+  },
+  {
+    "phone": "4199961010000000000000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:02.418889"
+  },
+  {
+    "phone": "1934088950",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:03.617212"
+  },
+  {
+    "phone": "9536280912",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:04.625730"
+  },
+  {
+    "phone": "95991261085",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:04.824450"
+  },
+  {
+    "phone": "7534365051",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:06.104173"
+  },
+  {
+    "phone": "98324315340",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:06.943149"
+  },
+  {
+    "phone": "1980493100",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:07.991820"
+  },
+  {
+    "phone": "1136411510",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:10.950393"
+  },
+  {
+    "phone": "14911364115",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:11.350385"
+  },
+  {
+    "phone": "1138745032",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:12.372627"
+  },
+  {
+    "phone": "8836110059",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:13.825181"
+  },
+  {
+    "phone": "3237531150",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:15.237535"
+  },
+  {
+    "phone": "3532929008",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:16.477632"
+  },
+  {
+    "phone": "7133350760",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:17.673586"
+  },
+  {
+    "phone": "6133515548",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:18.697674"
+  },
+  {
+    "phone": "61998215548",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:18.894190"
+  },
+  {
+    "phone": "8935441337",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:20.120826"
+  },
+  {
+    "phone": "1139772299",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:21.159250"
+  },
+  {
+    "phone": "6235490631",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:22.588447"
+  },
+  {
+    "phone": "1931161062",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:23.656355"
+  },
+  {
+    "phone": "19978059328",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:23.849643"
+  },
+  {
+    "phone": "6232854729",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:28.638293"
+  },
+  {
+    "phone": "62985476838",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:30.491995"
+  },
+  {
+    "phone": "6239915952",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:30.872556"
+  },
+  {
+    "phone": "8332416716",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:35.881095"
+  },
+  {
+    "phone": "16961588563",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:39.292311"
+  },
+  {
+    "phone": "1659852215",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:39.785128"
+  },
+  {
+    "phone": "75329450470",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:46.229465"
+  },
+  {
+    "phone": "34322598000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:49.589367"
+  },
+  {
+    "phone": "6239229412",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:50.648776"
+  },
+  {
+    "phone": "6634612091",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:51.737944"
+  },
+  {
+    "phone": "66984282977",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:51.940485"
+  },
+  {
+    "phone": "19974122256",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:52.983531"
+  },
+  {
+    "phone": "1932566421",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:53.365345"
+  },
+  {
+    "phone": "85329666290",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:06:55.832137"
+  },
+  {
+    "phone": "1131492234",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:04.148776"
+  },
+  {
+    "phone": "34324665630",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:07.583354"
+  },
+  {
+    "phone": "61996426964",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:09.208584"
+  },
+  {
+    "phone": "6134834359",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:09.582052"
+  },
+  {
+    "phone": "11443882080",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:12.033231"
+  },
+  {
+    "phone": "3130266123",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:13.076351"
+  },
+  {
+    "phone": "31982160922",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:13.271043"
+  },
+  {
+    "phone": "3132284400",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:13.640358"
+  },
+  {
+    "phone": "84333333330",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:16.114911"
+  },
+  {
+    "phone": "11990226363",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:22.720755"
+  },
+  {
+    "phone": "1121669711",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:26.961530"
+  },
+  {
+    "phone": "11992914917",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:27.153016"
+  },
+  {
+    "phone": "61992263709",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:31.180361"
+  },
+  {
+    "phone": "6133824596",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:31.555369"
+  },
+  {
+    "phone": "7532711810",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:33.488656"
+  },
+  {
+    "phone": "75999855116",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:33.881362"
+  },
+  {
+    "phone": "73329124330",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:38.173870"
+  },
+  {
+    "phone": "6239221605",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:41.616072"
+  },
+  {
+    "phone": "61302202920",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:46.506566"
+  },
+  {
+    "phone": "2121034058",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:47.603699"
+  },
+  {
+    "phone": "21972128260",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:47.799540"
+  },
+  {
+    "phone": "2127390986",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:50.441978"
+  },
+  {
+    "phone": "21975697571",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:50.630828"
+  },
+  {
+    "phone": "4133667376",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:52.507340"
+  },
+  {
+    "phone": "41998806266",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:52.709568"
+  },
+  {
+    "phone": "7736112674",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:57.266068"
+  },
+  {
+    "phone": "66351508990",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:58.276519"
+  },
+  {
+    "phone": "2433811000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:58.649890"
+  },
+  {
+    "phone": "8332282893",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:07:59.647700"
+  },
+  {
+    "phone": "6634267530",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:00.832546"
+  },
+  {
+    "phone": "6999842172",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:01.406332"
+  },
+  {
+    "phone": "6533113000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:01.777548"
+  },
+  {
+    "phone": "2138932266",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:03.607542"
+  },
+  {
+    "phone": "09980101986",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:03.797465"
+  },
+  {
+    "phone": "6232400004",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:05.624646"
+  },
+  {
+    "phone": "4832560207",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:06.823569"
+  },
+  {
+    "phone": "1155274043",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:09.691017"
+  },
+  {
+    "phone": "1155084400",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:13.503454"
+  },
+  {
+    "phone": "3133618009",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:15.394256"
+  },
+  {
+    "phone": "4635508200",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:17.470404"
+  },
+  {
+    "phone": "6934213535",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:18.492851"
+  },
+  {
+    "phone": "4121018000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:19.546076"
+  },
+  {
+    "phone": "3133483556",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:20.642525"
+  },
+  {
+    "phone": "5137381818",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:23.335785"
+  },
+  {
+    "phone": "1635146715",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:24.456331"
+  },
+  {
+    "phone": "1135146710",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:24.824419"
+  },
+  {
+    "phone": "1154126032",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:27.438419"
+  },
+  {
+    "phone": "1121024000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:27.814683"
+  },
+  {
+    "phone": "3135073300",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:28.835561"
+  },
+  {
+    "phone": "4832869093",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:31.439801"
+  },
+  {
+    "phone": "5434618250",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:32.474163"
+  },
+  {
+    "phone": "5434618000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:32.851363"
+  },
+  {
+    "phone": "3535316808",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:34.658842"
+  },
+  {
+    "phone": "1434081200",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:35.759965"
+  },
+  {
+    "phone": "1933135680",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:37.594793"
+  },
+  {
+    "phone": "1637112002",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:38.604817"
+  },
+  {
+    "phone": "1135089900",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:38.981928"
+  },
+  {
+    "phone": "2122066708",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:40.093264"
+  },
+  {
+    "phone": "1131508303",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:41.162236"
+  },
+  {
+    "phone": "4733670299",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:43.058638"
+  },
+  {
+    "phone": "16982010240",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:43.911140"
+  },
+  {
+    "phone": "8137212363",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:44.945501"
+  },
+  {
+    "phone": "1134113411",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:46.156794"
+  },
+  {
+    "phone": "1433261401",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:47.210841"
+  },
+  {
+    "phone": "1148608763",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:49.061724"
+  },
+  {
+    "phone": "7121077171",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:50.101583"
+  },
+  {
+    "phone": "4834613433",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:52.006969"
+  },
+  {
+    "phone": "2732119315",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:53.882465"
+  },
+  {
+    "phone": "4132407445",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:54.943046"
+  },
+  {
+    "phone": "4521031066",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:55.978940"
+  },
+  {
+    "phone": "1635123000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:57.813712"
+  },
+  {
+    "phone": "6232616265",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:58.840361"
+  },
+  {
+    "phone": "5332405500",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:08:59.873797"
+  },
+  {
+    "phone": "5133373111",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:01.690330"
+  },
+  {
+    "phone": "5133392000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:02.074495"
+  },
+  {
+    "phone": "8530313700",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:03.107730"
+  },
+  {
+    "phone": "3132358513",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:04.268631"
+  },
+  {
+    "phone": "1132747400",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:06.071094"
+  },
+  {
+    "phone": "4236231732",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:07.098337"
+  },
+  {
+    "phone": "4133817000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:07.472608"
+  },
+  {
+    "phone": "34490000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:08.145531"
+  },
+  {
+    "phone": "1122467655",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:09.295276"
+  },
+  {
+    "phone": "6134655568",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:10.321159"
+  },
+  {
+    "phone": "4832033063",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:12.147698"
+  },
+  {
+    "phone": "1125751800",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:13.170724"
+  },
+  {
+    "phone": "1146510400",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:17.403184"
+  },
+  {
+    "phone": "1136494000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:18.439319"
+  },
+  {
+    "phone": "1140660438",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:19.488314"
+  },
+  {
+    "phone": "7121075810",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:22.917993"
+  },
+  {
+    "phone": "7131865900",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:23.942633"
+  },
+  {
+    "phone": "4733311500",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:29.779532"
+  },
+  {
+    "phone": "1921138250",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:30.853224"
+  },
+  {
+    "phone": "1130530353",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:31.891425"
+  },
+  {
+    "phone": "1121881700",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:32.913956"
+  },
+  {
+    "phone": "5434555300",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:34.720065"
+  },
+  {
+    "phone": "1934044460",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:36.539803"
+  },
+  {
+    "phone": "1142345090",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:39.192224"
+  },
+  {
+    "phone": "08000194030",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:42.699927"
+  },
+  {
+    "phone": "4832969515",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:44.523701"
+  },
+  {
+    "phone": "1938639500",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T09:09:45.570600"
+  },
+  {
+    "phone": "4832819523",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T16:53:25.617643"
+  },
+  {
+    "phone": "2730105000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-27T16:58:01.170196"
+  },
+  {
+    "phone": "4345631700014",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:00:46.705761"
+  },
+  {
+    "phone": "3134315400",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:01:56.621320"
+  },
+  {
+    "phone": "1130187700",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:02:14.705074"
+  },
+  {
+    "phone": "1172003323",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:02:25.768805"
+  },
+  {
+    "phone": "3133481000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:02:48.800005"
+  },
+  {
+    "phone": "5133582982",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:02:59.810699"
+  },
+  {
+    "phone": "2730793592",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:03:06.218840"
+  },
+  {
+    "phone": "544524566",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:03:24.661163"
+  },
+  {
+    "phone": "7932147155",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:03:48.693902"
+  },
+  {
+    "phone": "5436065600308",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:03:50.912913"
+  },
+  {
+    "phone": "2965213100021",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:03:58.106973"
+  },
+  {
+    "phone": "9174848300040",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:03:58.922840"
+  },
+  {
+    "phone": "5433825900017",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:04:07.716169"
+  },
+  {
+    "phone": "2481150200016",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:04:10.129093"
+  },
+  {
+    "phone": "6602199100010",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:04:11.728726"
+  },
+  {
+    "phone": "9470717100010",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:04:18.189021"
+  },
+  {
+    "phone": "3477442100051",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:04:19.718970"
+  },
+  {
+    "phone": "3534351000",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:04:21.319344"
+  },
+  {
+    "phone": "6540694500015",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:04:28.349338"
+  },
+  {
+    "phone": "1801267600016",
+    "reason": "invalid_phone_outbound",
+    "created_at": "2026-04-28T09:06:57.880113"
+  }
+]
