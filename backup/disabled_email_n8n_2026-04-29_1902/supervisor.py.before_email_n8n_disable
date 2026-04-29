@@ -72,7 +72,7 @@ EMAIL_DELAY_MIN_SEC = 60
 
 EMAIL_DELAY_MAX_SEC = 120
 
-ENABLE_EMAIL_CADENCE = False
+ENABLE_EMAIL_CADENCE = True
 
 ENRICHMENT_MODE = "off"
 
@@ -603,7 +603,7 @@ def start_stack():
     else:
         print("[WHATSAPP_LISTENER_DESATIVADO] stack_sem_listener")
     start_inbound_with_retry()
-    print('[N8N_DISABLED] fluxo email/n8n removido do runtime')
+    maybe_start_n8n(timeout=120)
 
 def start_stack_fast():
     print("[BOOT_START]")
@@ -625,7 +625,7 @@ def start_stack_fast():
             ("WHATSAPP", lambda: spawn_if_needed("WHATSAPP", ["node", "central_whatsapp.mjs"], "http://127.0.0.1:3000/status", timeout=BOOT_SERVICE_TIMEOUT_SEC)),
         )
     if ENABLE_EMAIL_CADENCE:
-        print("[N8N_DISABLED] worker n8n não será iniciado")
+        workers.append(("N8N", lambda: maybe_start_n8n(timeout=BOOT_SERVICE_TIMEOUT_SEC)))
     else:
         print("[EMAIL_DESATIVADO]")
 
