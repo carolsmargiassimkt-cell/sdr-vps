@@ -238,3 +238,7 @@ def pending(payload: PendingPayload) -> dict[str, Any]:
         conn.commit()
     print("[PENDING_RESULT]", f"id={msg_id}", "status=pending")
     return {"ok": True, "id": msg_id, "status": "pending"}
+
+
+from app.webhooks_pipedrive import router as pipedrive_router
+app.include_router(pipedrive_router)

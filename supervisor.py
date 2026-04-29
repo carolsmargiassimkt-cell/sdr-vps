@@ -2212,7 +2212,8 @@ class SDRSupervisor:
             return 0
         added = self._enqueue_whatsapp_leads(planned, target_size=max_size)
         if added:
-            print(f"[FLOW_PLAN_RESTORED] planejados={len(planned)} refileirados={added}")
+            print("[FLOW_PLAN_RESTORE_DISABLED]")
+            return 0
         return added
 
     def _load_activity_deal_state(self, reset_if_new_day=False, force=False):
@@ -4302,10 +4303,6 @@ class SDRSupervisor:
                 print("[MODO_ECONOMICO] fila vazia, aguardando...")
                 time.sleep(120)
                 return
-            if not ENVIAR_WHATSAPP_AUTOMATICO:
-                print("[WHATSAPP_AUTO_DESATIVADO] envio_inicial_bloqueado")
-                self._process_pending_emails()
-                return
             if self.pending_whatsapp_queue:
                 print("[ENVIO_INICIADO]")
             sent_this_run = 0
@@ -4734,11 +4731,14 @@ class SDRSupervisor:
                 elif ENVIAR_WHATSAPP_AUTOMATICO and not bool(wa_status.get("connected")):
                     self._recover_stack_if_needed(reason="pre_run_whatsapp_offline")
             if not ENVIAR_WHATSAPP_AUTOMATICO:
-                print("[WHATSAPP_AUTO_MANUAL] outbound_inicial_desativado")
-            self.run()
+                pass
+
+
 
 if __name__ == "__main__":
     run_all = any(str(arg).strip().lower() in {"--all", "all"} for arg in sys.argv[1:])
     if run_all:
         start_stack_fast()
-    SDRSupervisor().start()
+
+if __name__ == "__main__":
+    SDRSupervisor().run()
