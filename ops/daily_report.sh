@@ -39,3 +39,7 @@ grep -hEi "Traceback|ERRO|FALHOU|RATE_LIMIT|429" /root/.pm2/logs/*.log 2>/dev/nu
 
 echo "RELATORIO_GERADO: $OUT"
 cat "$OUT"
+
+echo
+echo "=== HOT LEADS / RETOMADA ==="
+./ops/hot_leads_queue.sh 60 48
