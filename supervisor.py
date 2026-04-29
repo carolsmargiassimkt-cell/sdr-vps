@@ -22,6 +22,7 @@ from pathlib import Path
 from services.whatsapp_service import WhatsAppService
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from core.agent_router import can_enter_cadence
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -3832,6 +3833,15 @@ class SDRSupervisor:
         for deal in deals:
             if self._is_outbound_blocked_label(deal):
                 continue
+            try:
+                _deal_id_for_state = deal.get("id")
+                _tags_for_state = self._deal_tokens(deal) if hasattr(self, "_deal_tokens") else []
+                _ok_state, _reason_state = can_enter_cadence(deal_id=_deal_id_for_state, tags=_tags_for_state)
+                if not _ok_state:
+                    print(f"[CADENCIA_BLOQUEADA_AGENT_STATE] deal={_deal_id_for_state} reason={_reason_state}")
+                    continue
+            except Exception as _e:
+                print(f"[AGENT_STATE_CHECK_ERROR] deal={deal.get('id')} erro={_e}")
             eligible_deals.append(deal)
             if self._is_super_minas(deal):
                 super_minas_deals.append(deal)

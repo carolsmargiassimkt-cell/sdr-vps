@@ -41,6 +41,7 @@ from datetime import datetime
 from threading import Lock
 
 import requests
+from core.agent_router import register_inbound
 from flask import Flask, jsonify, request
 
 from crm.pipedrive_client import PipedriveClient
@@ -3001,6 +3002,11 @@ def inbox():
         elif detect_neutral_intent(message): current_intent = "duvida"
         
         print(f"[INTENT_DETECTED] telefone={phone} intent={current_intent} texto={message}")
+        try:
+            _route = register_inbound(phone=phone, deal_id=(lead_state or {}).get("deal_id"), intent=current_intent, message=message)
+            print(f"[AGENT_ROUTE] telefone={phone} intent={current_intent} state={_route.get('state')} action={_route.get('action')}")
+        except Exception as _e:
+            print(f"[AGENT_ROUTE_ERROR] telefone={phone} erro={_e}")
 
         
         key = processed_key(phone, msg_id, message)
