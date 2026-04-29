@@ -3003,7 +3003,13 @@ def inbox():
         
         print(f"[INTENT_DETECTED] telefone={phone} intent={current_intent} texto={message}")
         try:
-            _route = register_inbound(phone=phone, deal_id=(lead_state or {}).get("deal_id"), intent=current_intent, message=message)
+            _deal_id = None
+            try:
+                if "lead_state" in locals() and isinstance(lead_state, dict):
+                    _deal_id = lead_state.get("deal_id") or lead_state.get("deal")
+            except Exception:
+                _deal_id = None
+            _route = register_inbound(phone=phone, deal_id=_deal_id, intent=current_intent, message=message)
             print(f"[AGENT_ROUTE] telefone={phone} intent={current_intent} state={_route.get('state')} action={_route.get('action')}")
         except Exception as _e:
             print(f"[AGENT_ROUTE_ERROR] telefone={phone} erro={_e}")
