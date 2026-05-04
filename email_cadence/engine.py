@@ -3,7 +3,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 def cta_html(x, step):
     deal_id = x.get("deal_id") or x.get("id")
-    return f"<br><br>Se fizer sentido, me ajuda respondendo isso aqui? Leva 1 min:<br><br><a href='http://191.252.184.140:8001/t/{deal_id}/{step}?r=https://docs.google.com/forms/d/1KWo-Z7uKflvpR0Ff9yxFJhyV-iFtm0v4xH3QKC9FRmo/viewform?usp=header' style='color:#2563eb;text-decoration:underline;font-weight:600;'>Responder em 1 minuto</a>"
+
+    forms = f"http://191.252.184.140:8001/t/{deal_id}/{step}?r=https://docs.google.com/forms/d/1KWo-Z7uKflvpR0Ff9yxFJhyV-iFtm0v4xH3QKC9FRmo/viewform?usp=header"
+    calendly = f"http://191.252.184.140:8001/t/{deal_id}/{step}?r=https://calendly.com/ana-manddigital/30min"
+
+    return (
+        f"<br><br>Se fizer sentido, você pode:<br><br>"
+        f"<a href='{forms}' style='color:#2563eb;text-decoration:underline;font-weight:600;'>👉 Responder em 1 minuto</a><br><br>"
+        f"<a href='{calendly}' style='color:#16a34a;text-decoration:underline;font-weight:600;'>📅 Ou agendar direto comigo</a>"
+    )
 
 def segment_context(empresa=""):
     e=(empresa or "").lower()
