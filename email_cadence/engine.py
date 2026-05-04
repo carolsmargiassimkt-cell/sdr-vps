@@ -1,22 +1,10 @@
 import os,json,time,requests,smtplib,ssl
 from datetime import datetime, timedelta
 from pathlib import Path
+def cta_html(x, step):
+    deal_id = x.get("deal_id") or x.get("id")
+    return f"<br><br>Se fizer sentido, me ajuda respondendo isso aqui? Leva 1 min:<br><br><a href='http://191.252.184.140:8001/t/{deal_id}/{step}?r=https://docs.google.com/forms/d/1KWo-Z7uKflvpR0Ff9yxFJhyV-iFtm0v4xH3QKC9FRmo/viewform?usp=header' style='color:#2563eb;text-decoration:underline;font-weight:600;'>Responder em 1 minuto</a>"
 
-DATA=Path("/root/sdr-vps/data/email_cadence_queue.json")
-EVENTS=Path("/root/sdr-vps/data/email_cadence_events.json")
-DATA.parent.mkdir(parents=True,exist_ok=True)
-
-PD=os.getenv("PIPEDRIVE_API_TOKEN")
-FROM=os.getenv("SMTP_FROM_EMAIL","")
-
-SMTP_HOST=os.getenv("SMTP_HOST","")
-SMTP_PORT=int(os.getenv("SMTP_PORT","465") or 465)
-SMTP_USER=os.getenv("SMTP_USER","")
-SMTP_PASS=os.getenv("SMTP_PASS","")
-
-
-STEPS=[0,2,4]  # depois ajustamos
-STOP_STATUSES={"clicked_warm","replied","won","opt_out","wrong_contact","done"}
 def segment_context(empresa=""):
     e=(empresa or "").lower()
     if any(x in e for x in ["supermerc", "mercado", "atacad", "varej", "hortifruti", "fruta"]):
@@ -36,23 +24,7 @@ def build_track_link(x, step):
 
 
 
-def cta_html(x, step):
-    link = build_track_link(x, step)
-    return (
-        "<br><br>Se fizer sentido, me ajuda respondendo isso aqui? Leva 1 min:<br><br>"
-        f"<a href='{link}' style='background:#111827;color:#fff;padding:10px 16px;"
-        "border-radius:6px;text-decoration:none;display:inline-block;font-weight:600;'>"
-        "Responder em 1 minuto</a>"
-    )
 
-def cta_html(x, step):
-    link = build_track_link(x, step)
-    return (
-        "<br><br>Se fizer sentido, me ajuda respondendo isso aqui? Leva 1 min:<br><br>"
-        f"<a href='{link}' style='background:#111827;color:#fff;padding:10px 16px;"
-        "border-radius:6px;text-decoration:none;display:inline-block;font-weight:600;'>"
-        "Responder em 1 minuto</a>"
-    )
 
 def template(step, x):
     nome=(x.get("nome") or "").split(" ")[0].title() or "tudo bem"
