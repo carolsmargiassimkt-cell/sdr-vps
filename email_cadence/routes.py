@@ -39,7 +39,22 @@ async def start_email_cadence(req: Request):
 from fastapi.responses import RedirectResponse
 import json
 from pathlib import Path
-from email_cadence.engine import add_deal_note, add_activity, add_deal_label
+try:
+    from crm.pipedrive_client import add_deal_note, add_activity, add_deal_label
+except ImportError:
+    # Compatibilidade: se o client não expuser helpers funcionais,
+    # mantém o webhook vivo e apenas loga, sem derrubar a API.
+    def add_deal_note(*args, **kwargs):
+        print("[CRM_HELPER_MISSING] add_deal_note indisponivel")
+        return None
+
+    def add_activity(*args, **kwargs):
+        print("[CRM_HELPER_MISSING] add_activity indisponivel")
+        return None
+
+    def add_deal_label(*args, **kwargs):
+        print("[CRM_HELPER_MISSING] add_deal_label indisponivel")
+        return None
 
 @router.get("/t/{deal_id}/{step}")
 async def track_click(deal_id:int, step:int):
