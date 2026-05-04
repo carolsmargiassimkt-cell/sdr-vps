@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, Header, HTTPException
-import os, requests
+import os, requests, time
 
 router = APIRouter()
 
@@ -73,12 +73,29 @@ async def forms_lead(req: Request, authorization: str = Header(None)):
     wa_ok = False
     if whatsapp:
         try:
-            r = requests.post("http://127.0.0.1:3000/send", json={
-                "number": whatsapp,
-                "text": f"Oi {nome}, vi que você respondeu o formulário. Posso te explicar rapidamente como funciona?"
-            }, timeout=10)
-            wa_ok = r.status_code < 400
-            print("[WA_SEND]", r.status_code, r.text[:200])
+            numero = whatsapp
+            if numero and not numero.startswith("55"):
+                numero = "55" + numero
+
+            msg1 = f"Oi {nome.split()[0].title() if nome else 'tudo bem'}, tudo bem? Aqui é a Carol da Mand Digital 🙂\n\nVi sua resposta no formulário — obrigada!"
+
+            msg2 = f"Pelo que você comentou sobre {objetivo or 'gerar mais resultado'}, já dá pra ter um bom caminho aí.\n\nA gente tem trabalhado bastante esse formato de campanha para gerar venda + dados reais do cliente.\n\nQuer que eu te mostre um exemplo rápido por aqui ou prefere um link direto?"
+
+            r1 = requests.post("http://127.0.0.1:3000/send", json={
+                "number": numero,
+                "text": msg1
+            }, timeout=30)
+            print("[WA_SEND_1]", r1.status_code, r1.text[:200])
+
+            time.sleep(4)
+
+            r2 = requests.post("http://127.0.0.1:3000/send", json={
+                "number": numero,
+                "text": msg2
+            }, timeout=30)
+            print("[WA_SEND_2]", r2.status_code, r2.text[:200])
+
+            wa_ok = r1.status_code < 400 and r2.status_code < 400
         except Exception as e:
             print("[WA_FAIL]", repr(e))
 
