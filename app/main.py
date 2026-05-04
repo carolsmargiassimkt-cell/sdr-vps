@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from email_cadence.routes import router as email_cadence_router
+from email_cadence.forms_webhook import router as forms_router
 from fastapi import FastAPI
 from pydantic import BaseModel
 
@@ -246,3 +247,4 @@ app.include_router(pipedrive_router)
 
 
 app.include_router(email_cadence_router)
+app.include_router(forms_router)
