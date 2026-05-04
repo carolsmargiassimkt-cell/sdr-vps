@@ -17,6 +17,23 @@ from core.automation_freeze import is_automation_freeze_active
 
 
 class WhatsAppService:
+
+    def send_message(self, phone, text):
+        import requests
+        numero = str(phone or "").replace("@s.whatsapp.net", "").replace("+", "").strip()
+        if numero and not numero.startswith("55"):
+            numero = "55" + numero
+        parts = [x.strip() for x in str(text or "").split("|||") if x.strip()]
+        last = None
+        for i, part in enumerate(parts):
+            if i:
+                time.sleep(3)
+            last = requests.post("http://127.0.0.1:3000/send", json={
+                "number": numero,
+                "text": part
+            }, timeout=30)
+            print("[WA_SERVICE_SEND_MESSAGE]", numero, last.status_code, last.text[:200])
+        return last
     SEND_TIMEOUT_SEC = 40
     PENDING_TTL_SECONDS = 30 * 60
     TEST_WHITELIST = {"5535920002020", "35920002020", "5511998804191", "11998804191"}

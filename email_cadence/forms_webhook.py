@@ -79,7 +79,7 @@ async def forms_lead(req: Request, authorization: str = Header(None)):
 
             msg1 = f"Oi {nome.split()[0].title() if nome else 'tudo bem'}, tudo bem? Aqui é a Carol da Mand Digital 🙂\n\nVi sua resposta no formulário — obrigada!"
 
-            msg2 = f"Pelo que você comentou sobre {objetivo or 'gerar mais resultado'}, já dá pra ter um bom caminho aí.\n\nA gente tem trabalhado bastante esse formato de campanha para gerar venda + dados reais do cliente.\n\nQuer que eu te mostre um exemplo rápido por aqui ou prefere um link direto?"
+            msg2 = f"Pelo que você comentou sobre {objetivo or 'gerar mais resultado'}, já dá pra ver um caminho interessante aí.\n\nPara empresas do segmento {segmento or 'varejo'} como {body.get('empresa') or 'a sua empresa'}, a Copa costuma ser uma janela bem forte pra transformar campanha em fluxo, venda e dados reais do cliente.\n\nA gente tem feito isso com algumas redes e tem dado bastante resultado.\n\nPosso te mandar um exemplo rápido por aqui?"
 
             r1 = requests.post("http://127.0.0.1:3000/send", json={
                 "number": numero,
