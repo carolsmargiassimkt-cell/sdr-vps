@@ -25,6 +25,50 @@ def email_is_bad(email):
         return True
     return False
 
+
+def get_nutricao_stage_id():
+    token = os.getenv("PIPEDRIVE_TOKEN") or os.getenv("PIPEDRIVE_API_TOKEN")
+    if not token:
+        print("[PIPEDRIVE_TOKEN_MISSING]")
+        return None
+
+    r = requests.get(
+        "https://api.pipedrive.com/v1/stages",
+        params={"api_token": token},
+        timeout=20,
+    )
+    if r.status_code >= 400:
+        print("[STAGES_FETCH_FAIL]", r.status_code, r.text[:200])
+        return None
+
+    for st in (r.json().get("data") or []):
+        name = (st.get("name") or "").strip().lower()
+        if "nutrição" in name and "enriquecimento" in name:
+            return st.get("id")
+
+    print("[STAGE_NOT_FOUND] Nutrição / Enriquecimento")
+    return None
+
+
+def move_to_nutricao(deal_id):
+    token = os.getenv("PIPEDRIVE_TOKEN") or os.getenv("PIPEDRIVE_API_TOKEN")
+    stage_id = get_nutricao_stage_id()
+    if not token or not stage_id:
+        return False
+
+    r = requests.put(
+        f"https://api.pipedrive.com/v1/deals/{deal_id}",
+        params={"api_token": token},
+        json={"stage_id": stage_id},
+        timeout=20,
+    )
+    if r.status_code >= 400:
+        print("[MOVE_TO_NUTRICAO_FAIL]", deal_id, r.status_code, r.text[:200])
+        return False
+
+    print(f"[MOVED_TO_NUTRICAO] deal_id={deal_id} stage_id={stage_id}")
+    return True
+
 LIMIT=50
 
 def get_deals():
@@ -57,6 +101,7 @@ for d in deals:
         continue
 
     start_cadence(d["id"])
+    move_to_nutricao(d["id"])
     print("STARTED:",d["id"])
     count+=1
     time.sleep(1)
