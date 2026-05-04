@@ -3,7 +3,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 DATA=Path("/root/sdr-vps/data/email_cadence_queue.json")
-DATA.parent.mkdir(exist_ok=True)
+EVENTS=Path("/root/sdr-vps/data/email_cadence_events.json")
+DATA.parent.mkdir(parents=True,exist_ok=True)
 
 PD=os.getenv("PIPEDRIVE_API_TOKEN")
 FROM=os.getenv("SMTP_FROM_EMAIL","")
@@ -15,6 +16,7 @@ SMTP_PASS=os.getenv("SMTP_PASS","")
 
 
 STEPS=[0,2,4]  # depois ajustamos
+STOP_STATUSES={"clicked_warm","replied","won","opt_out","wrong_contact","done"}
 def segment_context(empresa=""):
     e=(empresa or "").lower()
     if any(x in e for x in ["supermerc", "mercado", "atacad", "varej", "hortifruti", "fruta"]):
@@ -97,8 +99,61 @@ def load():
 def save(rows):
     DATA.write_text(json.dumps(rows,ensure_ascii=False,indent=2))
 
+def load_events():
+    if not EVENTS.exists():
+        save_events([])
+        return []
+    try:
+        with EVENTS.open("r",encoding="utf-8") as f:
+            payload=json.load(f)
+    except Exception:
+        return []
+    return payload if isinstance(payload,list) else []
+
+def save_events(rows):
+    EVENTS.parent.mkdir(parents=True,exist_ok=True)
+    with EVENTS.open("w",encoding="utf-8") as f:
+        json.dump(rows if isinstance(rows,list) else [],f,ensure_ascii=False,indent=2)
+
 def now():
     return datetime.now().isoformat(timespec="seconds")
+
+def idempotency_key(deal_id,step):
+    return f"{int(deal_id)}:{int(step)}"
+
+def event_exists(deal_id,step):
+    key=idempotency_key(deal_id,step)
+    for ev in load_events():
+        if str(ev.get("idempotency_key") or "")==key:
+            return True
+    return False
+
+def record_sent_event(x,step,subject,sent_at):
+    key=idempotency_key(x.get("deal_id"),step)
+    events=load_events()
+    if any(str(ev.get("idempotency_key") or "")==key for ev in events):
+        return False
+    events.append({
+      "deal_id":int(x.get("deal_id")),
+      "email":str(x.get("email") or "").strip().lower(),
+      "step":int(step),
+      "subject":str(subject or ""),
+      "sent_at":sent_at,
+      "status":"sent",
+      "idempotency_key":key
+    })
+    save_events(events)
+    print("[EVENT_LOGGED]",key)
+    return True
+
+def advance_after_send(x,step,t):
+    if step>=len(STEPS):
+        x["status"]="done"
+        x["next_send"]=None
+    else:
+        x["step"]=step+1
+        x["status"]="pending"
+        x["next_send"]=(t+timedelta(days=STEPS[step])).isoformat(timespec="seconds")
 
 def enqueue(deal_id,email,nome="",empresa=""):
     rows=load()
@@ -115,7 +170,7 @@ def enqueue(deal_id,email,nome="",empresa=""):
 def send_smtp(to, subject, body):
     if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, FROM]):
         print("[DRY_RUN] SMTP env ausente:", to, subject)
-        return True
+        return {"ok":True,"dry_run":True}
 
     from email.message import EmailMessage
     msg = EmailMessage()
@@ -131,27 +186,38 @@ def send_smtp(to, subject, body):
         server.send_message(msg)
 
     print("[SMTP_SEND_OK]", to, subject)
-    return True
+    return {"ok":True,"dry_run":False}
+
+def smtp_ok(result):
+    if isinstance(result,dict):
+        return bool(result.get("ok"))
+    return bool(result)
+
+def smtp_dry_run(result):
+    return isinstance(result,dict) and bool(result.get("dry_run"))
 
 def tick():
     rows=load(); changed=False
     t=datetime.now()
     for x in rows:
-        if x.get("status") in ["clicked_warm","replied","won"]:
+        if str(x.get("status") or "") in STOP_STATUSES:
             continue
 
         if x.get("status")!="pending": continue
         if datetime.fromisoformat(x["next_send"])>t: continue
         step=int(x.get("step",1))
         subj,body=template(step, x)
-        ok=send_smtp(x["email"],subj,body)
-        if ok:
-            x["last_sent_at"]=now()
-            if step>=len(STEPS):
-                x["status"]="done"
-            else:
-                x["step"]=step+1
-                x["next_send"]=(t+timedelta(days=STEPS[step])).isoformat(timespec="seconds")
+        if event_exists(x.get("deal_id"),step):
+            advance_after_send(x,step,t)
+            changed=True
+            continue
+        result=send_smtp(x["email"],subj,body)
+        if smtp_ok(result):
+            sent_at=now()
+            x["last_sent_at"]=sent_at
+            if not smtp_dry_run(result):
+                record_sent_event(x,step,subj,sent_at)
+            advance_after_send(x,step,t)
             changed=True
     if changed: save(rows)
     print("[CADENCE_TICK_OK]")
