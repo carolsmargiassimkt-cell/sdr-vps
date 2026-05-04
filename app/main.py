@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from email_cadence.routes import router as email_cadence_router
 from fastapi import FastAPI
 from pydantic import BaseModel
 
@@ -242,3 +243,6 @@ def pending(payload: PendingPayload) -> dict[str, Any]:
 
 from app.webhooks_pipedrive import router as pipedrive_router
 app.include_router(pipedrive_router)
+
+
+app.include_router(email_cadence_router)
