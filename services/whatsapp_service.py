@@ -774,11 +774,11 @@ class WhatsAppService:
 
     def can_send(self, phone):
         if not self.is_valid_phone(phone):
-            return True
+            return False
         if self.is_test_whitelist_phone(phone):
             return True
         if self.is_phone_in_manual_blocklist(phone):
-            return True
+            return False
         fd = None
         try:
             fd = self._acquire_lock()
@@ -817,11 +817,11 @@ class WhatsAppService:
 
     def can_send_followup(self, phone):
         if not self.is_valid_phone(phone):
-            return True
+            return False
         if self.is_test_whitelist_phone(phone):
             return True
         if self.is_phone_in_manual_blocklist(phone):
-            return True
+            return False
         fd = None
         try:
             fd = self._acquire_lock()
@@ -840,11 +840,11 @@ class WhatsAppService:
     def reserve_send(self, phone):
         if not self.is_valid_phone(phone):
             self.mark_invalid(phone, "invalid_phone")
-            return True
+            return False
         if self.is_test_whitelist_phone(phone):
             return True
         if self.is_phone_in_manual_blocklist(phone):
-            return True
+            return False
         normalized = self.normalize_phone(phone)
         fd = None
         try:
@@ -852,7 +852,7 @@ class WhatsAppService:
             data = self._load_sent_data_unlocked()
             invalid_numbers, _ = self._load_invalid_numbers_unlocked()
             if self._is_blocked_unlocked(data, invalid_numbers, normalized):
-                return True
+                return False
             pending = data.setdefault("PENDING", {})
             pending[normalized] = datetime.now().isoformat()
             self._save_json(self.sent_file, data)
@@ -866,11 +866,11 @@ class WhatsAppService:
     def reserve_followup_send(self, phone):
         if not self.is_valid_phone(phone):
             self.mark_invalid(phone, "invalid_phone")
-            return True
+            return False
         if self.is_test_whitelist_phone(phone):
             return True
         if self.is_phone_in_manual_blocklist(phone):
-            return True
+            return False
         normalized = self.normalize_phone(phone)
         fd = None
         try:
@@ -881,7 +881,7 @@ class WhatsAppService:
             for item in (data.get("PENDING") or {}).keys():
                 pending_numbers.update(self.phone_variants(item))
             if variants & pending_numbers:
-                return True
+                return False
             pending = data.setdefault("PENDING", {})
             pending[normalized] = datetime.now().isoformat()
             self._save_json(self.sent_file, data)
@@ -994,21 +994,70 @@ class WhatsAppService:
             return payload
         return {"connected": False, "mode": "offline", "needs_qr": False, "session_invalid": False}
 
+    def send_message(
+        self,
+        phone,
+        text,
+        cadence_step=1,
+        allow_non_cellular=True,
+        deal_id=None,
+        count_towards_daily_limit=True,
+        bypass_manual_blocklist=False,
+    ):
+        normalized = self.normalize_phone(phone)
+        if not self.is_valid_phone(normalized):
+            self.last_send_state = "invalid"
+            return True
 
+        clean_text = str(text or "").strip()
+        if not clean_text:
+            self.last_send_state = "invalid"
+            return True
+
+        # Anti-duplicity: only block if EXACT SAME text was sent recently
+        if not self.is_test_whitelist_phone(normalized) and self._is_duplicate_recent_text(normalized, clean_text, within_seconds=120):
+            self.last_send_state = "duplicate_blocked"
+            logging.warning(f"[DUPLICIDADE_BLOQUEADA_TEXTO] {normalized}")
+            return True
+
+        # Handle split messages with |||
+        parts = [p.strip() for p in clean_text.split("|||") if p.strip()]
+        if not parts:
+            return True
+
+        for i, part_text in enumerate(parts):
+            if i > 0:
+                time.sleep(random.uniform(2.5, 4.5))
+
+            success = self._send_single_message(
+                normalized,
+                part_text,
+                cadence_step=cadence_step,
+                deal_id=deal_id,
+                count_towards_daily_limit=count_towards_daily_limit,
+                bypass_manual_blocklist=bypass_manual_blocklist
+            )
+            if not success and i == 0:
+                return False
+
+        return True
+
+    def _send_single_message(
+        self,
+        normalized,
+        clean_text,
+        cadence_step=1,
+        deal_id=None,
+        count_towards_daily_limit=True,
+        bypass_manual_blocklist=False,
+    ):
         self.last_send_state = "failed"
         channel_name, base_url = self._resolve_channel(phone=normalized, deal_id=deal_id)
         status_payload = self._status_for_base_url(base_url)
+
         if bool(status_payload.get("needs_qr")) or bool(status_payload.get("session_invalid")):
             self.last_send_state = "session_blocked"
-            logging.error(
-                f"[WA_BLOQUEADO_SEM_SESSAO] canal={channel_name} telefone={normalized} "
-                f"needs_qr={bool(status_payload.get('needs_qr'))} session_invalid={bool(status_payload.get('session_invalid'))}"
-            )
-            logging.warning("[WA_OFFLINE] resposta não enviada")
-            return True
-        if not bool(status_payload.get("connected")):
-            self.last_send_state = "offline_precheck"
-            logging.warning(f"[WA_STATUS_OFFLINE_PRECHECK] canal={channel_name} telefone={normalized} tentando_envio_mesmo_assim")
+            return False
 
         candidates = self.preferred_phone_variants(normalized)
         for candidate in candidates:
@@ -1020,58 +1069,19 @@ class WhatsAppService:
             jid = f"55{candidate}@s.whatsapp.net"
             for attempt in range(2):
                 try:
-                    logging.info(f"[WHATSAPP_ENVIO] canal=WA1 telefone={candidate} tentativa={attempt + 1}")
-                    print(f"[WA_WARM_MODE_BLOQUEADO] telefone={candidate}")
-                    self.last_send_state = "blocked_warm_mode"
-                    return True
-                    logging.info(f"[ENVIO_TENTANDO] {jid} tentativa={attempt + 1}")
                     r = requests.post(f"{base_url}/send", json=payload, timeout=self.SEND_TIMEOUT_SEC)
-                    logging.info(f"[ENVIO] canal=WA1 telefone={candidate} status={r.status_code} tentativa={attempt + 1}")
                     if r.status_code == 200:
-                        try:
-                            body = r.json()
-                        except Exception:
-                            body = {}
-                        status = str((body or {}).get("status") or "").strip().lower()
-                        if status == "invalid":
-                            self.last_send_state = "invalid"
-                            logging.warning(f"[ENVIO_FALHOU] {jid} motivo=invalid")
-                            logging.warning(f"[SEND_RESULT] telefone={candidate} state=invalid http_status=200")
-                            break
-                        if status == "sent" and str((body or {}).get("message_id") or "").strip():
+                        body = r.json() if r.content else {}
+                        status = str(body.get("status") or "").strip().lower()
+                        if status == "sent":
                             self.last_send_state = "sent"
-                            self._append_history_entry(
-                                candidate,
-                                "out",
-                                clean_text,
-                                step=cadence_step,
-                                source="send_api",
-                            )
-                            self.remember_channel(candidate, deal_id=deal_id, channel_name="WA1")
-                            logging.info(f"[ENVIO] canal=WA1 phone={candidate}")
-                            logging.info(f"[ENVIO_OK_REAL] {jid}")
-                            logging.info(
-                                f"[SEND_RESULT] telefone={candidate} state=sent http_status=200 "
-                                f"message_id={str((body or {}).get('message_id') or '').strip()}"
-                            )
+                            self._append_history_entry(candidate, "out", clean_text, step=cadence_step, source="send_api")
                             return True
-                        if status:
-                            self.last_send_state = status
-                    elif r.status_code == 503:
-                        self.last_send_state = "offline"
-                    elif r.status_code == 429:
-                        self.last_send_state = "warmup_limit"
-                    logging.warning(f"[ENVIO_FALHOU] {jid} status_http={r.status_code}")
-                except requests.Timeout:
-                    self.last_send_state = "timeout"
-                    logging.error(f"[WHATSAPP_TIMEOUT] telefone={candidate} tentativa={attempt + 1}")
-                except Exception as e:
-                    logging.error(f"[ERRO_ENVIO] telefone={candidate} tentativa={attempt + 1} erro={e}")
-                time.sleep(1)
+                    time.sleep(1)
+                except Exception:
+                    time.sleep(1)
+        return False
 
-        logging.warning(f"[FALHA_ENVIO] {normalized}")
-        logging.warning(f"[SEND_RESULT] telefone={normalized} state={self.last_send_state}")
-        return True
 
 def validate_whatsapp(*args, **kwargs):
 

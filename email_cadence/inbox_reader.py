@@ -1,24 +1,55 @@
-import imaplib, email, os, json, requests, re
-from pathlib import Path
+import email
+import imaplib
+import json
+import os
+import re
+import requests
+from datetime import datetime, timedelta
 from email.header import decode_header
+from pathlib import Path
 
-IMAP_HOST=os.getenv("SMTP_HOST")
-IMAP_USER=os.getenv("SMTP_USER")
-IMAP_PASS=os.getenv("SMTP_PASS")
-TOKEN=os.getenv("PIPEDRIVE_TOKEN") or os.getenv("PIPEDRIVE_API_TOKEN")
-BASE="https://api.pipedrive.com/v1"
-QUEUE=Path("/root/sdr-vps/data/email_cadence_queue.json")
+IMAP_HOST = os.getenv("OUTBOUND_IMAP_HOST", "")
+IMAP_USER = os.getenv("OUTBOUND_IMAP_USER", "")
+IMAP_PASS = os.getenv("OUTBOUND_IMAP_PASS", "")
+TOKEN = os.getenv("PIPEDRIVE_TOKEN") or os.getenv("PIPEDRIVE_API_TOKEN")
+BASE = "https://api.pipedrive.com/v1"
+QUEUE = Path("/root/sdr-vps/data/email_cadence_queue.json")
+DEDUP = Path("/root/sdr-vps/data/email_inbox_reader_seen.json")
+LOOKBACK_DAYS = max(1, int(os.getenv("OUTBOUND_IMAP_LOOKBACK_DAYS", "7") or "7"))
 
-RESPONDIDO_LABEL_ID=196
+RESPONDIDO_LABEL_ID = 196
+WARM_WHATSAPP_LABEL_ID = 226
+
+
+def load_json(path, default):
+    if not path.exists():
+        return default
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if data is not None else default
+    except Exception:
+        return default
+
+
+def save_json(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
 
 def clean_sender(raw):
-    m=re.search(r'<([^>]+)>', raw or "")
+    m = re.search(r"<([^>]+)>", raw or "")
     return (m.group(1) if m else raw or "").strip().lower()
 
+
 def decode_subject(s):
-    if not s: return ""
-    parts=decode_header(s)
-    out=""
+    if not s:
+        return ""
+    parts = decode_header(s)
+    out = ""
     for txt, enc in parts:
         if isinstance(txt, bytes):
             out += txt.decode(enc or "utf-8", errors="ignore")
@@ -26,67 +57,157 @@ def decode_subject(s):
             out += txt
     return out
 
-def api(method,path,**kw):
-    params=kw.pop("params",{})
-    params["api_token"]=TOKEN
-    r=requests.request(method, BASE+path, params=params, timeout=20, **kw)
-    if r.status_code>=400:
+
+def api(method, path, **kw):
+    if not TOKEN:
+        print("[PIPEDRIVE_SKIP] token ausente")
+        return None
+    params = kw.pop("params", {})
+    params["api_token"] = TOKEN
+    r = requests.request(method, BASE + path, params=params, timeout=20, **kw)
+    if r.status_code >= 400:
         print("[PIPEDRIVE_FAIL]", method, path, r.status_code, r.text[:200])
         return None
-    return r.json()
+    return r.json() if r.text else {}
+
+
+def queued_rows():
+    rows = load_json(QUEUE, [])
+    return rows if isinstance(rows, list) else []
+
 
 def find_deal_by_email(addr):
-    q=json.load(open(QUEUE,encoding="utf-8")) if QUEUE.exists() else []
-    for x in q:
-        if (x.get("email") or "").lower()==addr:
-            return int(x["deal_id"])
-    return None
+    target = str(addr or "").strip().lower()
+    if not target:
+        return None, None
+    for row in queued_rows():
+        if str(row.get("email") or "").strip().lower() == target:
+            return int(row["deal_id"]), str(row.get("email") or "").strip().lower()
+    return None, None
+
 
 def stop_cadence(addr, deal_id):
-    if not QUEUE.exists(): return
-    q=json.load(open(QUEUE,encoding="utf-8"))
-    changed=0
+    if not QUEUE.exists():
+        return
+    q = queued_rows()
+    changed = 0
+    sender = str(addr or "").strip().lower()
     for x in q:
-        if int(x.get("deal_id",0))==deal_id or (x.get("email") or "").lower()==addr:
-            if x.get("status") not in ("done","stopped"):
-                x["status"]="stopped"
-                x["stop_reason"]="email_replied"
-                changed+=1
-    json.dump(q, open(QUEUE,"w",encoding="utf-8"), ensure_ascii=False, indent=2)
-    print("[CADENCE_STOPPED]", deal_id, addr, changed)
+        if int(x.get("deal_id", 0)) == int(deal_id) or str(x.get("email") or "").strip().lower() == sender:
+            if x.get("status") not in ("done", "stopped", "replied"):
+                x["status"] = "replied"
+                x["stop_reason"] = "email_replied"
+                x["stopped_at"] = datetime.now().isoformat(timespec="seconds")
+                changed += 1
+    save_json(QUEUE, q)
+    print("[CADENCE_STOPPED]", deal_id, sender, changed)
 
-def mark_crm(deal_id, sender, subject):
-    note=f"<b>Resposta recebida por email</b><br><b>De:</b> {sender}<br><b>Assunto:</b> {subject}<br><b>Ação:</b> cadência parada automaticamente."
-    api("POST","/notes",json={"deal_id":deal_id,"content":note})
-    api("PUT",f"/deals/{deal_id}",json={"label":RESPONDIDO_LABEL_ID})
+
+def normalize_label_items(raw):
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return list(raw)
+    if isinstance(raw, str):
+        return [item.strip() for item in raw.split(",") if item.strip()]
+    return [raw]
+
+
+def label_key(item):
+    if isinstance(item, dict):
+        return str(item.get("id") or item.get("label") or item.get("name") or item.get("value") or "").strip()
+    return str(item or "").strip()
+
+
+def merge_labels(deal_id, *label_ids):
+    deal_resp = api("GET", f"/deals/{int(deal_id)}")
+    deal = (deal_resp or {}).get("data") or {}
+    current = normalize_label_items(deal.get("label"))
+    keys = {label_key(item) for item in current if label_key(item)}
+    for label_id in label_ids:
+        if str(label_id) not in keys:
+            current.append(int(label_id))
+            keys.add(str(label_id))
+    return api("PUT", f"/deals/{int(deal_id)}", json={"label": current})
+
+
+def mark_crm(deal_id, sender, subject, message_id):
+    note = (
+        "<b>Resposta recebida por email</b><br>"
+        f"<b>De:</b> {sender}<br>"
+        f"<b>Assunto:</b> {subject}<br>"
+        f"<b>Message-ID:</b> {message_id}<br>"
+        "<b>Acao:</b> cadencia parada automaticamente."
+    )
+    api("POST", "/notes", json={"deal_id": int(deal_id), "content": note})
+    merge_labels(deal_id, RESPONDIDO_LABEL_ID, WARM_WHATSAPP_LABEL_ID)
     print("[CRM_RESPONDIDO]", deal_id)
 
+
+def seen_key(msg, sender):
+    message_id = str(msg.get("Message-ID") or msg.get("Message-Id") or "").strip()
+    if message_id:
+        return message_id
+    date = str(msg.get("Date") or "").strip()
+    subject = decode_subject(msg.get("Subject", ""))
+    return f"{sender}|{date}|{subject}"
+
+
 def run():
-    mail=imaplib.IMAP4_SSL(IMAP_HOST)
+    if not all([IMAP_HOST, IMAP_USER, IMAP_PASS]):
+        print("[IMAP_SKIP] OUTBOUND_IMAP_HOST/USER/PASS ausentes")
+        return
+
+    seen = load_json(DEDUP, {})
+    if not isinstance(seen, dict):
+        seen = {}
+    cutoff = datetime.now() - timedelta(days=LOOKBACK_DAYS)
+    since = cutoff.strftime("%d-%b-%Y")
+
+    mail = imaplib.IMAP4_SSL(IMAP_HOST)
     mail.login(IMAP_USER, IMAP_PASS)
     mail.select("INBOX")
-    typ,data=mail.search(None,'UNSEEN')
-    for num in data[0].split():
-        typ,msg_data=mail.fetch(num,'(RFC822)')
-        msg=email.message_from_bytes(msg_data[0][1])
-        sender=clean_sender(msg.get("From",""))
-        subject=decode_subject(msg.get("Subject",""))
+    typ, data = mail.search(None, f'(SINCE "{since}")')
+    if typ != "OK":
+        print("[IMAP_SEARCH_FAIL]", typ)
+        mail.logout()
+        return
 
-        # ignora bounces/postmaster
-        if "postmaster" in sender or "mailer-daemon" in sender:
-            print("[BOUNCE_IGNORED]", sender, subject)
-            mail.store(num,'+FLAGS','\\Seen')
+    processed = 0
+    for num in data[0].split():
+        typ, msg_data = mail.fetch(num, "(RFC822)")
+        if typ != "OK" or not msg_data or not msg_data[0]:
+            continue
+        msg = email.message_from_bytes(msg_data[0][1])
+        sender = clean_sender(msg.get("From", ""))
+        subject = decode_subject(msg.get("Subject", ""))
+        key = seen_key(msg, sender)
+        if key in seen:
             continue
 
-        deal_id=find_deal_by_email(sender)
+        if "postmaster" in sender or "mailer-daemon" in sender:
+            print("[BOUNCE_IGNORED]", sender, subject)
+            seen[key] = {"ignored": "bounce", "at": datetime.now().isoformat(timespec="seconds")}
+            continue
+
+        deal_id, queued_email = find_deal_by_email(sender)
         print("[EMAIL_REPLY]", sender, subject, "deal=", deal_id)
 
         if deal_id:
-            mark_crm(deal_id, sender, subject)
-            stop_cadence(sender, deal_id)
+            mark_crm(deal_id, sender, subject, key)
+            stop_cadence(queued_email or sender, deal_id)
+            processed += 1
+            seen[key] = {"deal_id": deal_id, "email": queued_email or sender, "at": datetime.now().isoformat(timespec="seconds")}
+        else:
+            seen[key] = {"ignored": "not_in_queue", "email": sender, "at": datetime.now().isoformat(timespec="seconds")}
 
-        mail.store(num,'+FLAGS','\\Seen')
+    # Mantem o arquivo pequeno sem perder dedupe recente.
+    if len(seen) > 5000:
+        seen = dict(list(seen.items())[-5000:])
+    save_json(DEDUP, seen)
     mail.logout()
+    print("[INBOX_READER_DONE]", processed)
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
     run()

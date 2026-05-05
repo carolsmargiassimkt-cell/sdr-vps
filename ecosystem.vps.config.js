@@ -28,11 +28,11 @@ module.exports = {
       name: "supervisor",
       cwd: "/root/sdr-vps",
       script: "/root/sdr-vps/venv/bin/python3",
-      args: "/root/sdr-vps/supervisor.py --all",
+      args: "/root/sdr-vps/supervisor.py",
       interpreter: "none",
       autorestart: true,
       env: {
-        WHATSAPP_OUTBOUND_MODE: "auto",
+        WHATSAPP_OUTBOUND_MODE: "manual",
         WHATSAPP_DAILY_LIMIT: "70",
         PYTHONUNBUFFERED: "1"
       }

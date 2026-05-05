@@ -81,6 +81,7 @@ BLOCKLIST_FILE = os.path.join(LOGS_DIR, "whatsapp_manual_blocklist.json")
 PROCESSED_FILE = os.path.join(BASE_DIR, "inbound_processed.json")
 PROCESSED_LOCK_FILE = os.path.join(BASE_DIR, "inbound_processed.json.lock")
 HISTORY_FILE = os.path.join(LOGS_DIR, "whatsapp_message_history.json")
+WHATSAPP_CONVERSATION_STATE_FILE = os.path.join(DATA_DIR, "whatsapp_conversation_state.json")
 EMAIL_PENDING_CONFIRMATIONS_FILE = os.path.join(DATA_DIR, "email_pending_confirmations.json")
 EMAIL_QUEUE_FILE = os.path.join(DATA_DIR, "email_handoff_queue.json")
 AGENT_DECIDE_UPSTREAM_URL = str(
@@ -124,6 +125,10 @@ BOTPRESS_TIMEOUT_SEC = max(
 
 def is_agent_decide_enabled():
     return str(os.getenv("AGENT_DECIDE_ENABLED", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def is_auto_reply_router_enabled():
+    return str(os.getenv("AUTO_REPLY_ROUTER_ENABLED", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _as_bool(value):
@@ -171,6 +176,9 @@ def is_test_whitelist_phone(phone):
 TEST_WHITELIST = {"5535920002020", "35920002020", "5511998804191", "11998804191"}
 CRM_CACHE_TTL_SECONDS = 24 * 60 * 60
 REPLY_WINDOW_SECONDS = 30 * 60
+LEAD_TRAFEGO_LABEL_ID = 193
+RESPONDIDO_LABEL_ID = 196
+WARM_WHATSAPP_LABEL_ID = 226
 GEMINI_MODEL = str(
     os.getenv("GEMINI_MODEL")
     or get_config_value("gemini_model", "gemini-1.5-flash")
@@ -356,6 +364,137 @@ def save_email_queue(payload):
     save_json_file(EMAIL_QUEUE_FILE, payload if isinstance(payload, list) else [])
 
 
+def load_whatsapp_conversation_state():
+    payload = load_json_file(WHATSAPP_CONVERSATION_STATE_FILE, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_whatsapp_conversation_state(payload):
+    save_json_file(WHATSAPP_CONVERSATION_STATE_FILE, payload if isinstance(payload, dict) else {})
+
+
+def whatsapp_conversation_key(deal_id, phone):
+    return f"{int(deal_id or 0)}:{whatsapp.normalize_phone(phone)}"
+
+
+def _label_token_set(deal):
+    try:
+        return {str(token or "").strip().upper() for token in crm.resolve_label_tokens((deal or {}).get("label"), crm.get_deal_labels()) if str(token or "").strip()}
+    except Exception:
+        raw = (deal or {}).get("label")
+        if isinstance(raw, list):
+            return {str(item.get("id") if isinstance(item, dict) else item).strip().upper() for item in raw if str(item or "").strip()}
+        return {item.strip().upper() for item in str(raw or "").split(",") if item.strip()}
+
+
+def infer_whatsapp_origin(deal, previous_origin=""):
+    if str(previous_origin or "").strip().lower() in {"lead_trafego", "warm_email"}:
+        return str(previous_origin).strip().lower()
+    tokens = _label_token_set(deal)
+    if str(LEAD_TRAFEGO_LABEL_ID) in tokens or "LEAD_TRAFEGO" in tokens or "LEAD_TRÁFEGO" in tokens:
+        return "lead_trafego"
+    if str(WARM_WHATSAPP_LABEL_ID) in tokens or "WARM_WHATSAPP" in tokens or "CLICKED_WARM" in tokens:
+        return "warm_email"
+    return "warm_email"
+
+
+def classify_conversation_intent(message):
+    text = normalize_intent_text(message)
+    if is_opt_out(message) or is_hard_negative_message(message):
+        return "opt_out"
+    closing_key = detect_closing_intent(message)
+    nonlead_intent = str(pitch.detect_nonlead_intent(message) or "").strip().lower()
+    if closing_key in {"wrong_number", "unknown_person"} or nonlead_intent == "numero_errado":
+        return "wrong_contact"
+    if detect_referral_intent(message):
+        return "referred"
+    if any(token in text for token in ("case", "exemplo", "modelo", "como funciona", "manda", "envia")):
+        return "asked_case"
+    if detect_positive_intent(message) or detect_scheduling_intent(message):
+        return "interested"
+    if detect_neutral_intent(message):
+        return "replied"
+    return "replied"
+
+
+def update_whatsapp_conversation_state_for_lead(lead_state, phone, message="", intent="", last_bot_reply=""):
+    normalized_phone = whatsapp.normalize_phone(phone)
+    if not normalized_phone:
+        return {}
+    state = load_whatsapp_conversation_state()
+    deals = list(related_deals_from_state(lead_state) or [])
+    if not deals:
+        deals = [{"id": 0, "label": ""}]
+    now = datetime.now().isoformat(timespec="seconds")
+    resolved_intent = str(intent or classify_conversation_intent(message) or "replied").strip().lower()
+    updated = {}
+    for deal in deals:
+        deal_id = extract_entity_id((deal or {}).get("id"))
+        key = whatsapp_conversation_key(deal_id, normalized_phone)
+        previous = state.get(key) if isinstance(state.get(key), dict) else {}
+        origin = infer_whatsapp_origin(deal, previous.get("origin"))
+        record = {
+            "deal_id": int(deal_id),
+            "phone": normalized_phone,
+            "origin": origin,
+            "wa1_sent": bool(previous.get("wa1_sent", False)),
+            "replied": bool(previous.get("replied", False) or message),
+            "asked_case": bool(previous.get("asked_case", False) or resolved_intent == "asked_case"),
+            "interested": bool(previous.get("interested", False) or resolved_intent == "interested"),
+            "opt_out": bool(previous.get("opt_out", False) or resolved_intent == "opt_out"),
+            "wrong_contact": bool(previous.get("wrong_contact", False) or resolved_intent == "wrong_contact"),
+            "referred": bool(previous.get("referred", False) or resolved_intent == "referred"),
+            "stopped": bool(previous.get("stopped", False) or resolved_intent in {"opt_out", "wrong_contact", "referred"}),
+            "last_intent": resolved_intent,
+            "last_bot_reply": str(last_bot_reply or previous.get("last_bot_reply") or ""),
+            "last_lead_reply": str(message or previous.get("last_lead_reply") or ""),
+            "updated_at": now,
+        }
+        if previous.get("wa1_sent_at"):
+            record["wa1_sent_at"] = previous.get("wa1_sent_at")
+        state[key] = record
+        updated[key] = record
+    save_whatsapp_conversation_state(state)
+    return updated
+
+
+def get_whatsapp_conversation_records_for_lead(lead_state, phone):
+    normalized_phone = whatsapp.normalize_phone(phone)
+    state = load_whatsapp_conversation_state()
+    records = []
+    for deal in list(related_deals_from_state(lead_state) or []):
+        key = whatsapp_conversation_key(extract_entity_id((deal or {}).get("id")), normalized_phone)
+        record = state.get(key)
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def has_stopped_whatsapp_conversation(lead_state, phone):
+    return any(bool(record.get("stopped")) for record in get_whatsapp_conversation_records_for_lead(lead_state, phone))
+
+
+def enrich_lead_with_whatsapp_state(lead, lead_state, phone):
+    records = get_whatsapp_conversation_records_for_lead(lead_state, phone)
+    if not records:
+        return lead
+    merged = dict(lead or {})
+    active = records[0]
+    for record in records:
+        if record.get("wa1_sent") or record.get("replied"):
+            active = record
+            break
+    merged.update({
+        "conversation_origin": active.get("origin"),
+        "conversation_state": active,
+        "wa1_sent": bool(active.get("wa1_sent")),
+        "last_bot_reply": active.get("last_bot_reply") or "",
+        "last_lead_reply": active.get("last_lead_reply") or "",
+        "has_whatsapp_history": bool(active.get("wa1_sent") or active.get("replied")),
+    })
+    return merged
+
+
 def save_history(history):
     os.makedirs(LOGS_DIR, exist_ok=True)
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
@@ -443,16 +582,18 @@ def can_emit_reply(phone, message, within_seconds=1800):
         return False
     now = time.time()
     with reply_guard_lock:
-        expired = [
-            key
-            for key, created_at in reply_guard.items()
-            if now - float(created_at or 0) > within_seconds
-        ]
-        for key in expired:
-            reply_guard.pop(key, None)
-        guard_key = normalized_phone
+        # We only block if the EXACT SAME message was sent to the same phone recently
+        guard_key = f"{normalized_phone}:{normalized_message}"
         if guard_key in reply_guard:
-            return False
+            last_sent = float(reply_guard[guard_key] or 0)
+            if now - last_sent < within_seconds:
+                return False
+
+        # Clean up old entries
+        expired = [k for k, t in reply_guard.items() if now - float(t or 0) > within_seconds]
+        for k in expired:
+            reply_guard.pop(k, None)
+
         reply_guard[guard_key] = now
         return True
 
@@ -488,6 +629,22 @@ def infer_step_from_deals(deals):
             if match:
                 max_step = max(max_step, int(match.group(1)))
     return max(1, min(10, max_step + 1 if max_step else 1))
+
+
+def resolve_contextual_reply_step(history=None, deals=None, fallback=2):
+    history_items = list(history or [])
+    structured_history = [item for item in history_items if isinstance(item, dict)]
+    step = max(infer_step_from_history(structured_history), infer_step_from_deals(deals or []))
+    has_inbound = False
+    for item in history_items:
+        if isinstance(item, dict):
+            direction = str(item.get("direction") or "").strip().lower()
+            has_inbound = has_inbound or direction == "in"
+        else:
+            has_inbound = has_inbound or bool(str(item or "").strip())
+    if step <= 1 and has_inbound:
+        step = int(fallback or 2)
+    return max(2, min(10, int(step or fallback or 2)))
 
 
 def is_opt_out(message):
@@ -779,12 +936,22 @@ def choose_bot_menu_option(message):
     return "", ""
 
 
-def handle_bot_menu_navigation(phone, message):
+def handle_bot_menu_navigation(phone, message, lead_state=None):
     reply, reason = choose_bot_menu_option(message)
     append_history(phone, "in", message, step=0)
     if not reply:
         print(f"[BOT_MENU_SEM_ROTA] {phone}")
         return False
+    if lead_state is None:
+        try:
+            lead_state = validate_lead_with_cache(phone)
+        except Exception:
+            lead_state = None
+    if lead_state:
+        if has_stopped_whatsapp_conversation(lead_state, phone):
+            print(f"[BOT_MENU_STOPPED_NO_REPLY] telefone={phone}")
+            return True
+        update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="replied")
     print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
     print(f"[BOT_MENU_NAVEGACAO] telefone={phone} resposta={reply} motivo={reason}")
     if has_recent_history_entry(phone, "out", reply, within_seconds=1800):
@@ -796,6 +963,8 @@ def handle_bot_menu_navigation(phone, message):
     ok = whatsapp.send_message(phone, reply)
     if ok:
         append_history(phone, "out", reply, step=0)
+        if lead_state:
+            update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="replied", last_bot_reply=reply)
         print(f"[RESPOSTA_ENVIADA] {phone}")
         print(f"[BOT_MENU_RESPOSTA_ENVIADA] {phone} resposta={reply}")
         return True
@@ -1132,7 +1301,7 @@ def build_agent_decision(data):
             reply = "Perfeito. Como posso te chamar?"
         else:
             inbound_messages = [str(item or "") for item in history if str(item or "").strip()] or [text]
-            reply = pitch.build_reply(lead, inbound_messages, current_step=1)
+            reply = pitch.build_reply(lead, inbound_messages, current_step=resolve_contextual_reply_step(history), allow_opening=False)
         reason = "positive_rule"
         confidence = 0.93
     elif detect_neutral_intent(text):
@@ -1166,7 +1335,7 @@ def build_agent_decision(data):
         elif intent == "interesse":
             action = "continue_conversation"
             inbound_messages = [str(item or "") for item in history if str(item or "").strip()] or [text]
-            reply = pitch.build_reply(lead, inbound_messages, current_step=1)
+            reply = pitch.build_reply(lead, inbound_messages, current_step=resolve_contextual_reply_step(history), allow_opening=False)
         else:
             action = "hold"
             reply = ""
@@ -1307,7 +1476,7 @@ def build_local_agent_decision(data):
                 reply = "Perfeito. Como posso te chamar?"
             else:
                 inbound_messages = [str((item or {}).get("message") or item or "").strip() for item in history if str((item or {}).get("message") or item or "").strip()] or [text]
-                reply = pitch.build_reply(lead, inbound_messages, current_step=1)
+                reply = pitch.build_reply(lead, inbound_messages, current_step=resolve_contextual_reply_step(history), allow_opening=False)
             reason = "positive_rule"
             confidence = 0.93
             should_pause_automation = True
@@ -1361,7 +1530,7 @@ def build_local_agent_decision(data):
             elif intent == "interesse":
                 action = "continue_conversation"
                 inbound_messages = [str((item or {}).get("message") or item or "").strip() for item in history if str((item or {}).get("message") or item or "").strip()] or [text]
-                reply = pitch.build_reply(lead, inbound_messages, current_step=1)
+                reply = pitch.build_reply(lead, inbound_messages, current_step=resolve_contextual_reply_step(history), allow_opening=False)
                 should_pause_automation = True
                 should_send = bool(reply)
             else:
@@ -1715,6 +1884,38 @@ def clear_email_runtime_state(*, deal_ids=None, person_id=0, email="", phone="")
     return {"queue_removed": removed_queue, "pending_removed": removed_pending}
 
 
+def stop_whatsapp_warm_cadence_state(deal_ids=None, phone="", email=""):
+    state_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "whatsapp_warm_cadence.json")
+    deal_ids = {int(item) for item in list(deal_ids or []) if int(item or 0) > 0}
+    normalized_phone = whatsapp.normalize_phone(phone)
+    target_email = str(email or "").strip().lower()
+    try:
+        if os.path.exists(state_file):
+            with open(state_file, "r", encoding="utf-8") as fh:
+                state = json.load(fh) or {}
+        else:
+            state = {}
+        stopped = state.setdefault("stopped", {})
+        now = datetime.now().isoformat(timespec="seconds")
+        for deal_id in sorted(deal_ids):
+            stopped[str(deal_id)] = {"reason": "inbound_replied", "stopped_at": now}
+        if normalized_phone:
+            stopped[f"phone:{normalized_phone}"] = {"reason": "inbound_replied", "stopped_at": now}
+        if target_email:
+            stopped[f"email:{target_email}"] = {"reason": "inbound_replied", "stopped_at": now}
+        if deal_ids or normalized_phone or target_email:
+            os.makedirs(os.path.dirname(state_file), exist_ok=True)
+            tmp = state_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(state, fh, ensure_ascii=False, indent=2)
+            os.replace(tmp, state_file)
+            print(f"[WARM_WA_CADENCE_STOPPED] deals={sorted(deal_ids)} phone={normalized_phone or '-'} email={target_email or '-'}")
+        return True
+    except Exception as exc:
+        print(f"[WARM_WA_CADENCE_STOP_FAIL] erro={exc}")
+        return False
+
+
 def clear_email_runtime_state_for_lead(lead_state, phone=""):
     current_person = dict((lead_state or {}).get("person") or {})
     deal_ids = []
@@ -1724,12 +1925,14 @@ def clear_email_runtime_state_for_lead(lead_state, phone=""):
             deal_ids.append(deal_id)
     emails = person_email_values(current_person)
     target_phone = whatsapp.normalize_phone(phone) or next(iter(person_phone_values(current_person)), "")
-    return clear_email_runtime_state(
+    result = clear_email_runtime_state(
         deal_ids=deal_ids,
         person_id=extract_entity_id(current_person.get("id")),
         email=emails[0] if emails else "",
         phone=target_phone,
     )
+    stop_whatsapp_warm_cadence_state(deal_ids=deal_ids, phone=target_phone, email=emails[0] if emails else "")
+    return result
 
 
 def append_crm_note_for_lead(lead_state, note_text):
@@ -1755,9 +1958,9 @@ def append_crm_note_for_lead(lead_state, note_text):
     return noted
 
 
-def add_respondido_tag_for_lead(lead_state):
+def add_deal_label_id_for_lead(lead_state, label_id):
     if is_test_whitelist_phone((lead_state or {}).get("phone")):
-        print(f"[CRM_BYPASS_TESTE] telefone={(lead_state or {}).get('phone')} acao=add_tag tag=RESPONDIDO")
+        print(f"[CRM_BYPASS_TESTE] telefone={(lead_state or {}).get('phone')} acao=add_label_id label={label_id}")
         return True
     tagged = False
     for deal in list(related_deals_from_state(lead_state) or []):
@@ -1765,7 +1968,49 @@ def add_respondido_tag_for_lead(lead_state):
         if deal_id <= 0:
             continue
         try:
-            ok = crm.add_tag("deal", deal_id, "RESPONDIDO")
+            current_deal = crm.get_deal_details(deal_id) or deal
+            current_labels = current_deal.get("label") or []
+            if isinstance(current_labels, str):
+                merged = [item.strip() for item in current_labels.split(",") if item.strip()]
+            elif isinstance(current_labels, list):
+                merged = list(current_labels)
+            else:
+                merged = [current_labels]
+            keys = set()
+            normalized = []
+            for item in merged:
+                if isinstance(item, dict):
+                    key = str(item.get("id") or item.get("label") or item.get("name") or item.get("value") or "").strip()
+                else:
+                    key = str(item or "").strip()
+                if not key or key in keys:
+                    continue
+                keys.add(key)
+                normalized.append(item)
+            if str(label_id) not in keys:
+                normalized.append(int(label_id))
+            ok = crm.update_deal(deal_id, {"label": normalized})
+        except Exception:
+            ok = False
+        tagged = tagged or bool(ok)
+    return tagged
+
+
+def add_respondido_tag_for_lead(lead_state):
+    return add_deal_label_id_for_lead(lead_state, 196)
+
+
+def add_wa_respondeu_tag_for_lead(lead_state):
+    if is_test_whitelist_phone((lead_state or {}).get("phone")):
+        print(f"[CRM_BYPASS_TESTE] telefone={(lead_state or {}).get('phone')} acao=add_tag tag=WA_RESPONDEU")
+        return True
+    tagged = False
+    for deal in list(related_deals_from_state(lead_state) or []):
+        deal_id = extract_entity_id((deal or {}).get("id"))
+        if deal_id <= 0:
+            continue
+        try:
+            ok = crm.add_tag("deal", deal_id, "WA_RESPONDEU")
         except Exception:
             ok = False
         tagged = tagged or bool(ok)
@@ -2079,22 +2324,15 @@ def handle_closing_intent(phone, message, closing_key, lead_state=None):
             crm.add_tag("deal", extract_entity_id(deal.get("id")), "NUMERO_ERRADO")
         move_related_deals_to_terminal_stage(lead_state, reason="numero_errado")
         append_crm_note_for_lead(lead_state, f"Contato incorreto. Texto recebido: {str(message or '').strip()}")
-    history = append_history(phone, "in", message, step=0)
+    update_whatsapp_conversation_state_for_lead(
+        lead_state,
+        phone,
+        message,
+        intent="wrong_contact" if closing_key in {"wrong_number", "unknown_person"} else "opt_out",
+    )
+    append_history(phone, "in", message, step=0)
     print(f"[RESPOSTA_GERADA] telefone={phone} texto={closing_message}")
-    if has_recent_history_entry(phone, "out", closing_message, within_seconds=7200):
-        print(f"[ENCERRAMENTO_DUPLICADO] {phone} motivo={closing_key}")
-        return True
-    if not can_emit_reply(phone, closing_message, within_seconds=REPLY_WINDOW_SECONDS):
-        print(f"[DUPLICIDADE_BLOQUEADA_TEXTO] {phone}")
-        return True
-    ok = whatsapp.send_message(phone, closing_message, bypass_manual_blocklist=True)
-    if ok:
-        append_history(phone, "out", closing_message, step=infer_step_from_history(history))
-        print(f"[RESPOSTA_ENVIADA] {phone}")
-        print(f"[ENCERRAMENTO_APLICADO] {phone} motivo={closing_key}")
-    else:
-        release_reply_guard(phone)
-        print(f"[FALHA_ENVIO] {phone}")
+    print(f"[CONVERSATION_STOPPED_NO_REPLY] telefone={phone} motivo={closing_key}")
     return True
 
 
@@ -2244,7 +2482,14 @@ def maybe_handle_inbound_agent_decision(*, phone, message, source, lead_state, l
 
     if intent in {"interesse", "duvida", "neutro", "agendamento"}:
         add_respondido_tag_for_lead(lead_state)
+        add_wa_respondeu_tag_for_lead(lead_state)
         add_conversa_tag_for_lead(lead_state)
+        update_whatsapp_conversation_state_for_lead(
+            lead_state,
+            phone,
+            message,
+            intent="interested" if intent in {"interesse", "agendamento"} else classify_conversation_intent(message),
+        )
     if decision.get("should_pause_automation"):
         clear_email_runtime_state_for_lead(lead_state, phone=phone)
     if intent == "agendamento" or action == "schedule":
@@ -2259,7 +2504,14 @@ def maybe_handle_inbound_agent_decision(*, phone, message, source, lead_state, l
         commit_processed_key(key)
         return {"ok": True, "confirmed": True, **decision}
 
-    reply = str(decision.get("reply") or "").strip() or pitch.build_reply(lead, inbound_messages, current_step=current_step)
+    if not is_auto_reply_router_enabled():
+        clear_email_runtime_state_for_lead(lead_state, phone=phone)
+        append_crm_note_for_lead(lead_state, f"Inbound WhatsApp recebido. Auto-resposta bloqueada ate existir roteador por origem/tag. Texto: {message}")
+        whatsapp.clear_after_hours_pending(phone)
+        commit_processed_key(key)
+        return {"ok": True, "confirmed": True, "auto_reply_blocked": True, **decision}
+
+    reply = str(decision.get("reply") or "").strip() or pitch.build_reply(lead, inbound_messages, current_step=current_step, allow_opening=False)
     print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
     if has_recent_history_entry(phone, "out", reply, within_seconds=1800):
         print(f"[DUPLICADO_HISTORY_OUTBOUND] {phone} ignorado")
@@ -2279,6 +2531,7 @@ def maybe_handle_inbound_agent_decision(*, phone, message, source, lead_state, l
         return {"ok": False, "confirmed": False, **decision}
 
     append_history(phone, "out", reply, step=current_step)
+    update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent=classify_conversation_intent(message), last_bot_reply=reply)
     whatsapp.clear_after_hours_pending(phone)
     print(f"[RESPOSTA_ENVIADA] {phone}")
     commit_processed_key(key)
@@ -2465,22 +2718,11 @@ def handle_referral_redirect(phone, message, lead_state):
     append_to_blocklist(phone, "indicacao")
     whatsapp.clear_after_hours_pending(phone)
     clear_email_runtime_state_for_lead(lead_state, phone=phone)
+    update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="referred")
 
     reply = "Perfeito, obrigado pela indicação. Vou seguir por esse contato e não te incomodo mais por aqui."
     print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
-    if not has_recent_history_entry(phone, "out", reply, within_seconds=1800):
-        if not can_emit_reply(phone, reply, within_seconds=REPLY_WINDOW_SECONDS):
-            print(f"[DUPLICIDADE_BLOQUEADA_TEXTO] {phone}")
-        else:
-            ok = whatsapp.send_message(phone, reply)
-            if ok:
-                append_history(phone, "out", reply, step=infer_step_from_history(history))
-                print(f"[RESPOSTA_ENVIADA] {phone}")
-            else:
-                release_reply_guard(phone)
-                print(f"[FALHA_ENVIO] {phone}")
-                return False
-
+    print(f"[CONVERSATION_STOPPED_NO_REPLY] telefone={phone} motivo=indicacao")
     current_person = dict((lead_state or {}).get("person") or {})
     current_person_id = extract_entity_id(current_person.get("id"))
     current_org_id = extract_entity_id(current_person.get("org_id"))
@@ -3069,14 +3311,18 @@ def inbox():
             print(f"[INTENT_NEGATIVO_HARD_RULE] telefone={phone}")
             try:
                 add_respondido_tag_for_lead(lead_state)
+                add_wa_respondeu_tag_for_lead(lead_state)
                 update_crm_status_for_lead(lead_state, "lead_sem_interesse")
                 clear_email_runtime_state_for_lead(lead_state, phone=phone)
                 move_related_deals_to_terminal_stage(lead_state, reason="sem_interesse_hard_rule")
                 append_crm_note_for_lead(lead_state, f"Lead informou nao ter interesse. Texto: {message}")
+                update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="opt_out")
             except Exception:
                 pass
             reply = "Perfeito, obrigada por avisar. Vou encerrar por aqui para não incomodar."
             print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
+            commit_processed_key(key)
+            return jsonify({"ok": True, "status": "sem_interesse_hard_rule", "confirmed": True, "auto_reply_blocked": True})
             ok = whatsapp.send_message(phone, reply, bypass_manual_blocklist=True)
             if ok:
                 append_history(phone, "out", reply, step=0)
@@ -3092,6 +3338,21 @@ def inbox():
             except Exception as e:
                 print(f"[ERRO_CRM_FIND] {e}")
                 print("[FLUXO_SEM_CRM]")
+            if lead_state and has_stopped_whatsapp_conversation(lead_state, phone):
+                append_crm_note_for_lead(lead_state, f"Inbound WhatsApp fora do horario em conversa ja encerrada. Sem resposta automatica. Texto: {message}")
+                commit_processed_key(key)
+                return jsonify({"ok": True, "confirmed": True, "conversation_stopped": True, "reason": "after_hours"})
+            if lead_state:
+                update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="replied")
+            if not is_auto_reply_router_enabled():
+                if lead_state:
+                    add_respondido_tag_for_lead(lead_state)
+                    add_wa_respondeu_tag_for_lead(lead_state)
+                    clear_email_runtime_state_for_lead(lead_state, phone=phone)
+                    append_crm_note_for_lead(lead_state, f"Inbound WhatsApp fora do horario. Auto-resposta bloqueada ate existir roteador por origem/tag. Texto: {message}")
+                    update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="replied")
+                commit_processed_key(key)
+                return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "after_hours_no_router"})
             payload = handle_fora_do_horario(
                 phone,
                 message,
@@ -3131,6 +3392,9 @@ def inbox():
         is_bot_menu, bot_reason = should_ignore_bot_menu(message)
         if is_bot_menu:
             print(f"[BOT_MENU_DETECTADO] {phone} motivo={bot_reason}")
+            if not is_auto_reply_router_enabled():
+                commit_processed_key(key)
+                return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "bot_menu_no_router"})
             if handle_bot_menu_navigation(phone, message):
                 commit_processed_key(key)
                 return jsonify({"ok": True, "confirmed": True})
@@ -3147,6 +3411,9 @@ def inbox():
             is_bot = True
         if is_bot:
             print(f"[BOT_MENU_DETECTADO] {phone} motivo=rule_fallback")
+            if not is_auto_reply_router_enabled():
+                commit_processed_key(key)
+                return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "bot_menu_no_router"})
             if handle_bot_menu_navigation(phone, message):
                 commit_processed_key(key)
                 return jsonify({"ok": True, "confirmed": True})
@@ -3200,6 +3467,22 @@ def inbox():
 
         lead = build_lead_payload_from_state(phone, lead_state)
         clear_email_runtime_state_for_lead(lead_state, phone=phone)
+        if has_stopped_whatsapp_conversation(lead_state, phone):
+            append_crm_note_for_lead(lead_state, f"Inbound WhatsApp recebido em conversa ja encerrada. Sem resposta automatica. Texto: {message}")
+            whatsapp.clear_after_hours_pending(phone)
+            commit_processed_key(key)
+            return jsonify({"ok": True, "confirmed": True, "conversation_stopped": True})
+        update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="replied")
+        lead = enrich_lead_with_whatsapp_state(lead, lead_state, phone)
+
+        if not is_auto_reply_router_enabled():
+            add_respondido_tag_for_lead(lead_state)
+            add_wa_respondeu_tag_for_lead(lead_state)
+            append_crm_note_for_lead(lead_state, f"Inbound WhatsApp recebido. Auto-resposta bloqueada ate existir roteador por origem/tag. Texto: {message}")
+            whatsapp.clear_after_hours_pending(phone)
+            history = append_history(phone, "in", message, step=0)
+            commit_processed_key(key)
+            return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "history_items": len(history)})
 
         if is_opt_out(message):
             print(f"[INTENT_NEGATIVO] telefone={phone}")
@@ -3211,19 +3494,10 @@ def inbox():
             move_related_deals_to_terminal_stage(lead_state, reason="opt_out")
             append_crm_note_for_lead(lead_state, f"Lead informou nao ter interesse. Texto: {message}")
             history = append_history(phone, "in", message, step=0)
-            if not has_recent_history_entry(phone, "out", closing_reply, within_seconds=1800):
-                if can_emit_reply(phone, closing_reply, within_seconds=REPLY_WINDOW_SECONDS):
-                    ok = whatsapp.send_message(phone, closing_reply, bypass_manual_blocklist=True)
-                    if ok:
-                        append_history(phone, "out", closing_reply, step=infer_step_from_history(history))
-                        print(f"[RESPOSTA_ENVIADA] {phone}")
-                    else:
-                        release_reply_guard(phone)
-                        print(f"[FALHA_ENVIO] {phone}")
-                else:
-                    print(f"[DUPLICIDADE_BLOQUEADA_TEXTO] {phone}")
+            update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="opt_out")
+            print(f"[CONVERSATION_STOPPED_NO_REPLY] telefone={phone} motivo=opt_out")
             commit_processed_key(key)
-            return jsonify({"ok": True})
+            return jsonify({"ok": True, "conversation_stopped": True, "history_items": len(history)})
 
         closing_key = detect_closing_intent(message)
         if closing_key:
@@ -3235,28 +3509,17 @@ def inbox():
             if handle_referral_redirect(phone, message, lead_state):
                 commit_processed_key(key)
                 return jsonify({"ok": True})
-            referral_reply = pitch.get_closing_message("referral") or "Perfeito, obrigada. Pode me passar o melhor contato da pessoa responsavel?"
             history = append_history(phone, "in", message, step=0)
-            if not has_recent_history_entry(phone, "out", referral_reply, within_seconds=1800):
-                if not can_emit_reply(phone, referral_reply, within_seconds=REPLY_WINDOW_SECONDS):
-                    print(f"[DUPLICIDADE_BLOQUEADA_TEXTO] {phone}")
-                    commit_processed_key(key)
-                    return jsonify({"ok": True})
-                ok = whatsapp.send_message(phone, referral_reply)
-                if ok:
-                    append_history(phone, "out", referral_reply, step=infer_step_from_history(history))
-                    print(f"[RESPOSTA_ENVIADA] {phone}")
-                else:
-                    release_reply_guard(phone)
-                    print(f"[FALHA_ENVIO] {phone}")
-                    return jsonify({"ok": False, "confirmed": False})
+            update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="referred")
+            print(f"[CONVERSATION_STOPPED_NO_REPLY] telefone={phone} motivo=indicacao_sem_contato")
             commit_processed_key(key)
-            return jsonify({"ok": True})
+            return jsonify({"ok": True, "conversation_stopped": True, "history_items": len(history)})
 
         if not is_agent_decide_enabled():
             if detect_positive_intent(message):
                 print(f"[INTENT_POSITIVO] telefone={phone}")
                 add_respondido_tag_for_lead(lead_state)
+                update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="interested")
                 if detect_scheduling_intent(message):
                     move_related_deals_to_scheduled(lead_state)
                     create_scheduling_activity_for_lead(lead_state, f"Inbound WhatsApp com pedido de agendamento: {message}")
@@ -3264,9 +3527,11 @@ def inbox():
             elif detect_neutral_intent(message):
                 print(f"[INTENT_NEUTRO] telefone={phone}")
                 add_respondido_tag_for_lead(lead_state)
+                update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent=classify_conversation_intent(message))
             elif detect_scheduling_intent(message):
                 print(f"[INTENT_AGENDAMENTO] telefone={phone}")
                 add_respondido_tag_for_lead(lead_state)
+                update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="interested")
                 move_related_deals_to_scheduled(lead_state)
                 create_scheduling_activity_for_lead(lead_state, f"Inbound WhatsApp com pedido de agendamento: {message}")
                 append_crm_note_for_lead(lead_state, f"Inbound WhatsApp com pedido de agendamento. Texto: {message}")
@@ -3275,6 +3540,7 @@ def inbox():
             history = get_history_items(phone)
         else:
             history = append_history(phone, "in", message, step=0)
+        lead = enrich_lead_with_whatsapp_state(lead, lead_state, phone)
         current_step = max(infer_step_from_history(history), infer_step_from_deals(deals))
         inbound_messages = [
             item.get("message", "")
@@ -3316,6 +3582,7 @@ def inbox():
                 lead,
                 inbound_messages,
                 current_step=current_step,
+                allow_opening=False,
             )
         print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
 
@@ -3334,6 +3601,7 @@ def inbox():
         ok = whatsapp.send_message(phone, reply)
         if ok:
             append_history(phone, "out", reply, step=current_step)
+            update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent=classify_conversation_intent(message), last_bot_reply=reply)
             whatsapp.clear_after_hours_pending(phone)
             print(f"[RESPOSTA_ENVIADA] {phone}")
             if lead_state.get("bypass") or not person or int(person.get("id") or -1) <= 0:

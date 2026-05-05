@@ -11,34 +11,45 @@ WA_CAD1_ENVIADO = 223
 SENT_FILE = Path("/root/sdr-vps/data/wa_webhook_sent.json")
 SENT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-MSG = "Oi, tudo bem? Vi que você interagiu com nosso conteúdo e queria falar contigo rapidamente."
+MSG = "Oi, tudo bem? Vi que voce interagiu com nosso conteudo e queria falar contigo rapidamente."
+
 
 def load_sent():
-    try: return json.loads(SENT_FILE.read_text())
-    except Exception: return {}
+    try:
+        return json.loads(SENT_FILE.read_text())
+    except Exception:
+        return {}
+
 
 def save_sent(d):
     SENT_FILE.write_text(json.dumps(d, ensure_ascii=False, indent=2))
 
+
 def clean_phone(p):
     n = re.sub(r"\D+", "", str(p or ""))
-    if len(n) in (10,11): n = "55" + n
+    if len(n) in (10, 11):
+        n = "55" + n
     return n
+
 
 def pd_get(path):
     return requests.get(f"https://api.pipedrive.com/v1/{path}?api_token={PD_TOKEN}", timeout=20).json().get("data") or {}
 
+
 def pd_put(path, payload):
     return requests.put(f"https://api.pipedrive.com/v1/{path}?api_token={PD_TOKEN}", json=payload, timeout=20)
 
+
 def add_note(deal_id, text):
     requests.post(f"https://api.pipedrive.com/v1/notes?api_token={PD_TOKEN}", json={"deal_id": deal_id, "content": text}, timeout=20)
+
 
 @router.post("/webhooks/pipedrive")
 async def pipedrive_webhook(req: Request):
     body = await req.json()
     deal_id = (body.get("current") or {}).get("id")
-    if not deal_id: return {"ok": True, "skip": "no_deal"}
+    if not deal_id:
+        return {"ok": True, "skip": "no_deal"}
 
     deal = pd_get(f"deals/{deal_id}")
     if str(deal.get(FIELD_KEY)) != str(WA_CAD1_ENVIAR):
@@ -52,15 +63,8 @@ async def pipedrive_webhook(req: Request):
     person = pd_get(f"persons/{person_id}") if person_id else {}
     phones = person.get("phone") or []
     phone = clean_phone(phones[0].get("value") if phones else "")
-    if not phone: return {"ok": True, "skip": "no_phone"}
+    if not phone:
+        return {"ok": True, "skip": "no_phone"}
 
-    r = requests.post("http://127.0.0.1:3000/send", json={"number": phone, "text": MSG}, timeout=40)
-    if r.status_code >= 300:
-        add_note(deal_id, f"[WA ERRO] CAD1 não enviado. HTTP={r.status_code}")
-        return {"ok": False, "error": r.text[:200]}
-
-    sent[str(deal_id)] = {"phone": phone}
-    save_sent(sent)
-    pd_put(f"deals/{deal_id}", {FIELD_KEY: WA_CAD1_ENVIADO})
-    add_note(deal_id, f"[WhatsApp enviado | CAD1]\n{MSG}\nTelefone: {phone}")
-    return {"ok": True, "sent": True, "deal_id": deal_id}
+    add_note(deal_id, f"[WA BLOQUEADO | CAD1]\nEnvio automatico direto bloqueado pelo patch de contencao.\nTelefone: {phone}")
+    return {"ok": True, "sent": False, "deal_id": deal_id, "skip": "auto_blocked"}

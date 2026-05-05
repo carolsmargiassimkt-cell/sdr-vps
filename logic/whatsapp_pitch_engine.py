@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import random
 import re
 import unicodedata
@@ -255,38 +256,51 @@ class WhatsAppPitchEngine:
     ]
     FLUID_REPLY_RULES = (
         (
-            ("oi", "olá", "ola", "bom dia", "boa tarde", "boa noite"),
+            ("explicacao", "me explica", "como funciona", "entender", "o que vocês fazem", "o que é"),
             [
-                "{Oi|Olá}! Tudo bem por aí?\n\nSou a Carol, da Mand. Queria te explicar rapidinho como a gente usa campanhas gamificadas (tipo roleta ou raspadinha) para gerar venda e captar dados reais.\n\nFaz sentido eu te resumir em 1 minuto?",
-                "{Oi|Olá}! Tudo certo?\n\nAqui é a Carol, da Mand. Posso te explicar como transformamos campanhas em experiências interativas que vendem de verdade?\n\nSe fizer sentido, eu já te mostro o próximo passo.",
+                "Claro! A Mand ajuda empresas a transformarem campanhas tradicionais em experiências gamificadas (tipo roletas, raspadinhas ou jornadas interativas).\n\nO objetivo é captar dados reais dos clientes e converter o engajamento em venda direta, tudo acompanhado em tempo real.\n\nFaz sentido eu te dar um exemplo de como funcionaria para o seu segmento?",
+                "Vou resumir: a gente cria a mecânica interativa (ex: roleta de prêmios), cuida da segurança jurídica e da captação de dados. No final, você tem uma base de clientes qualificada e aumento imediato nas vendas.\n\nHoje vocês já fazem alguma ação nesse estilo ou seria a primeira vez?",
             ],
         ),
         (
-            ("quero entender", "como funciona", "me explica", "entender melhor", "como seria", "não entendi", "nao entendi"),
-            [
-                "Claro.\n\nA gente transforma campanhas tradicionais em experiências gamificadas, como roletas ou jornadas interativas. Isso gera muito mais engajamento e dados reais dos clientes.\n\nHoje vocês já fazem algo nessa linha ou seria a primeira vez?",
-                "Vou resumir: a Mand cria a mecânica (raspadinhas, roletas, etc), coleta os dados e acompanha a conversão em venda. Com a Copa chegando, é uma ação bem forte.\n\nVocês já têm alguma ação parecida planejada?",
-            ],
+            ("exemplo", "ideia", "mecânica", "promoção", "promocao", "campanha", "ação"),
+            {
+                "supermercado": [
+                    "Para supermercado, o que mais gera resultado é o QR Code no PDV/Loja. ||| O cliente escaneia o cupom fiscal, participa de uma roleta ou raspadinha digital na hora e ganha um benefício ou prêmio.\n\nIsso gera recorrência e você passa a ter o contato de quem realmente compra de você. Faz sentido?",
+                ],
+                "shopping": [
+                    "Em shopping, costumamos usar totens nos corredores ou ativação direta nas lojas. ||| O fluxo de pessoas vira uma base de dados própria do shopping, permitindo ativações futuras e mensuração real de conversão por lojista.\n\nQuer ver como foi um caso real desse?",
+                ],
+                "indústria": [
+                    "Para indústria ou marcas, o foco costuma ser sell-out e ativação no PDV. ||| O consumidor compra o produto, escaneia a embalagem ou QR no material de destaque e participa da ação.\n\nAssim, a marca ganha dados reais de quem está consumindo lá na ponta, por região ou canal. Já pensaram em algo assim?",
+                ],
+                "farmácia": [
+                    "Em farmácias, usamos muito a categoria sazonal ou benefício digital. ||| O cliente ativa um benefício na hora da compra e entra para um programa de recorrência interativo.\n\nIsso ajuda muito na fidelização e no aumento do ticket médio. O que acha?",
+                ],
+                "default": [
+                    "A ideia é transformar a campanha em algo interativo. Por exemplo, uma roleta de prêmios onde o cliente só participa após deixar um contato ou responder uma pergunta chave.\n\nIsso gera engajamento e dados reais pra vocês. Quer que eu pense em algo específico para a __EMPRESA__?",
+                ],
+            },
         ),
         (
-            ("sim", "tem interesse", "interesse", "faz sentido", "legal", "curti", "gostei"),
+            ("primeira_campanha", "nunca fizemos", "primeira vez", "qual primeiro passo", "o que sugere", "começar"),
             [
-                "Legal. A ideia é transformar campanhas promocionais em experiências simples, tipo roleta ou raspadinha, que ajudam a gerar engajamento, venda e ainda capturam dados reais durante a jornada.\n\nFaz sentido eu te mostrar em 10 minutos como funcionaria para vocês?",
-                "Perfeito. Com a Copa chegando, essas ações gamificadas ajudam a identificar quem participou e transformar o movimento em venda real.\n\nTopa um papo de 10 minutos para eu te mostrar alguns exemplos?",
+                "Legal! Se é a primeira vez, eu sugiro começar com uma mecânica simples, como uma 'Roleta de Boas-vindas' ou uma 'Raspadinha Digital' vinculada a um benefício imediato.\n\nÉ o jeito mais rápido de testar a aderência e já começar a formar sua base de dados sem complexidade. Posso te mandar como seria essa estrutura?",
+                "Para começar, o melhor é uma ação direta no contato que você já tem (redes sociais ou balcão). Uma jornada interativa curta que entrega valor rápido pro cliente e capta o lead pra você.\n\nQuer que eu te mostre o passo a passo de uma mecânica básica?",
             ],
         ),
         (
             ("preço", "preco", "valor", "quanto custa", "investimento"),
             [
-                "O investimento depende da mecânica (roleta, raspadinha, etc) e do volume. Para te passar algo coerente, preciso entender qual o objetivo principal hoje.\n\nA prioridade de vocês seria gerar novos leads ou vender para a base atual?",
-                "Varia conforme a complexidade da jornada interativa. Se você quiser, eu te mostro os modelos mais comuns e já te dou uma estimativa de valores.\n\nQual horário fica melhor para a gente falar rapidinho?",
+                "O investimento varia conforme a mecânica e o volume de acessos que você espera. ||| Para te passar algo justo, eu precisaria entender se o foco hoje seria uma ação pontual ou algo recorrente.\n\nQual desses caminhos faz mais sentido agora?",
+                "Varia de acordo com a complexidade da jornada (roleta, raspadinha, etc). Se você quiser, eu te apresento os modelos padrão e os valores de cada um.\n\nQual o objetivo principal de vocês hoje: captar novos leads ou vender para a base atual?",
             ],
         ),
         (
-            ("reunião", "reuniao", "call", "agenda", "horário", "horario"),
+            ("reunião", "reuniao", "call", "agenda", "horário", "horario", "demo", "apresentação", "apresentacao"),
             [
-                "Perfeito. Consigo te mostrar como as experiências gamificadas funcionam na prática em 10 minutos.\n\nQual horário fica melhor para você?",
-                "Ótimo. Vou te mostrar como marcas estão usando isso para capturar dados e vender mais na Copa.\n\nQual horário te ajuda mais?",
+                "Perfeito! Consigo te mostrar em 10 minutos como as experiências funcionam na prática e os resultados que elas geram.\n\nQual horário fica melhor para você?",
+                "Ótimo. Vou preparar alguns exemplos reais do seu segmento para te mostrar. Qual horário te ajuda mais essa semana?",
             ],
         ),
     )
@@ -831,6 +845,18 @@ class WhatsAppPitchEngine:
             return True
         return False
 
+    def _get_segment_from_lead(self, lead: Dict[str, Any]) -> str:
+        text = str(lead.get("segmento") or lead.get("empresa") or "").lower()
+        if any(k in text for k in ("supermercado", "mercado", "varejo", "atacado", "hortifruti")):
+            return "supermercado"
+        if "shopping" in text:
+            return "shopping"
+        if any(k in text for k in ("industria", "indústria", "marca", "bebida", "alimento", "fábrica", "fabrica")):
+            return "industria"
+        if any(k in text for k in ("farmacia", "farmácia", "drogaria")):
+            return "farmacia"
+        return "default"
+
     def _rule_based_fluid_reply(self, lead: Dict[str, Any], inbound_messages: List[str]) -> str:
         if not inbound_messages:
             return ""
@@ -839,16 +865,33 @@ class WhatsAppPitchEngine:
             return str(self.get_closing_message("no_interest") or "").strip()
         if self.detect_nonlead_intent(raw_latest):
             return ""
-        latest = self._normalize_message(inbound_messages[-1])
+
+        latest = self._normalize_message(raw_latest)
         if not latest:
             return ""
 
-        for keywords, templates in self.FLUID_REPLY_RULES:
-            if any(keyword in latest for keyword in keywords):
-                chosen = random.choice(templates)
+        segment = self._get_segment_from_lead(lead)
+
+        for intent_keys, content in self.FLUID_REPLY_RULES:
+            if any(keyword in latest for keyword in intent_keys):
+                if isinstance(content, dict):
+                    # Segment specific examples
+                    options = content.get(segment) or content.get("default")
+                else:
+                    options = content
+
+                chosen = random.choice(options)
                 rendered = self._render_placeholders(chosen, lead=lead)
                 rendered = self._render_spintax(rendered)
                 return self._clean_block(rendered)
+
+        # Default fallback for "sim", "oi", etc. if not caught above
+        if any(k in latest for k in ("oi", "ola", "bom dia", "boa tarde")):
+             return self._render_placeholders("{Oi|Olá}! Vi sua mensagem por aqui.\n\nPosso te mandar um exemplo rápido de como essa campanha funcionaria para um __SEGMENTO__?", lead=lead)
+
+        if any(k in latest for k in ("sim", "claro", "pode ser", "beleza", "legal")):
+             return self._render_placeholders("Legal! A ideia é transformar suas campanhas em experiências interativas, tipo roleta ou raspadinha digital.\n\nIsso gera muito mais engajamento e você fica com os dados de quem participou.\n\nQuer ver como funcionaria para um __SEGMENTO__?", lead=lead)
+
         return ""
 
     def _soften_scripted_reply(self, text: str) -> str:
@@ -858,6 +901,44 @@ class WhatsAppPitchEngine:
         softened = softened.replace("Foi exatamente por isso que criamos aqui na Mand as campanhas gamificadas.", "Foi por isso que a Mand estruturou esse modelo de campanha.")
         softened = re.sub(r"\n{3,}", "\n\n", softened)
         return softened.strip()
+
+    @staticmethod
+    def _has_inbound_context(lead: Dict[str, Any] | None, inbound_messages: List[str] | None) -> bool:
+        if any(str(item or "").strip() for item in list(inbound_messages or [])):
+            return True
+        payload = dict(lead or {})
+        context_keys = (
+            "wa1_sent",
+            "whatsapp_wa1_sent",
+            "last_bot_reply",
+            "last_lead_reply",
+            "last_question",
+            "conversation_started",
+            "has_whatsapp_history",
+        )
+        return any(bool(payload.get(key)) for key in context_keys)
+
+    def _continuation_reply(self, lead: Dict[str, Any], inbound_messages: List[str]) -> str:
+        latest = self._normalize_message(str((inbound_messages or [""])[-1] or ""))
+        if any(k in latest for k in ("case", "exemplo", "modelo", "como funciona", "manda", "envia")):
+            return self._render_placeholders(
+                "Claro. Um exemplo simples: uma campanha com roleta ou raspadinha digital em que a pessoa participa, deixa os dados e recebe uma oferta.\n\nIsso ajuda a gerar engajamento e lista comercial qualificada. Quer que eu te mande um modelo para __SEGMENTO__?",
+                lead=lead,
+            )
+        if any(k in latest for k in ("sim", "claro", "pode", "beleza", "legal", "interesse", "quero")):
+            return self._render_placeholders(
+                "Legal. O caminho mais simples e te mostrar um exemplo aplicado ao seu contexto e ver se faz sentido.\n\nPrefere que eu te mande um material curto ou marcamos uma conversa rapida?",
+                lead=lead,
+            )
+        if any(k in latest for k in ("oi", "ola", "bom dia", "boa tarde", "boa noite")):
+            return self._render_placeholders(
+                "Oi! Vi sua mensagem por aqui.\n\nPosso te mandar um exemplo rapido de como essa campanha funcionaria para um __SEGMENTO__?",
+                lead=lead,
+            )
+        return self._render_placeholders(
+            "Entendi. Para te responder melhor, posso seguir por dois caminhos: te mando um exemplo curto ou marcamos uma conversa rapida para ver se faz sentido no seu contexto.\n\nQual prefere?",
+            lead=lead,
+        )
 
     def _gemini_api_keys(self) -> List[str]:
         keys: List[str] = []
@@ -1013,7 +1094,11 @@ class WhatsAppPitchEngine:
                 "intent": detected_intent,
             }
 
-        reply = self.build_reply(lead, inbound_messages, current_step=current_step)
+        lead_with_state = dict(lead or {})
+        lead_with_state.setdefault("conversation_state", state)
+        lead_with_state.setdefault("conversation_origin", state.get("origin") or lead_with_state.get("conversation_origin") or "")
+        lead_with_state.setdefault("wa1_sent", bool(state.get("wa1_sent")))
+        reply = self.build_reply(lead_with_state, inbound_messages, current_step=current_step)
         question_id = self.infer_question_id(reply)
         novo_estado = etapa_atual
         if question_id == "horario":
@@ -1039,11 +1124,17 @@ class WhatsAppPitchEngine:
             "intent": detected_intent,
         }
 
-    def build_reply(self, lead: Dict[str, Any], inbound_messages: List[str], *, current_step: int = 1) -> str:
+    def build_reply(self, lead: Dict[str, Any], inbound_messages: List[str], *, current_step: int = 1, allow_opening: bool = False) -> str:
         step = max(1, min(10, int(current_step or 1)))
+        state = (lead or {}).get("conversation_state") if isinstance((lead or {}).get("conversation_state"), dict) else {}
+        if any(bool(state.get(key)) for key in ("stopped", "opt_out", "wrong_contact", "referred")):
+            return ""
         fluid_reply = self._rule_based_fluid_reply(lead, inbound_messages)
         if fluid_reply:
             return fluid_reply
+        has_context = self._has_inbound_context(lead, inbound_messages)
+        if has_context and not allow_opening:
+            return self._continuation_reply(lead, inbound_messages)
         reply = self.next_reply_from_stage(step, lead=lead)
         reply = self._soften_scripted_reply(reply)
         if self._should_use_ai_fallback(inbound_messages, reply):
@@ -1060,17 +1151,36 @@ class WhatsAppPitchEngine:
             return ""
         nome = str((lead or {}).get("nome") or (lead or {}).get("name") or "Cliente").strip() or "Cliente"
         empresa = self._resolve_short_company_name(lead)
+        origin = str((lead or {}).get("conversation_origin") or "").strip().lower() or "warm_email"
+        state = (lead or {}).get("conversation_state") if isinstance((lead or {}).get("conversation_state"), dict) else {}
+        state_summary = {
+            "origin": origin,
+            "wa1_sent": bool(state.get("wa1_sent") or (lead or {}).get("wa1_sent")),
+            "replied": bool(state.get("replied")),
+            "asked_case": bool(state.get("asked_case")),
+            "interested": bool(state.get("interested")),
+            "opt_out": bool(state.get("opt_out")),
+            "wrong_contact": bool(state.get("wrong_contact")),
+            "referred": bool(state.get("referred")),
+            "stopped": bool(state.get("stopped")),
+            "last_intent": str(state.get("last_intent") or ""),
+        }
         historico = "\n".join(f"- {str(item or '').strip()}" for item in inbound_messages[-5:] if str(item or "").strip())
         prompt = (
             "Voce e a Carol, SDR da Mand Digital. Responda em portugues do Brasil, de forma curta, natural e objetiva. "
             "Use o pitch da Copa do Mundo apenas quando ajudar a conversa comercial.\n"
             "Regras:\n"
+            "- Responda apenas dentro da origem e do estado informados abaixo.\n"
+            "- Se wa1_sent ou replied forem true, nunca mande abertura, nunca se apresente de novo e nunca confirme se fala com a pessoa certa.\n"
+            "- Se stopped, opt_out, wrong_contact ou referred forem true, nao gere resposta comercial.\n"
             "- Nao invente desconto, prazo ou funcionalidade.\n"
             "- Nao repita a mensagem anterior do bot.\n"
             "- Priorize conduzir para call/agendamento quando houver interesse.\n"
             "- Se a mensagem indicar desinteresse, nao escreva follow-up comercial.\n\n"
             f"Lead: {nome}\n"
             f"Empresa: {empresa}\n"
+            f"Origem: {origin}\n"
+            f"Estado: {json.dumps(state_summary, ensure_ascii=False)}\n"
             f"Historico recente:\n{historico}\n\n"
             "Responda apenas com a mensagem que a Carol deve enviar agora."
         )
