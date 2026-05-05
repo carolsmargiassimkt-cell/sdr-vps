@@ -1,6 +1,25 @@
 import os,json,time,requests,smtplib,ssl
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# --- CONFIGURAÇÃO ---
+BASE_DIR = Path(__file__).resolve().parents[1]
+DATA = BASE_DIR / "data" / "email_cadence_queue.json"
+EVENTS = BASE_DIR / "data" / "email_cadence_events.json"
+DATA.parent.mkdir(parents=True, exist_ok=True)
+
+PD = os.getenv("PIPEDRIVE_API_TOKEN")
+FROM = os.getenv("SMTP_FROM_EMAIL", "")
+
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "465") or 465)
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASS = os.getenv("SMTP_PASS", "")
+
+STEPS = [0, 2, 4, 7, 10, 14]
+STOP_STATUSES = {"clicked_warm", "replied", "won", "opt_out", "wrong_contact", "done"}
+# --------------------
+
 def cta_html(x, step):
     deal_id = x.get("deal_id") or x.get("id")
 

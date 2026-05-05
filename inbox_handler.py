@@ -2971,6 +2971,23 @@ def inbox():
         phone = whatsapp.normalize_phone(str(phone_raw).split("@")[0])
         message = str(message_raw).strip()
         print(f"[INBOUND_RECEBIDO] {phone}: {message}")
+
+        import os
+        flag = os.path.join(os.path.dirname(__file__), "data", "auto_reply_disabled.flag")
+        if os.path.exists(flag):
+            print(f"[AUTO_REPLY_BLOCKED_GLOBAL] telefone={phone}")
+            return jsonify({"ok": True, "auto_reply": False})
+
+
+        try:
+            import os as _os
+            _flag = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "auto_reply_disabled.flag")
+            if _os.path.exists(_flag):
+                print(f"[AUTO_REPLY_HARD_BLOCK] telefone={phone} inbound_capturado_sem_resposta")
+                return jsonify({"ok": True, "auto_reply": False, "reason": "disabled"})
+        except Exception as e:
+            print(f"[AUTO_REPLY_FLAG_ERROR] {e}")
+
         if not _session_guard_allows_inbound(data):
             print(f"[INBOUND_OLD_SESSION_IGNORED] telefone={phone} texto={message}")
             return jsonify({"ok": True, "ignored": True, "reason": "old_session"})

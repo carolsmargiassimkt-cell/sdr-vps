@@ -1,0 +1,244 @@
+import os, re, json, time, requests
+from pathlib import Path
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+load_dotenv("/root/sdr-vps/.env")
+
+TOKEN=os.getenv("PIPEDRIVE_API_TOKEN")
+API="https://api.pipedrive.com/v1"
+
+PIPELINE_ID=7
+STAGE_PRONTO=63
+STAGE_TENTATIVA=52
+
+LABEL_LEAD_TRAFEGO="193"
+LABEL_WARM_WHATSAPP="226"
+LABEL_RESPONDIDO="196"
+
+STATE_FILE=Path("/root/sdr-vps/data/whatsapp_warm_cadence.json")
+LOG_PREFIX="[WA_WARM_CADENCE]"
+
+INTERVALS_DAYS={
+    1:0,
+    2:1,
+    3:2,
+    4:3,
+    5:5,
+    6:7,
+}
+
+MSG_TRAFEGO={
+1:"""Oi, tudo bem? Aqui é a Carol, da Mand Digital 😊
+
+Vi que você preencheu nosso formulário sobre promoção comercial/vale-brinde e quis te chamar por aqui pra entender melhor o que você está buscando.
+
+Posso te explicar rapidinho como funciona?""",
+
+2:"""Oi! Passando só pra ver se você conseguiu ver minha mensagem 😊
+
+A ideia é bem simples: transformar uma campanha promocional em uma experiência interativa, tipo roleta, raspadinha ou vale-brinde, pra gerar participação e capturar dados dos clientes.
+
+Faz sentido eu te mostrar um exemplo?""",
+
+3:"""Carol da Mand passando por aqui rapidinho 😊
+
+Esse tipo de ação costuma funcionar bem pra varejo, loja, mercado e serviços porque une promoção + cadastro + WhatsApp em uma experiência só.
+
+Vocês estão pensando em alguma campanha específica agora?""",
+
+4:"""Oi! Posso te mandar um exemplo de campanha simples?
+
+Algo como: cliente compra, participa pelo QR Code/WhatsApp, gira uma roleta ou recebe um vale-brinde, e a empresa captura os dados para futuras ações.""",
+
+5:"""Só pra eu não insistir errado 😊
+
+Hoje vocês têm interesse em estruturar uma campanha promocional interativa ou ainda não é prioridade?""",
+
+6:"""Tudo bem, vou encerrar por aqui pra não te incomodar 😊
+
+Se em algum momento quiser uma ideia de promoção comercial, vale-brinde, roleta ou raspadinha digital, é só me chamar."""
+}
+
+MSG_WARM={
+1:"""Oi, tudo bem? Aqui é a Carol, da Mand Digital 😊
+
+Vi que você interagiu com nosso material sobre campanhas promocionais e quis te chamar por aqui.
+
+Posso te explicar rapidinho como a Mand ajuda empresas a transformar promoções em experiências interativas?""",
+
+2:"""Oi! Passando só pra ver se você conseguiu ver minha mensagem 😊
+
+A ideia é usar campanhas como roleta, raspadinha, vale-brinde ou quiz pra gerar participação, venda e base de dados própria.
+
+Faz sentido pra vocês?""",
+
+3:"""Carol da Mand por aqui 😊
+
+Esse tipo de campanha costuma ajudar quando a empresa quer vender mais em datas fortes e ainda capturar dados dos clientes.
+
+Vocês têm alguma campanha prevista?""",
+
+4:"""Posso te mandar uma ideia simples de aplicação?
+
+Por exemplo: campanha de compra + participação pelo WhatsApp + premiação instantânea + captura de lead para próximas ações.""",
+
+5:"""Só pra eu entender: isso faz sentido para vocês agora ou é algo mais para olhar depois?""",
+
+6:"""Sem problema, vou encerrar por aqui pra não insistir 😊
+
+Se quiser retomar a ideia de campanha promocional interativa, fico à disposição."""
+}
+
+def now():
+    return datetime.now()
+
+def load_state():
+    if STATE_FILE.exists():
+        return json.loads(STATE_FILE.read_text())
+    return {}
+
+def save_state(state):
+    STATE_FILE.parent.mkdir(exist_ok=True)
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+
+def pd(method,path,json_body=None,params=None):
+    params=params or {}
+    params["api_token"]=TOKEN
+    r=requests.request(method, API+path, params=params, json=json_body, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+def phone_clean(v):
+    nums=re.sub(r"\D","",v or "")
+    if len(nums) in (10,11):
+        nums="55"+nums
+    return nums
+
+def labels_of(deal):
+    raw=deal.get("label")
+    if raw is None:
+        return set()
+    if isinstance(raw, list):
+        return {str(x) for x in raw}
+    return {x.strip() for x in str(raw).split(",") if x.strip()}
+
+def get_phone(deal):
+    person=deal.get("person_id") or {}
+    if isinstance(person,dict):
+        for p in person.get("phone") or []:
+            num=phone_clean(p.get("value"))
+            if num:
+                return num
+    return ""
+
+def get_open_deals():
+    out=[]
+    start=0
+    while True:
+        r=pd("GET","/deals",params={"status":"open","start":start,"limit":100})
+        data=r.get("data") or []
+        for d in data:
+            if int(d.get("pipeline_id") or 0)!=PIPELINE_ID:
+                continue
+            if int(d.get("stage_id") or 0) not in {STAGE_PRONTO, STAGE_TENTATIVA}:
+                continue
+            labs=labels_of(d)
+            if LABEL_RESPONDIDO in labs:
+                continue
+            if LABEL_LEAD_TRAFEGO in labs or LABEL_WARM_WHATSAPP in labs:
+                # segurança: só deals criados depois de 2026-05-05 por enquanto
+                if (d.get("add_time") or "")[:10] >= "2026-05-05":
+                    out.append(d)
+        pag=r.get("additional_data",{}).get("pagination",{})
+        if not pag.get("more_items_in_collection"):
+            break
+        start += 100
+    return out
+
+def due_for_step(record, next_step):
+    if next_step == 1:
+        return True
+    last=record.get("last_sent_at")
+    if not last:
+        return True
+    last_dt=datetime.strptime(last,"%Y-%m-%d %H:%M:%S")
+    return now() >= last_dt + timedelta(days=INTERVALS_DAYS.get(next_step, 99))
+
+def send_wa(phone,text):
+    r=requests.post("http://127.0.0.1:3000/send",json={"number":phone,"text":text},timeout=60)
+    print(LOG_PREFIX,"WA",phone,r.status_code,r.text[:160])
+    return r.ok and '"sent"' in r.text
+
+def main(apply=False, send=False, limit=10):
+    state=load_state()
+    deals=get_open_deals()
+    print(LOG_PREFIX,"DEALS_ALVO",len(deals))
+
+    sent_count=0
+
+    for d in deals:
+        deal_id=str(d["id"])
+        title=d.get("title") or ""
+        labs=labels_of(d)
+        phone=get_phone(d)
+
+        origin="trafego" if LABEL_LEAD_TRAFEGO in labs else "warm"
+        msgs=MSG_TRAFEGO if origin=="trafego" else MSG_WARM
+
+        rec=state.get(deal_id, {})
+        current_step=int(rec.get("step") or 0)
+        next_step=current_step+1
+
+        if next_step > 6:
+            print(LOG_PREFIX,"SKIP_FINALIZADO",deal_id,title)
+            continue
+
+        if not phone:
+            print(LOG_PREFIX,"SKIP_SEM_PHONE",deal_id,title)
+            continue
+
+        if not due_for_step(rec,next_step):
+            print(LOG_PREFIX,"SKIP_AGUARDANDO",deal_id,"step",next_step)
+            continue
+
+        print(LOG_PREFIX,"ALVO",deal_id,"origem",origin,"step",next_step,title,"phone",phone)
+
+        if not apply:
+            continue
+
+        if send:
+            ok=send_wa(phone,msgs[next_step])
+            if not ok:
+                print(LOG_PREFIX,"FALHA_ENVIO",deal_id,phone)
+                continue
+
+        state[deal_id]={
+            "origin":origin,
+            "phone":phone,
+            "step":next_step,
+            "last_sent_at":now().strftime("%Y-%m-%d %H:%M:%S"),
+            "title":title,
+        }
+
+        pd("POST","/notes",{
+            "deal_id":int(deal_id),
+            "content":f"[WA_CADENCE_{origin.upper()}_STEP_{next_step}] WhatsApp etapa {next_step}/6 {'enviada' if send else 'marcada'}."
+        })
+
+        if int(d.get("stage_id") or 0)==STAGE_PRONTO:
+            pd("PUT",f"/deals/{deal_id}",{"stage_id":STAGE_TENTATIVA})
+
+        save_state(state)
+        sent_count += 1
+        time.sleep(8)
+
+        if sent_count >= limit:
+            print(LOG_PREFIX,"LIMIT_ATINGIDO",limit)
+            break
+
+    save_state(state)
+
+if __name__=="__main__":
+    import sys
+    main(apply="--apply" in sys.argv, send="--send" in sys.argv)

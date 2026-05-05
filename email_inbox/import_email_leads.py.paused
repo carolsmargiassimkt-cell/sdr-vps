@@ -1,0 +1,113 @@
+import os, imaplib, email, re, requests
+from email.header import decode_header
+from dotenv import load_dotenv
+from pathlib import Path
+
+load_dotenv("/root/sdr-vps/.env")
+
+IMAP_HOST=os.getenv("LEADS_IMAP_HOST","mail.manddigital.com.br")
+IMAP_PORT=int(os.getenv("LEADS_IMAP_PORT",993))
+IMAP_USER=os.getenv("LEADS_IMAP_USER")
+IMAP_PASS=os.getenv("LEADS_IMAP_PASS")
+PIPEDRIVE_TOKEN=os.getenv("PIPEDRIVE_API_TOKEN")
+PIPELINE_ID=int(os.getenv("EMAIL_LEADS_PIPELINE_ID","7"))
+STAGE_ID=int(os.getenv("EMAIL_LEADS_STAGE_ID","62"))
+API="https://api.pipedrive.com/v1"
+PROCESSED=Path("/root/sdr-vps/data/email_inbox_processed.txt")
+
+def h(v):
+    if not v: return ""
+    out=""
+    for p,e in decode_header(v):
+        out += p.decode(e or "utf-8","ignore") if isinstance(p,bytes) else p
+    return out
+
+def body(msg):
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() in ["text/plain","text/html"]:
+                try: return part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8","ignore")
+                except: pass
+    return (msg.get_payload(decode=True) or b"").decode(msg.get_content_charset() or "utf-8","ignore")
+
+def extract(text, sender):
+    emails=[e for e in re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', text+" "+sender)
+            if not any(b in e.lower() for b in ["image",".jpg",".png","manddigital.com.br","leadster.com.br"])]
+    phones=re.findall(r'(?:\+?55)?\s?\(?\d{2}\)?\s?\d{4,5}[-\s]?\d{4}', text)
+    nome=re.search(r'(?:nome|name)[:\-]\s*(.+)', text, re.I)
+    empresa=re.search(r'(?:empresa|company|loja)[:\-]\s*(.+)', text, re.I)
+    return {
+        "name": nome.group(1).strip()[:80] if nome else (emails[0].split("@")[0] if emails else "Lead LP"),
+        "email": emails[0] if emails else "",
+        "phone": phones[0] if phones else "",
+        "empresa": empresa.group(1).strip()[:80] if empresa else ""
+    }
+
+def pd_get(path, params):
+    params["api_token"]=PIPEDRIVE_TOKEN
+    return requests.get(API+path, params=params, timeout=30).json()
+
+def pd_post(path, payload):
+    r=requests.post(API+path, params={"api_token":PIPEDRIVE_TOKEN}, json=payload, timeout=30)
+    r.raise_for_status()
+    return r.json()["data"]
+
+def person_exists(email_addr):
+    if not email_addr: return False
+    r=pd_get("/persons/search", {"term":email_addr,"fields":"email","exact_match":True})
+    return bool(r.get("data",{}).get("items"))
+
+def main():
+    processed=set(PROCESSED.read_text().splitlines()) if PROCESSED.exists() else set()
+    imap=imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+    imap.login(IMAP_USER, IMAP_PASS)
+    imap.select("INBOX")
+    _, data=imap.search(None, "ALL")
+    ids=data[0].split()[-200:]
+
+    for mid in ids:
+        mid_s=mid.decode()
+        if mid_s in processed: continue
+        _, raw=imap.fetch(mid, "(RFC822)")
+        msg=email.message_from_bytes(raw[0][1])
+        sender=h(msg.get("From"))
+        subject=h(msg.get("Subject"))
+        text=body(msg)
+        blob=f"{sender}\n{subject}\n{text}".lower()
+
+        ok_sender=("leads@leadster.com.br" in sender.lower()) or ("comercial@manddigital.com.br" in sender.lower())
+        ok_subject=("novo lead gerado" in subject.lower()) or ("formulário lp" in subject.lower()) or (subject.strip().lower()=="home")
+        ok_page="manddigital.com.br/promocao-comercial-vale-brinde" in blob
+
+        if not (ok_sender and (ok_subject or ok_page)):
+            processed.add(mid_s); continue
+
+        lead=extract(text, sender)
+        if not lead["email"] and not lead["phone"]:
+            processed.add(mid_s); continue
+
+        if lead["email"] and person_exists(lead["email"]):
+            print("SKIP_DUP_PIPEDRIVE", lead["email"])
+            processed.add(mid_s); continue
+
+        person=pd_post("/persons", {
+            "name": lead["name"],
+            "email": [{"value":lead["email"],"primary":True}] if lead["email"] else [],
+            "phone": [{"value":lead["phone"],"primary":True}] if lead["phone"] else []
+        })
+        deal=pd_post("/deals", {
+            "title": f"Lead LP - {lead['empresa'] or lead['name']}",
+            "person_id": person["id"],
+            "pipeline_id": PIPELINE_ID,
+            "stage_id": STAGE_ID
+        })
+        pd_post("/notes", {"content":f"Origem: Email Leadster/Formulário LP<br>Assunto: {subject}<br><br>{text[:2500]}", "deal_id":deal["id"], "person_id":person["id"]})
+        print("OK", lead["email"] or lead["phone"], deal["id"])
+        processed.add(mid_s)
+
+    PROCESSED.parent.mkdir(exist_ok=True)
+    PROCESSED.write_text("\n".join(sorted(processed, key=int)))
+    imap.logout()
+
+if __name__=="__main__":
+    main()

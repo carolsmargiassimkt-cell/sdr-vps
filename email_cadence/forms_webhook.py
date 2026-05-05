@@ -1,8 +1,49 @@
+
+import re
+
+def clean_crm_name(raw, email=""):
+    txt = re.sub(r"<br\s*/?>", "\n", str(raw or ""), flags=re.I)
+    txt = re.sub(r"<[^>]+>", "", txt).strip()
+
+    # Ex: Lead Email - Cedar Plaza
+    m = re.search(r"Lead Email\s*-\s*([^\n\r<]+)", txt, flags=re.I)
+    if m:
+        return m.group(1).strip()
+
+    # se vier texto gigante do form, tenta primeira linha útil
+    for line in txt.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.lower().startswith(("mensagem:", "data:", "horário:", "horario:", "url da página", "agente de usu")):
+            continue
+        return line[:80]
+
+    if email and "@" in email:
+        return email.split("@")[0].replace(".", " ").replace("_", " ").title()
+
+    return "Lead sem nome"
+
 from fastapi import APIRouter, Request, Header, HTTPException
-import os, requests, time
+import os
+import requests
+import time
+from dotenv import load_dotenv
+
+
+def clean_lead_name(name, email=""):
+    n = (name or "").strip()
+    if n.lower().startswith("lead email -"):
+        n = n.split("-", 1)[-1].strip()
+    bad = ("lead email", "lead form", "formulário", "formulario")
+    if not n or any(x in n.lower() for x in bad):
+        n = (email or "").split("@")[0].replace(".", " ").replace("_", " ").title()
+    return n or "Lead sem nome"
 
 router = APIRouter()
 
+load_dotenv("/root/sdr-vps/.env", override=True)
+load_dotenv("/root/sdr-vps/.env", override=True)
 TOKEN = os.getenv("WEBHOOK_AUTH_TOKEN")
 PD = os.getenv("PIPEDRIVE_TOKEN") or os.getenv("PIPEDRIVE_API_TOKEN")
 BASE = "https://api.pipedrive.com/v1"
@@ -20,12 +61,14 @@ def pd(method, path, **kwargs):
 
 @router.post("/webhooks/forms-lead")
 async def forms_lead(req: Request, authorization: str = Header(None)):
-    if not TOKEN or authorization != f"Bearer {TOKEN}":
+    token = (os.getenv("WEBHOOK_AUTH_TOKEN") or TOKEN or "").strip()
+    if not token or (authorization or "").strip() != f"Bearer {token}":
+        print("[FORMS_AUTH_FAIL]", "auth=", authorization, "token_loaded=", bool(token))
         raise HTTPException(status_code=401, detail="unauthorized")
 
     body = await req.json()
 
-    nome = (body.get("nome") or "Lead Forms").strip()
+    nome = clean_crm_name(body.get("nome") or body.get("name") or body.get("title") or body.get("mensagem") or body.get("message") or "Lead Forms", body.get("email"))
     email = (body.get("email") or "").strip()
     whatsapp = (body.get("whatsapp") or "").strip()
     segmento = body.get("segmento") or ""

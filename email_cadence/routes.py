@@ -20,8 +20,17 @@ async def start_email_cadence(req: Request):
 
     p = crm.get_person_details(pid) if pid else {}
 
-    emails = p.get("email") or []
-    email = next((e.get("value") for e in emails if e.get("value")), "")
+    email = (
+        body.get("email")
+        or body.get("person_email")
+        or body.get("to_email")
+        or body.get("mail")
+        or ""
+    )
+
+    if not email:
+        emails = p.get("email") or []
+        email = next((e.get("value") for e in emails if e.get("value")), "")
 
     if not email:
         return {"ok": True, "skip": "sem_email"}
