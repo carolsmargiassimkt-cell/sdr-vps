@@ -19,14 +19,24 @@ BAD_EMAIL_PARTS = (
 
 def email_is_bad(email):
     e = (email or "").strip().lower()
-    if not e or "@" not in e:
+    if not e or "@" not in e or "." not in e.split("@")[-1]:
         return True
-    if e.startswith(BAD_EMAIL_PREFIXES):
-        return True
-    if any(x in e for x in BAD_EMAIL_PARTS):
-        return True
-    return False
+    bad_exact = {"teste@teste.com", "test@test.com", "email@email.com"}
+    return e in bad_exact
 
+<<<<<<< HEAD
+=======
+def email_is_generic(email):
+    e = (email or "").strip().lower()
+    generic_prefixes = (
+        "sac@", "contato@", "comercial@", "atendimento@", "financeiro@",
+        "fiscal@", "contabilidade@", "legalizacao@", "legalização@",
+        "paralegal@", "tributario@", "tributário@", "nfe@", "nf@",
+        "admin@", "administrativo@", "rh@"
+    )
+    return e.startswith(generic_prefixes)
+
+>>>>>>> 5c858a8be7eb428553fe3b537420d1f403328f7b
 def get_nutricao_stage_id():
     r = requests.get(
         "https://api.pipedrive.com/v1/stages",
@@ -96,6 +106,7 @@ def run_batch():
             emails = person.get("email") or []
             email = next((e.get("value") for e in emails if e.get("value")), "")
         
+<<<<<<< HEAD
         if not email or email_is_bad(email):
             # print(f"[BATCH_SKIP_EMAIL] deal={deal_id} email={email}")
             continue
@@ -120,5 +131,38 @@ def run_batch():
 
     print(f"[BATCH_DONE] processados {count} novos deals")
 
+=======
+        if not email:
+            print(f"[BATCH_SKIP_SEM_EMAIL] deal={deal_id}")
+            continue
+
+        if email_is_bad(email):
+            print(f"[BATCH_SKIP_EMAIL_INVALIDO] deal={deal_id} email={email}")
+            continue
+
+        if email_is_generic(email):
+            print(f"[BATCH_EMAIL_GENERICO] deal={deal_id} email={email}")
+
+        res = start_cadence(deal_id)
+        if res.get("skip") == "already_queued":
+            print(f"[BATCH_SKIP_DUP] deal={deal_id} já está na fila")
+            # Mesmo se já estiver na fila, movemos para nutrição se ele ainda estiver na entrada
+            move_to_nutricao(deal_id)
+            continue
+
+        if res.get("ok") and res.get("queued"):
+            move_to_nutricao(deal_id)
+            print(f"[BATCH_ADD] deal={deal_id} adicionado à cadência e movido para Nutrição")
+            count += 1
+            time.sleep(1)
+        else:
+            print(f"[BATCH_FAIL] deal={deal_id} erro: {res.get('error') or res}")
+
+        if count >= LIMIT:
+            break
+
+    print(f"[BATCH_DONE] processados {count} novos deals")
+
+>>>>>>> 5c858a8be7eb428553fe3b537420d1f403328f7b
 if __name__ == "__main__":
     run_batch()

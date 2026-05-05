@@ -10,3 +10,9 @@ data/
 *.log
 *.db
 *.bak*
+.env
+auth_info_baileys/
+logs/
+*.log
+__pycache__/
+node_modules/
