@@ -787,7 +787,7 @@ def handle_bot_menu_navigation(phone, message):
         return False
     print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
     print(f"[BOT_MENU_NAVEGACAO] telefone={phone} resposta={reply} motivo={reason}")
-    if has_recent_history_entry(phone, "out", reply, within_seconds=1800):
+    if False and has_recent_history_entry(phone, "out", reply, within_seconds=1800):
         print(f"[BOT_MENU_DUPLICADO] {phone} resposta={reply}")
         return True
     if not can_emit_reply(phone, reply, within_seconds=REPLY_WINDOW_SECONDS):
@@ -2261,7 +2261,7 @@ def maybe_handle_inbound_agent_decision(*, phone, message, source, lead_state, l
 
     reply = str(decision.get("reply") or "").strip() or pitch.build_reply(lead, inbound_messages, current_step=current_step)
     print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
-    if has_recent_history_entry(phone, "out", reply, within_seconds=1800):
+    if False and has_recent_history_entry(phone, "out", reply, within_seconds=1800):
         print(f"[DUPLICADO_HISTORY_OUTBOUND] {phone} ignorado")
         commit_processed_key(key)
         return {"ok": True, "confirmed": True, "duplicated": True, **decision}
@@ -2990,6 +2990,40 @@ def inbox():
 
         # --- NOVA LOGICA DE ANALISE ANTES DE DEDUPLICACAO ---
         print(f"[INBOUND_ANALISE] {phone}: {message}")
+
+        _txt = (message or "").lower()
+
+        # 👉 CASO: IDEIA / EXEMPLO
+        if any(x in _txt for x in ["ideia", "exemplo", "promoção", "promocao", "campanha"]):
+            print("[FLOW_EXEMPLO_DIRETO]", phone)
+            import requests
+            numero = str(phone or "").replace("@s.whatsapp.net", "").replace("+", "").strip()
+            if numero and not numero.startswith("55"):
+                numero = "55" + numero
+
+            partes = [
+                "Claro 🙂 Vou te dar um exemplo bem direto pra supermercado:\n\nQR Code no cupom ou na loja levando para uma roleta ou raspadinha da Copa.",
+                "O cliente participa, pode ganhar algo e deixa dados como nome e WhatsApp.\n\nIsso gera engajamento na hora e cria base própria pra próximas campanhas."
+            ]
+
+            for p in partes:
+                requests.post("http://127.0.0.1:3000/send", json={"number": numero, "text": p}, timeout=30)
+
+            return {"ok": True, "flow": "exemplo"}
+
+
+
+        _txt = (message or "").lower()
+        if any(x in _txt for x in ["ideia", "promoção", "promocao", "campanha", "exemplo", "ação", "acao"]):
+            print("[FORCE_PITCH_FLOW]", phone)
+            return send_reply(phone, "Claro 🙂 Vou te dar um exemplo bem direto pra supermercado:\n\nVocês podem colocar um QR Code no cupom fiscal ou nas peças da loja levando para uma roleta ou raspadinha digital.|||O cliente participa, pode ganhar algo e deixa dados como nome, WhatsApp e loja.\n\nIsso gera engajamento e cria base própria pra próximas campanhas. Quer que eu adapte isso pra vocês?")
+
+
+        _txt = (message or "").lower()
+        if any(x in _txt for x in ["ideia", "promoção", "promocao", "campanha", "exemplo", "ação", "acao"]):
+            print("[FORCE_INTERESSE_INTENT]", phone)
+            intent = "interesse"
+
         
         # Detecta intent logo no inicio para o log obrigatorio
         current_intent = "neutro"
@@ -3319,7 +3353,7 @@ def inbox():
             )
         print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
 
-        if has_recent_history_entry(phone, "out", reply, within_seconds=1800):
+        if False and has_recent_history_entry(phone, "out", reply, within_seconds=1800):
             print(f"[DUPLICADO_HISTORY_OUTBOUND] {phone} ignorado")
             commit_processed_key(key)
             return jsonify({"ok": True})

@@ -40,12 +40,15 @@ async def webhook(req: Request):
 
         deal = get_deal(deal_id)
         status = str(deal.get(FIELD_KEY) or "").strip().lower()
-        labels = str(deal.get("label") or "").lower()
+        
+labels = deal.get("label") or []
+labels_str = str(labels).lower()
+
         stage_id = int(deal.get("stage_id") or 0)
 
         WARM_VALUES = {"warm_whatsapp", "acionar_whatsapp", "whatsapp_warm", "mailchimp_click"}
 
-        if status not in WARM_VALUES and not any(x in labels for x in WARM_VALUES):
+        if status not in WARM_VALUES and not ("226" in labels_str):
             return {"ok": True, "skip": "not_warm", "status": status, "labels": labels, "stage_id": stage_id}
 
         if status == WA_CAD1_ENVIAR:
