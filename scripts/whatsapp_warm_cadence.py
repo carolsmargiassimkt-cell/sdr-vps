@@ -17,6 +17,12 @@ LABEL_WARM_WHATSAPP="226"
 LABEL_RESPONDIDO="196"
 
 STATE_FILE=Path("/root/sdr-vps/data/whatsapp_warm_cadence.json")
+BLOCKLIST_FILES=[
+    Path("/root/sdr-vps/data/whatsapp_manual_blocklist.json"),
+    Path("/root/sdr-vps/data/whatsapp_blocklist.json"),
+    Path("/root/sdr-vps/logs/whatsapp_manual_blocklist.json"),
+    Path("/root/sdr-vps/invalidos.json"),
+]
 LOG_PREFIX="[WA_WARM_CADENCE]"
 
 INTERVALS_DAYS={
@@ -115,6 +121,55 @@ def phone_clean(v):
         nums="55"+nums
     return nums
 
+def phone_variants(v):
+    num=phone_clean(v)
+    variants=set()
+    if not num:
+        return variants
+    variants.add(num)
+    if num.startswith("55"):
+        variants.add(num[2:])
+    elif len(num) in (10,11):
+        variants.add("55"+num)
+    return {x for x in variants if x}
+
+def iter_blocklist_values(payload):
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            yield key
+            if isinstance(value, dict):
+                for field in ("phone","telefone","number","numero","value"):
+                    yield value.get(field)
+            elif isinstance(value, (str, int)):
+                yield value
+            elif isinstance(value, list):
+                for item in value:
+                    yield item
+    elif isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                for field in ("phone","telefone","number","numero","value"):
+                    yield item.get(field)
+            else:
+                yield item
+
+def load_blocklist():
+    blocked=set()
+    for path in BLOCKLIST_FILES:
+        if not path.exists():
+            continue
+        try:
+            payload=json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception as exc:
+            print(LOG_PREFIX,"BLOCKLIST_READ_FAIL",str(path),str(exc))
+            continue
+        for raw in iter_blocklist_values(payload):
+            blocked.update(phone_variants(raw))
+    return blocked
+
+def is_blocked_phone(phone, blocked):
+    return bool(phone_variants(phone) & blocked)
+
 def labels_of(deal):
     raw=deal.get("label")
     if raw is None:
@@ -156,6 +211,43 @@ def get_open_deals():
         start += 100
     return out
 
+def select_batch_deals(deals, blocked):
+    selected=[]
+    seen_phone={}
+    enriched=[]
+    for d in deals:
+        deal_id=int(d.get("id") or 0)
+        phone=get_phone(d)
+        title=d.get("title") or ""
+        if not phone:
+            item=dict(d)
+            item["_phone"]=""
+            item["_skip_reason"]="no_phone"
+            enriched.append(item)
+            continue
+        if is_blocked_phone(phone, blocked):
+            item=dict(d)
+            item["_phone"]=phone
+            item["_skip_reason"]="blocklist"
+            enriched.append(item)
+            continue
+        item=dict(d)
+        item["_phone"]=phone
+        item["_skip_reason"]=""
+        enriched.append(item)
+        previous=seen_phone.get(phone)
+        if previous is None or deal_id > int(previous.get("id") or 0):
+            seen_phone[phone]=item
+    winners={int(item.get("id") or 0) for item in seen_phone.values()}
+    for item in enriched:
+        if item.get("_skip_reason"):
+            selected.append(item)
+            continue
+        if int(item.get("id") or 0) not in winners:
+            item["_skip_reason"]="dup_batch"
+        selected.append(item)
+    return selected
+
 def due_for_step(record, next_step):
     if next_step == 1:
         return True
@@ -173,29 +265,37 @@ def send_wa(phone,text):
 def main(apply=False, send=False, limit=10):
     state=load_state()
     deals=get_open_deals()
+    blocked=load_blocklist()
     print(LOG_PREFIX,"DEALS_ALVO",len(deals))
 
     sent_count=0
 
-    for d in deals:
+    for d in select_batch_deals(deals, blocked):
         deal_id=str(d["id"])
         title=d.get("title") or ""
-        labs=labels_of(d)
-        phone=get_phone(d)
+        phone=d.get("_phone") or get_phone(d)
 
-        origin="trafego" if LABEL_LEAD_TRAFEGO in labs else "warm"
-        msgs=MSG_TRAFEGO if origin=="trafego" else MSG_WARM
+        if d.get("_skip_reason")=="blocklist":
+            print(LOG_PREFIX,"SKIP_BLOCKLIST",deal_id,phone)
+            continue
+        if d.get("_skip_reason")=="dup_batch":
+            print(LOG_PREFIX,"SKIP_PHONE_DUP_BATCH",deal_id,phone)
+            continue
+
+        if not phone:
+            print(LOG_PREFIX,"SKIP_SEM_PHONE",deal_id,title)
+            continue
 
         rec=state.get(deal_id, {})
         current_step=int(rec.get("step") or 0)
         next_step=current_step+1
 
+        labs=labels_of(d)
+        origin="trafego" if LABEL_LEAD_TRAFEGO in labs else "warm"
+        msgs=MSG_TRAFEGO if origin=="trafego" else MSG_WARM
+
         if next_step > 6:
             print(LOG_PREFIX,"SKIP_FINALIZADO",deal_id,title)
-            continue
-
-        if not phone:
-            print(LOG_PREFIX,"SKIP_SEM_PHONE",deal_id,title)
             continue
 
         if not due_for_step(rec,next_step):
