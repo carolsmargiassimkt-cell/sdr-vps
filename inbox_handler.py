@@ -39,6 +39,7 @@ import unicodedata
 import uuid
 from datetime import datetime
 from threading import Lock
+from core.sdr_state import mark_inbound as central_mark_inbound, stop_automation as central_stop_automation, log_event as central_log_event
 
 import requests
 from core.agent_router import register_inbound
@@ -128,7 +129,19 @@ def is_agent_decide_enabled():
 
 
 def is_auto_reply_router_enabled():
+    if str(os.getenv("INBOX_HANDLER_ALLOW_SEND", "0") or "0").strip().lower() not in {"1", "true", "yes", "on"}:
+        return False
     return str(os.getenv("AUTO_REPLY_ROUTER_ENABLED", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def send_reply(phone, text):
+    print(f"[INBOX_SEND_REPLY_BLOCKED_EMISSOR_UNICO] telefone={phone} texto={str(text or '')[:120]}")
+    return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "single_whatsapp_emitter"})
+
+
+def blocked_whatsapp_send(phone, text, *args, **kwargs):
+    print(f"[INBOX_SEND_BLOCKED_EMISSOR_UNICO] telefone={phone} texto={str(text or '')[:120]}")
+    return False
 
 
 def _as_bool(value):
@@ -454,6 +467,10 @@ def update_whatsapp_conversation_state_for_lead(lead_state, phone, message="", i
             record["wa1_sent_at"] = previous.get("wa1_sent_at")
         state[key] = record
         updated[key] = record
+        try:
+            central_mark_inbound(deal_id, normalized_phone, message, intent=resolved_intent, origin=origin)
+        except Exception as exc:
+            central_log_event("STATE_TRANSITION", deal_id=deal_id, phone=normalized_phone, error=f"central_state_fail:{exc}")
     save_whatsapp_conversation_state(state)
     return updated
 
@@ -960,7 +977,7 @@ def handle_bot_menu_navigation(phone, message, lead_state=None):
     if not can_emit_reply(phone, reply, within_seconds=REPLY_WINDOW_SECONDS):
         print(f"[DUPLICIDADE_BLOQUEADA_TEXTO] {phone}")
         return False
-    ok = whatsapp.send_message(phone, reply)
+    ok = blocked_whatsapp_send(phone, reply)
     if ok:
         append_history(phone, "out", reply, step=0)
         if lead_state:
@@ -2285,7 +2302,7 @@ def handle_fora_do_horario(phone, message, msg_id="", timestamp="", source="", l
     if not can_emit_reply(phone, FORA_HORARIO_MENSAGEM, within_seconds=REPLY_WINDOW_SECONDS):
         print(f"[FORA_HORARIO_BLOQUEADO] telefone={phone} status={FORA_HORARIO_STATUS}")
         return {"ok": True, "confirmed": True, "after_hours": True, "notice_sent": False}
-    ok = whatsapp.send_message(phone, FORA_HORARIO_MENSAGEM)
+    ok = blocked_whatsapp_send(phone, FORA_HORARIO_MENSAGEM)
     if ok:
         append_history(phone, "out", FORA_HORARIO_MENSAGEM, step=0)
         whatsapp.mark_after_hours_notice_sent(phone)
@@ -2524,7 +2541,7 @@ def maybe_handle_inbound_agent_decision(*, phone, message, source, lead_state, l
 
     if not whatsapp.healthcheck():
         print("[AVISO] API pode estar offline, mas tentando enviar mesmo assim...")
-    ok = whatsapp.send_message(phone, reply)
+    ok = blocked_whatsapp_send(phone, reply)
     if not ok:
         release_reply_guard(phone)
         print(f"[FALHA_ENVIO] {phone}")
@@ -3266,7 +3283,7 @@ def inbox():
             ]
 
             for p in partes:
-                requests.post("http://127.0.0.1:3000/send", json={"number": numero, "text": p}, timeout=30)
+                print("[INBOX_SEND_BLOCKED_EMISSOR_UNICO]", numero, p[:80])
 
             return {"ok": True, "flow": "exemplo"}
 
@@ -3374,7 +3391,7 @@ def inbox():
             print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
             commit_processed_key(key)
             return jsonify({"ok": True, "status": "sem_interesse_hard_rule", "confirmed": True, "auto_reply_blocked": True})
-            ok = whatsapp.send_message(phone, reply, bypass_manual_blocklist=True)
+            ok = blocked_whatsapp_send(phone, reply, bypass_manual_blocklist=True)
             if ok:
                 append_history(phone, "out", reply, step=0)
                 print(f"[RESPOSTA_ENVIADA] {phone}")
@@ -3649,7 +3666,7 @@ def inbox():
         if not whatsapp.healthcheck():
             print("[AVISO] API pode estar offline, mas tentando enviar mesmo assim...")
 
-        ok = whatsapp.send_message(phone, reply)
+        ok = blocked_whatsapp_send(phone, reply)
         if ok:
             append_history(phone, "out", reply, step=current_step)
             update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent=classify_conversation_intent(message), last_bot_reply=reply)

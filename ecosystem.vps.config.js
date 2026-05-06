@@ -25,19 +25,6 @@ module.exports = {
       }
     },
     {
-      name: "supervisor",
-      cwd: "/root/sdr-vps",
-      script: "/root/sdr-vps/venv/bin/python3",
-      args: "/root/sdr-vps/supervisor.py",
-      interpreter: "none",
-      autorestart: true,
-      env: {
-        WHATSAPP_OUTBOUND_MODE: "manual",
-        WHATSAPP_DAILY_LIMIT: "70",
-        PYTHONUNBUFFERED: "1"
-      }
-    },
-    {
       name: "whatsapp",
       cwd: "/root/sdr-vps",
       script: "/root/sdr-vps/central_whatsapp.mjs",

@@ -1,44 +1,59 @@
+from __future__ import annotations
 
+import os
 import re
+
+import requests
+from dotenv import load_dotenv
+from fastapi import APIRouter, Header, HTTPException, Request
+
+from core.sdr_state import (
+    LABEL_LEAD_TRAFEGO,
+    PIPELINE_ID,
+    STAGE_PRONTO_PROSPECCAO,
+    log_event,
+    mark_warm,
+)
+
+
+router = APIRouter()
+load_dotenv("/root/sdr-vps/.env", override=True)
+
+TOKEN = os.getenv("WEBHOOK_AUTH_TOKEN", "")
+PD = os.getenv("PIPEDRIVE_TOKEN") or os.getenv("PIPEDRIVE_API_TOKEN") or ""
+BASE = "https://api.pipedrive.com/v1"
+INTERNAL_DOMAIN = "manddigital.com.br"
+
+
+def only_digits(value):
+    return re.sub(r"\D+", "", str(value or ""))
+
+
+def normalize_phone(value):
+    digits = only_digits(value)
+    if digits.startswith("55") and len(digits) > 11:
+        digits = digits[2:]
+    return digits
+
+
+def first_value(body, *names):
+    for name in names:
+        value = body.get(name)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
 
 def clean_crm_name(raw, email=""):
     txt = re.sub(r"<br\s*/?>", "\n", str(raw or ""), flags=re.I)
     txt = re.sub(r"<[^>]+>", "", txt).strip()
-
-    # Ex: Lead Email - Cedar Plaza
-    m = re.search(r"Lead Email\s*-\s*([^\n\r<]+)", txt, flags=re.I)
-    if m:
-        return m.group(1).strip()
-
-    # se vier texto gigante do form, tenta primeira linha útil
     for line in txt.splitlines():
         line = line.strip()
-        if not line:
-            continue
-        if line.lower().startswith(("mensagem:", "data:", "horário:", "horario:", "url da página", "agente de usu")):
-            continue
-        return line[:80]
-
+        if line and not line.lower().startswith(("mensagem:", "data:", "horario:", "url da pagina", "agente")):
+            return line[:80]
     if email and "@" in email:
         return email.split("@")[0].replace(".", " ").replace("_", " ").title()
-
     return "Lead sem nome"
-
-from fastapi import APIRouter, Request, Header, HTTPException
-import os
-from dotenv import load_dotenv
-
-router = APIRouter()
-
-load_dotenv("/root/sdr-vps/.env", override=True)
-load_dotenv("/root/sdr-vps/.env", override=True)
-TOKEN = os.getenv("WEBHOOK_AUTH_TOKEN")
-PD = os.getenv("PIPEDRIVE_TOKEN") or os.getenv("PIPEDRIVE_API_TOKEN")
-BASE = "https://api.pipedrive.com/v1"
-
-PIPELINE_ID = 7
-STAGE_PRONTO_PROSPECCAO = 63
-LEAD_TRAFEGO_LABEL_ID = 193
 
 
 def pd(method, path, **kwargs):
@@ -52,17 +67,6 @@ def pd(method, path, **kwargs):
     if r.status_code >= 400:
         return None
     return r.json().get("data") if r.text else {}
-
-
-def only_digits(value):
-    return re.sub(r"\D+", "", str(value or ""))
-
-
-def normalize_phone(value):
-    digits = only_digits(value)
-    if digits.startswith("55") and len(digits) > 11:
-        digits = digits[2:]
-    return digits
 
 
 def search_first(entity, term):
@@ -139,13 +143,22 @@ async def forms_lead(req: Request, authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="unauthorized")
 
     body = await req.json()
+    email = first_value(body, "email", "e-mail", "mail", "person_email").lower()
+    whatsapp = first_value(body, "whatsapp", "telefone", "phone", "celular")
+    nome = clean_crm_name(first_value(body, "nome", "name", "lead_name"), email=email)
+    empresa = first_value(body, "empresa", "company", "organizacao", "organization")
+    segmento = first_value(body, "segmento", "segment")
+    unidades = first_value(body, "unidades", "units")
+    objetivo = first_value(body, "objetivo", "campanhas", "mensagem", "message")
 
-    segmento = body.get("segmento") or ""
-    unidades = body.get("unidades") or ""
-    campanhas = body.get("campanhas") or ""
-    objetivo = body.get("objetivo") or ""
+    if email.endswith("@" + INTERNAL_DOMAIN):
+        log_event("FORM_REJECTED", email=email, reason="internal_domain")
+        return {"ok": True, "created": False, "skip": "internal_domain"}
+    if not email and not whatsapp:
+        log_event("FORM_REJECTED", reason="missing_contact")
+        return {"ok": True, "created": False, "skip": "missing_contact"}
 
-    print("[FORMS_RECEBIDO]", nome, email, whatsapp)
+    log_event("FORM_ACCEPTED", email=email, phone=whatsapp, source="form")
 
     org = find_org(empresa) if empresa else {}
     if empresa and not org:
@@ -160,21 +173,19 @@ async def forms_lead(req: Request, authorization: str = Header(None)):
     }
     if org_id:
         person_payload["org_id"] = org_id
-
     if person:
         pid = int(person.get("id") or 0)
         pd("PUT", f"/persons/{pid}", json=person_payload)
     else:
         person = pd("POST", "/persons", json=person_payload) or {}
         pid = int(person.get("id") or 0)
-
     if not pid:
         return {"ok": False, "error": "person_fail"}
 
     deal = find_open_deal(pid, org_id)
     if deal:
         deal_id = int(deal.get("id") or 0)
-        labels = merge_labels(deal.get("label"), LEAD_TRAFEGO_LABEL_ID)
+        labels = merge_labels(deal.get("label"), LABEL_LEAD_TRAFEGO)
         pd("PUT", f"/deals/{deal_id}", json={
             "person_id": pid,
             "org_id": org_id or None,
@@ -189,10 +200,9 @@ async def forms_lead(req: Request, authorization: str = Header(None)):
             "org_id": org_id or None,
             "pipeline_id": PIPELINE_ID,
             "stage_id": STAGE_PRONTO_PROSPECCAO,
-            "label": [LEAD_TRAFEGO_LABEL_ID],
+            "label": [LABEL_LEAD_TRAFEGO],
         }) or {}
         deal_id = int(deal.get("id") or 0)
-
     if not deal_id:
         return {"ok": False, "error": "deal_fail", "person_id": pid}
 
@@ -204,8 +214,11 @@ async def forms_lead(req: Request, authorization: str = Header(None)):
 <b>Empresa:</b> {empresa}<br>
 <b>Segmento:</b> {segmento}<br>
 <b>Unidades:</b> {unidades}<br>
-<b>Campanhas:</b> {campanhas}<br>
 <b>Objetivo:</b> {objetivo}<br>
 <b>Acao:</b> LEAD_TRAFEGO aplicado e deal movido para Pronto para Prospeccao.
 """
     pd("POST", "/notes", json={"deal_id": deal_id, "content": note})
+    mark_warm(deal_id, phone=whatsapp, source="lead_trafego", score_event="form")
+    log_event("CRM_LABEL_UPDATE", deal_id=deal_id, label=LABEL_LEAD_TRAFEGO, source="form")
+    log_event("CRM_STAGE_UPDATE", deal_id=deal_id, stage_id=STAGE_PRONTO_PROSPECCAO, source="form")
+    return {"ok": True, "deal_id": deal_id, "person_id": pid, "stage_id": STAGE_PRONTO_PROSPECCAO, "label": LABEL_LEAD_TRAFEGO}

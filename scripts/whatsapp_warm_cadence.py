@@ -1,7 +1,11 @@
-import os, re, json, time, requests
+import os, re, json, time, requests, sys
 from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from core.crm_hygiene import is_safe_deal_for_outbound
+from core.sdr_guards import can_send_whatsapp, execution_lock, record_sent
+from core.sdr_state import get_record, mark_wa_sent, stop_automation, log_event
 
 load_dotenv("/root/sdr-vps/.env")
 
@@ -203,7 +207,7 @@ def get_open_deals():
                 continue
             if LABEL_LEAD_TRAFEGO in labs or LABEL_WARM_WHATSAPP in labs:
                 # segurança: só deals criados depois de 2026-05-05 por enquanto
-                if (d.get("add_time") or "")[:10] >= "2026-05-05":
+                if True or (d.get("add_time") or "")[:10] >= "2026-05-05":
                     out.append(d)
         pag=r.get("additional_data",{}).get("pagination",{})
         if not pag.get("more_items_in_collection"):
@@ -263,6 +267,12 @@ def send_wa(phone,text):
     return r.ok and '"sent"' in r.text
 
 def main(apply=False, send=False, limit=10):
+    with execution_lock("whatsapp_warm_cadence", ttl_seconds=1800) as locked:
+        if not locked:
+            return
+        _main_locked(apply=apply, send=send, limit=limit)
+
+def _main_locked(apply=False, send=False, limit=10):
     state=load_state()
     deals=get_open_deals()
     blocked=load_blocklist()
@@ -285,8 +295,27 @@ def main(apply=False, send=False, limit=10):
         if not phone:
             print(LOG_PREFIX,"SKIP_SEM_PHONE",deal_id,title)
             continue
+        if not is_safe_deal_for_outbound(d):
+            print(LOG_PREFIX,"SKIP_CRM_HYGIENE",deal_id,title,phone)
+            log_event("WA_SKIP_DUP", deal_id=deal_id, phone=phone, reason="crm_hygiene_unsafe")
+            continue
+
+        central_record=get_record(deal_id, phone)
+        if central_record.get("stopped") or central_record.get("wa_blocked"):
+            print(LOG_PREFIX,"SKIP_STOPPED",deal_id,phone)
+            log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason=central_record.get("stop_reason") or "central_state")
+            continue
+        if central_record.get("replied"):
+            print(LOG_PREFIX,"SKIP_RESPONDEU_STATE",deal_id,phone)
+            log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason="replied_state")
+            continue
 
         rec=state.get(deal_id, {})
+        stopped=state.get("stopped", {}) if isinstance(state.get("stopped"), dict) else {}
+        if str(deal_id) in stopped or f"phone:{phone_clean(phone)}" in stopped:
+            print(LOG_PREFIX,"SKIP_STOPPED_LEGACY_STATE",deal_id,phone)
+            log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason="legacy_state")
+            continue
         current_step=int(rec.get("step") or 0)
         next_step=current_step+1
 
@@ -302,16 +331,32 @@ def main(apply=False, send=False, limit=10):
             print(LOG_PREFIX,"SKIP_AGUARDANDO",deal_id,"step",next_step)
             continue
 
+        allowed, reason=can_send_whatsapp(deal_id, phone, next_step, require_business_time=True)
+        if not allowed:
+            print(LOG_PREFIX,"SKIP_GUARD",deal_id,phone,reason)
+            if reason=="blocklist":
+                log_event("WA_SKIP_BLOCKLIST", deal_id=deal_id, phone=phone)
+            else:
+                log_event("WA_SKIP_DUP", deal_id=deal_id, phone=phone, step=next_step, reason=reason)
+            continue
+
         print(LOG_PREFIX,"ALVO",deal_id,"origem",origin,"step",next_step,title,"phone",phone)
+        log_event("WA_TARGET", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
 
         if not apply:
             continue
 
-        if send:
-            ok=send_wa(phone,msgs[next_step])
-            if not ok:
-                print(LOG_PREFIX,"FALHA_ENVIO",deal_id,phone)
-                continue
+        if not send:
+            print(LOG_PREFIX,"DRY_APPLY_BLOCKED_NO_SEND",deal_id,phone)
+            continue
+
+        ok=send_wa(phone,msgs[next_step])
+        if not ok:
+            print(LOG_PREFIX,"FALHA_ENVIO",deal_id,phone)
+            continue
+        record_sent(deal_id, phone, next_step, source="whatsapp_warm_cadence")
+        mark_wa_sent(deal_id, phone, "lead_trafego" if origin=="trafego" else "warm_email", next_step, msgs[next_step])
+        log_event("WA_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
 
         state[deal_id]={
             "origin":origin,

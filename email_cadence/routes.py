@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from crm.pipedrive_client import PipedriveClient
 from email_cadence.engine import enqueue
+from core.sdr_state import STAGE_PRONTO_PROSPECCAO, mark_warm, update_score, log_event
 import json
 from pathlib import Path
 from datetime import datetime
@@ -10,6 +11,11 @@ router = APIRouter()
 crm = PipedriveClient()
 
 WARM_WHATSAPP_LABEL_ID = 226
+PIXEL_GIF = (
+    b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00"
+    b"\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,"
+    b"\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+)
 
 
 def label_items(raw):
@@ -70,16 +76,20 @@ async def start_email_cadence(req: Request):
     org = deal.get("org_id") or {}
     org_name = org.get("name") if isinstance(org, dict) else ""
 
+    phones = p.get("phone") or []
+    phone = next((item.get("value") for item in phones if item.get("value")), "")
+
     return enqueue(
         deal_id,
         email,
         p.get("name", ""),
-        org_name or ""
+        org_name or "",
+        phone=phone,
     )
 
 
 @router.get("/t/{deal_id}/{step}")
-async def track_click(deal_id: int, step: int):
+async def track_click(deal_id: int, step: int, req: Request):
     p = Path("/root/sdr-vps/data/email_cadence_queue.json")
     rows = json.loads(p.read_text()) if p.exists() else []
     for x in rows:
@@ -95,8 +105,13 @@ async def track_click(deal_id: int, step: int):
         pass
     try:
         merge_label(deal_id, WARM_WHATSAPP_LABEL_ID)
+        crm.update_deal(int(deal_id), {"stage_id": STAGE_PRONTO_PROSPECCAO})
     except Exception as exc:
         print("[WARM_LABEL_FAIL]", deal_id, exc)
+    try:
+        mark_warm(deal_id, source="email_click", score_event="email_click")
+    except Exception as exc:
+        print("[STATE_WARM_FAIL]", deal_id, exc)
     try:
         crm.create_activity(
             deal_id=deal_id,
@@ -106,4 +121,16 @@ async def track_click(deal_id: int, step: int):
         )
     except Exception:
         pass
-    return RedirectResponse("https://manddigital.com.br/")
+    log_event("EMAIL_CLICK", deal_id=deal_id, step=step)
+    target = str(req.query_params.get("r") or "https://manddigital.com.br/").strip()
+    return RedirectResponse(target)
+
+
+@router.get("/o/{deal_id}/{step}.gif")
+async def track_open(deal_id: int, step: int):
+    try:
+        update_score(deal_id, "", "email_open")
+        log_event("EMAIL_OPEN", deal_id=deal_id, step=step)
+    except Exception as exc:
+        print("[EMAIL_OPEN_FAIL]", deal_id, exc)
+    return Response(content=PIXEL_GIF, media_type="image/gif")

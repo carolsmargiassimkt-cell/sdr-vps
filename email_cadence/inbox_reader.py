@@ -7,6 +7,7 @@ import requests
 from datetime import datetime, timedelta
 from email.header import decode_header
 from pathlib import Path
+from core.sdr_state import STAGE_PRONTO_PROSPECCAO, mark_inbound, mark_warm, log_event
 
 IMAP_HOST = os.getenv("OUTBOUND_IMAP_HOST", "")
 IMAP_USER = os.getenv("OUTBOUND_IMAP_USER", "")
@@ -141,6 +142,10 @@ def mark_crm(deal_id, sender, subject, message_id):
     )
     api("POST", "/notes", json={"deal_id": int(deal_id), "content": note})
     merge_labels(deal_id, RESPONDIDO_LABEL_ID, WARM_WHATSAPP_LABEL_ID)
+    api("PUT", f"/deals/{int(deal_id)}", json={"stage_id": STAGE_PRONTO_PROSPECCAO})
+    mark_warm(deal_id, source="email_reply", score_event="email_reply")
+    mark_inbound(deal_id, "", f"{sender} | {subject}", intent="replied", origin="email_reply")
+    log_event("EMAIL_REPLY_STOP", deal_id=deal_id, email=sender)
     print("[CRM_RESPONDIDO]", deal_id)
 
 
