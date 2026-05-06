@@ -14,6 +14,6 @@ if ! /root/sdr-vps/venv/bin/python3 /root/sdr-vps/ops/freeze_automation.py can-s
   exit 0
 fi
 
-/usr/local/bin/pm2 startOrRestart /root/sdr-vps/ecosystem.config.js --only api
+/usr/local/bin/pm2 startOrRestart /root/sdr-vps/ecosystem.vps.config.js --only api
+/usr/local/bin/pm2 startOrRestart /root/sdr-vps/ecosystem.vps.config.js --only handler
 /usr/local/bin/pm2 startOrRestart /root/sdr-vps/ecosystem.vps.config.js --only whatsapp
-/usr/local/bin/pm2 startOrRestart /root/sdr-vps/ecosystem.vps.config.js --only sdr-bot

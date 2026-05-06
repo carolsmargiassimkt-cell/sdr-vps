@@ -66,5 +66,7 @@ async def pipedrive_webhook(req: Request):
     if not phone:
         return {"ok": True, "skip": "no_phone"}
 
-    add_note(deal_id, f"[WA BLOQUEADO | CAD1]\nEnvio automatico direto bloqueado pelo patch de contencao.\nTelefone: {phone}")
+    add_note(deal_id, f"[WA BLOQUEADO | CAD1]\nEnvio automatico direto bloqueado. Emissor oficial: scripts/whatsapp_warm_cadence.py.\nTelefone: {phone}")
+    sent[str(deal_id)] = {"sent": False, "reason": "auto_blocked", "phone": phone}
+    save_sent(sent)
     return {"ok": True, "sent": False, "deal_id": deal_id, "skip": "auto_blocked"}

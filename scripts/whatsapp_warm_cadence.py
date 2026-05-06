@@ -2,6 +2,7 @@ import os, re, json, time, requests
 from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from core.sdr_state import STAGE_TENTATIVA_CONTATO, log_event, update_deal_state
 
 load_dotenv("/root/sdr-vps/.env")
 
@@ -10,7 +11,7 @@ API="https://api.pipedrive.com/v1"
 
 PIPELINE_ID=7
 STAGE_PRONTO=63
-STAGE_TENTATIVA=52
+STAGE_TENTATIVA=STAGE_TENTATIVA_CONTATO
 
 LABEL_LEAD_TRAFEGO="193"
 LABEL_WARM_WHATSAPP="226"
@@ -299,9 +300,11 @@ def main(apply=False, send=False, limit=10):
 
         if d.get("_skip_reason")=="blocklist":
             print(LOG_PREFIX,"SKIP_BLOCKLIST",deal_id,phone)
+            log_event("WA_SKIP_BLOCKLIST", deal_id=deal_id, phone=phone)
             continue
         if d.get("_skip_reason")=="dup_batch":
             print(LOG_PREFIX,"SKIP_PHONE_DUP_BATCH",deal_id,phone)
+            log_event("WA_SKIP_DUP", deal_id=deal_id, phone=phone, reason="phone_dup_batch")
             continue
 
         if not phone:
@@ -309,6 +312,10 @@ def main(apply=False, send=False, limit=10):
             continue
 
         rec=state.get(deal_id, {})
+        if rec.get("stopped"):
+            print(LOG_PREFIX,"WA_STOPPED",deal_id,phone)
+            log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason="state_stopped")
+            continue
         current_step=int(rec.get("step") or 0)
         next_step=current_step+1
 
@@ -325,28 +332,44 @@ def main(apply=False, send=False, limit=10):
             continue
 
         print(LOG_PREFIX,"ALVO",deal_id,"origem",origin,"step",next_step,title,"phone",phone)
+        log_event("WA_TARGET", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
 
         if not apply:
             continue
 
-        if send:
-            ok=send_wa(phone,msgs[next_step])
-            if not ok:
-                print(LOG_PREFIX,"FALHA_ENVIO",deal_id,phone)
-                continue
+        if not send:
+            print(LOG_PREFIX,"DRY_RUN_NO_MUTATION",deal_id,phone,"step",next_step)
+            continue
+
+        ok=send_wa(phone,msgs[next_step])
+        if not ok:
+            print(LOG_PREFIX,"FALHA_ENVIO",deal_id,phone)
+            continue
 
         state[deal_id]={
             "origin":origin,
             "phone":phone,
             "step":next_step,
+            "wa1_sent": bool(next_step == 1 or rec.get("wa1_sent")),
+            "last_sent_step_whatsapp": next_step,
             "last_sent_at":now().strftime("%Y-%m-%d %H:%M:%S"),
             "title":title,
         }
+        update_deal_state(
+            deal_id,
+            phone=phone,
+            origin=origin,
+            cadence_wa_active=next_step < 6,
+            last_sender="whatsapp_warm_cadence",
+            last_sent_step_whatsapp=next_step,
+            last_outbound_at=now().isoformat(timespec="seconds"),
+        )
 
         pd("POST","/notes",{
             "deal_id":int(deal_id),
-            "content":f"[WA_CADENCE_{origin.upper()}_STEP_{next_step}] WhatsApp etapa {next_step}/6 {'enviada' if send else 'marcada'}."
+            "content":f"[WA_CADENCE_{origin.upper()}_STEP_{next_step}] WhatsApp etapa {next_step}/6 enviada."
         })
+        log_event("WA_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
 
         if int(d.get("stage_id") or 0)==STAGE_PRONTO:
             pd("PUT",f"/deals/{deal_id}",{"stage_id":STAGE_TENTATIVA})

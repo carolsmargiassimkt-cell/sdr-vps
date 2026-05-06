@@ -14,6 +14,7 @@ from core.sdr_state import (
     log_event,
     mark_warm,
 )
+from core.crm_hygiene import is_generic_email, person_org_id
 
 
 router = APIRouter()
@@ -93,6 +94,13 @@ def find_org(name):
     return search_first("organizations", name)
 
 
+def find_org_by_cnpj(cnpj):
+    clean = only_digits(cnpj)
+    if not clean:
+        return {}
+    return search_first("organizations", clean)
+
+
 def label_items(raw):
     if raw is None:
         return []
@@ -135,6 +143,26 @@ def find_open_deal(person_id, org_id):
     return {}
 
 
+def add_audit_note(person_id=0, deal_id=0, content=""):
+    payload = {"content": content}
+    if deal_id:
+        payload["deal_id"] = int(deal_id)
+    if person_id:
+        payload["person_id"] = int(person_id)
+    pd("POST", "/notes", json=payload)
+
+
+def safe_update_person(pid, person_payload, current_person, target_org_id):
+    existing_org_id = person_org_id(current_person)
+    if existing_org_id and target_org_id and existing_org_id != int(target_org_id):
+        return False, existing_org_id
+    payload = dict(person_payload)
+    if target_org_id:
+        payload["org_id"] = int(target_org_id)
+    pd("PUT", f"/persons/{int(pid)}", json=payload)
+    return True, existing_org_id or target_org_id
+
+
 @router.post("/webhooks/forms-lead")
 async def forms_lead(req: Request, authorization: str = Header(None)):
     token = (os.getenv("WEBHOOK_AUTH_TOKEN") or TOKEN or "").strip()
@@ -147,6 +175,7 @@ async def forms_lead(req: Request, authorization: str = Header(None)):
     whatsapp = first_value(body, "whatsapp", "telefone", "phone", "celular")
     nome = clean_crm_name(first_value(body, "nome", "name", "lead_name"), email=email)
     empresa = first_value(body, "empresa", "company", "organizacao", "organization")
+    cnpj = first_value(body, "cnpj", "cnpj_empresa", "documento")
     segmento = first_value(body, "segmento", "segment")
     unidades = first_value(body, "unidades", "units")
     objetivo = first_value(body, "objetivo", "campanhas", "mensagem", "message")
@@ -154,15 +183,24 @@ async def forms_lead(req: Request, authorization: str = Header(None)):
     if email.endswith("@" + INTERNAL_DOMAIN):
         log_event("FORM_REJECTED", email=email, reason="internal_domain")
         return {"ok": True, "created": False, "skip": "internal_domain"}
+    if email and is_generic_email(email):
+        log_event("FORM_REJECTED", email=email, reason="generic_or_shared_email")
+        return {"ok": True, "created": False, "skip": "generic_or_shared_email"}
     if not email and not whatsapp:
         log_event("FORM_REJECTED", reason="missing_contact")
         return {"ok": True, "created": False, "skip": "missing_contact"}
 
     log_event("FORM_ACCEPTED", email=email, phone=whatsapp, source="form")
 
-    org = find_org(empresa) if empresa else {}
+    org = find_org_by_cnpj(cnpj) if cnpj else {}
+    if not org:
+        org = find_org(empresa) if empresa else {}
     if empresa and not org:
-        org = pd("POST", "/organizations", json={"name": empresa}) or {}
+        org_payload = {"name": empresa}
+        field = os.getenv("PIPEDRIVE_ORG_CNPJ_FIELD") or os.getenv("ORG_CNPJ_FIELD_KEY")
+        if field and cnpj:
+            org_payload[field] = only_digits(cnpj)
+        org = pd("POST", "/organizations", json=org_payload) or {}
     org_id = int(org.get("id") or 0)
 
     person = find_person(email, whatsapp)
@@ -175,7 +213,26 @@ async def forms_lead(req: Request, authorization: str = Header(None)):
         person_payload["org_id"] = org_id
     if person:
         pid = int(person.get("id") or 0)
-        pd("PUT", f"/persons/{pid}", json=person_payload)
+        ok_update, existing_org_id = safe_update_person(pid, person_payload, person, org_id)
+        if not ok_update:
+            deal = find_open_deal(pid, existing_org_id) or {}
+            deal_id = int(deal.get("id") or 0)
+            note = (
+                "<b>Auditoria CRM - formulario bloqueado</b><br>"
+                f"Pessoa existente {pid} pertence a org {existing_org_id}, mas o formulario apontou org {org_id}.<br>"
+                f"Email: {email}<br>WhatsApp: {whatsapp}<br>Empresa informada: {empresa}<br>CNPJ: {cnpj}<br>"
+                "Acao: pending_review/shared_email_blocked; nenhuma automacao foi disparada."
+            )
+            add_audit_note(person_id=pid, deal_id=deal_id, content=note)
+            log_event("FORM_REJECTED", email=email, phone=whatsapp, reason="person_org_conflict", person_id=pid, org_id=org_id, existing_org_id=existing_org_id)
+            return {
+                "ok": True,
+                "created": False,
+                "skip": "pending_review_person_org_conflict",
+                "person_id": pid,
+                "existing_org_id": existing_org_id,
+                "incoming_org_id": org_id,
+            }
     else:
         person = pd("POST", "/persons", json=person_payload) or {}
         pid = int(person.get("id") or 0)

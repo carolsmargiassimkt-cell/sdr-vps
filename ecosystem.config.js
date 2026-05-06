@@ -1,15 +1,6 @@
 module.exports = {
   apps: [
     {
-      name: "sdr-bot",
-      script: "/root/sdr-vps/venv/bin/python3",
-      args: "supervisor.py",
-      cwd: "/root/sdr-vps",
-      env: {
-        WHATSAPP_DAILY_LIMIT: "70",
-      },
-    },
-    {
       name: "whatsapp",
       script: "central_whatsapp.mjs",
       cwd: "/root/sdr-vps",

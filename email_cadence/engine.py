@@ -1,255 +1,330 @@
-MAX_EMAILS_PER_TICK=3
-import os,json,time,requests,smtplib,ssl
-from datetime import datetime, timedelta
-from pathlib import Path
+from __future__ import annotations
 
-# --- CONFIGURAÇÃO ---
+import json
+import os
+import smtplib
+import ssl
+import time
+from datetime import datetime, timedelta
+from email.message import EmailMessage
+from pathlib import Path
+from typing import Any
+
+import requests
+
+from core.crm_hygiene import is_generic_email
+from core.sdr_state import LABEL_RESPONDIDO, log_event, mark_email_cadence
+
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA = BASE_DIR / "data" / "email_cadence_queue.json"
 EVENTS = BASE_DIR / "data" / "email_cadence_events.json"
 DATA.parent.mkdir(parents=True, exist_ok=True)
 
-PD = os.getenv("PIPEDRIVE_API_TOKEN")
+PD = os.getenv("PIPEDRIVE_API_TOKEN") or os.getenv("PIPEDRIVE_TOKEN") or ""
 FROM = os.getenv("SMTP_FROM_EMAIL", "")
-
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "465") or 465)
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
+TRACKING_BASE_URL = os.getenv("TRACKING_BASE_URL", "http://191.252.184.140:8001").rstrip("/")
+FORM_URL = os.getenv("PREFORM_URL", "https://docs.google.com/forms/d/1KWo-Z7uKflvpR0Ff9yxFJhyV-iFtm0v4xH3QKC9FRmo/viewform?usp=header")
+CALENDLY_URL = os.getenv("CALENDLY_URL", "https://calendly.com/ana-manddigital/30min")
 
 STEPS = [0, 2, 4, 7, 10, 14]
-STOP_STATUSES = {"clicked_warm", "replied", "won", "opt_out", "wrong_contact", "done"}
-# --------------------
-
-def cta_html(x, step):
-    deal_id = x.get("deal_id") or x.get("id")
-
-    forms = f"http://191.252.184.140:8001/t/{deal_id}/{step}?r=https://docs.google.com/forms/d/1KWo-Z7uKflvpR0Ff9yxFJhyV-iFtm0v4xH3QKC9FRmo/viewform?usp=header"
-    calendly = f"http://191.252.184.140:8001/t/{deal_id}/{step}?r=https://calendly.com/ana-manddigital/30min"
-
-    return (
-        f"<br><br>Se fizer sentido, você pode:<br><br>"
-        f"<a href='{forms}' style='color:#2563eb;text-decoration:underline;font-weight:600;'>👉 Responder em 1 minuto</a><br><br>"
-        f"<a href='{calendly}' style='color:#16a34a;text-decoration:underline;font-weight:600;'>📅 Ou agendar direto comigo</a>"
-    )
-
-def segment_context(empresa=""):
-    e=(empresa or "").lower()
-    if any(x in e for x in ["supermerc", "mercado", "atacad", "varej", "hortifruti", "fruta"]):
-        return "varejo alimentar", "giro, ticket médio e recorrência", "campanhas de Copa no ponto de venda"
-    if any(x in e for x in ["shopping", "mall", "boulevard", "center"]):
-        return "shopping/centro comercial", "fluxo, permanência e ativação das lojas", "ações interativas nos corredores e lojas"
-    if any(x in e for x in ["industr", "alimentos", "bebidas", "ltda", "sa "]):
-        return "indústria/marca", "sell-out, canal e ativação de marca", "promoções digitais ligadas ao varejo"
-    if any(x in e for x in ["farm", "drog"]):
-        return "farmácias", "recorrência, ticket e relacionamento", "campanhas sazonais com dados do cliente"
-    return "varejo", "vendas, engajamento e dados reais", "campanhas interativas"
+STOP_STATUSES = {"clicked_warm", "replied", "won", "lost", "opt_out", "wrong_contact", "done", "stopped", "warm", "shared_email_blocked", "shared_phone_blocked"}
+DAILY_LIMIT = int(os.getenv("EMAIL_DAILY_LIMIT", "50") or "50")
+MIN_DELAY_SECONDS = float(os.getenv("EMAIL_MIN_DELAY_SECONDS", "45") or "45")
 
 
-def build_track_link(x, step):
-    base = "http://191.252.184.140:8001"
-    return f"{base}/t/{x.get('deal_id')}/{step}?r=https://docs.google.com/forms/d/1KWo-Z7uKflvpR0Ff9yxFJhyV-iFtm0v4xH3QKC9FRmo/viewform?usp=header"
-
-
-
-
-
-def template(step, x):
-    nome=(x.get("nome") or "").split(" ")[0].title() or "tudo bem"
-    empresa=x.get("empresa") or "a empresa"
-    seg,dor,gancho=segment_context(empresa)
-    cta=cta_html(x, step)
-
-    textos={
-1:("dúvida rápida sobre campanhas",f"Oi {nome}, tudo bem?<br><br>Queria te fazer uma pergunta direta:<br><br>Hoje vocês usam campanhas promocionais para gerar venda ou o crescimento vem mais do fluxo natural?<br><br>Pergunto porque, em {seg}, a Copa costuma abrir uma janela boa para transformar campanha em venda + dados reais do cliente.{cta}<br><br>Abs,<br>Carol"),
-2:("o que tenho visto no mercado",f"Oi {nome},<br><br>Estou vendo um padrão se repetir em empresas como {empresa}: campanhas geram movimento, mas nem sempre capturam dados úteis depois.<br><br>Com uma experiência simples — roleta, raspadinha ou prêmio instantâneo — dá para medir melhor {dor}.{cta}<br><br>Abs,<br>Carol"),
-3:("Copa como gatilho",f"Oi {nome},<br><br>Pensando na Copa: vocês já têm alguma ação para aproveitar o aumento de atenção do público?<br><br>A gente tem trabalhado {gancho}, com mecânicas simples para gerar engajamento e dados próprios.{cta}<br><br>Abs,<br>Carol"),
-4:("campanha que vira dado",f"Oi {nome},<br><br>Um ponto comum em {seg}: muita campanha gera exposição, mas pouca inteligência para o próximo passo.<br><br>Quando o cliente participa, dá para entender interesse, frequência, canal, região e intenção.{cta}<br><br>Abs,<br>Carol"),
-5:("antes da Copa",f"Oi {nome},<br><br>Quem estrutura campanha antes da Copa captura mais valor durante o pico — movimento, base própria, dados e recorrência.<br><br>Depois que começa, normalmente vira correria operacional.{cta}<br><br>Abs,<br>Carol"),
-6:("faz sentido ou encerro por aqui?",f"Oi {nome},<br><br>Prometo ser minha última mensagem 🙂<br><br>Campanhas interativas orientadas a dados fazem sentido para {empresa} agora ou não é prioridade?<br><br>Se não fizer sentido, me fala que encerro por aqui sem problema.{cta}<br><br>Abs,<br>Carol")
-}
-    return textos.get(int(step), textos[1])
-
-def pd_request(method,path,json_body=None):
-    if not PD: return None
-    url=f"https://api.pipedrive.com/v1/{path.lstrip('/')}"
-    r=requests.request(method,url,params={"api_token":PD},json=json_body,timeout=30)
-    print("[PD]",method,path,r.status_code)
-    return r.json() if r.text else {}
-
-def add_deal_note(deal_id,content):
-    return pd_request("POST","notes",{"deal_id":int(deal_id),"content":content})
-
-def add_activity(deal_id,subject):
-    due=datetime.now().strftime("%Y-%m-%d")
-    return pd_request("POST","activities",{
-      "deal_id":int(deal_id),
-      "subject":subject,
-      "type":"call",
-      "due_date":due,
-      "note":"Lead clicou na cadência. Priorizar ligação/WhatsApp."
-    })
-
-EMAIL_LABEL_IDS = {
-    "EMAIL_CAD1": 197,
-    "EMAIL_CAD2": 198,
-    "EMAIL_CAD3": 199,
-    "EMAIL_CAD4": 200,
-    "EMAIL_CAD5": 201,
-    "EMAIL_CAD6": 219,
-}
-
-def add_deal_label(deal_id,label):
-    label_id = EMAIL_LABEL_IDS.get(str(label))
-    if label_id:
-        pd_request("PUT", f"deals/{int(deal_id)}", {"label": str(label_id)})
-        add_deal_note(deal_id,f"TAG/CADÊNCIA aplicada: {label}")
-    else:
-        add_deal_note(deal_id,f"TAG_SUGERIDA: {label}")
-
-def load():
-    return json.loads(DATA.read_text()) if DATA.exists() else []
-
-def save(rows):
-    DATA.write_text(json.dumps(rows,ensure_ascii=False,indent=2))
-
-def load_events():
-    if not EVENTS.exists():
-        save_events([])
-        return []
+def load_json(path: Path, default):
+    if not path.exists():
+        return default
     try:
-        with EVENTS.open("r",encoding="utf-8") as f:
-            payload=json.load(f)
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        return payload if payload is not None else default
     except Exception:
-        return []
-    return payload if isinstance(payload,list) else []
+        return default
 
-def save_events(rows):
-    EVENTS.parent.mkdir(parents=True,exist_ok=True)
-    with EVENTS.open("w",encoding="utf-8") as f:
-        json.dump(rows if isinstance(rows,list) else [],f,ensure_ascii=False,indent=2)
 
-def now():
+def save_json(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
-def idempotency_key(deal_id,step):
+
+def normalize_phone(value: Any) -> str:
+    import re
+
+    digits = re.sub(r"\D+", "", str(value or ""))
+    if digits.startswith("55") and len(digits) > 11:
+        digits = digits[2:]
+    return digits
+
+
+def row_email(row: dict[str, Any]) -> str:
+    return str(row.get("email") or "").strip().lower()
+
+
+def row_phone(row: dict[str, Any]) -> str:
+    return normalize_phone(row.get("phone"))
+
+
+def idempotency_key(deal_id, step):
     return f"{int(deal_id)}:{int(step)}"
 
-def event_exists(deal_id,step):
-    key=idempotency_key(deal_id,step)
-    for ev in load_events():
-        if str(ev.get("idempotency_key") or "")==key:
-            return True
-    return False
 
-def record_sent_event(x,step,subject,sent_at):
-    key=idempotency_key(x.get("deal_id"),step)
-    events=load_events()
-    if any(str(ev.get("idempotency_key") or "")==key for ev in events):
+def load() -> list[dict[str, Any]]:
+    rows = load_json(DATA, [])
+    return rows if isinstance(rows, list) else []
+
+
+def save(rows) -> None:
+    save_json(DATA, rows if isinstance(rows, list) else [])
+
+
+def load_events() -> list[dict[str, Any]]:
+    rows = load_json(EVENTS, [])
+    return rows if isinstance(rows, list) else []
+
+
+def save_events(rows) -> None:
+    save_json(EVENTS, rows if isinstance(rows, list) else [])
+
+
+def event_exists(deal_id, step) -> bool:
+    key = idempotency_key(deal_id, step)
+    return any(str(ev.get("idempotency_key") or "") == key for ev in load_events())
+
+
+def record_sent_event(row, step, subject, sent_at) -> bool:
+    key = idempotency_key(row.get("deal_id"), step)
+    events = load_events()
+    if any(str(ev.get("idempotency_key") or "") == key for ev in events):
         return False
     events.append({
-      "deal_id":int(x.get("deal_id")),
-      "email":str(x.get("email") or "").strip().lower(),
-      "step":int(step),
-      "subject":str(subject or ""),
-      "sent_at":sent_at,
-      "status":"sent",
-      "idempotency_key":key
+        "deal_id": int(row.get("deal_id")),
+        "email": row_email(row),
+        "phone": row_phone(row),
+        "step": int(step),
+        "subject": str(subject or ""),
+        "sent_at": sent_at,
+        "status": "sent",
+        "idempotency_key": key,
     })
     save_events(events)
-    print("[EVENT_LOGGED]",key)
     return True
 
-def advance_after_send(x,step,t):
-    if step>=len(STEPS):
-        x["status"]="done"
-        x["next_send"]=None
-    else:
-        x["step"]=step+1
-        x["status"]="pending"
-        x["next_send"]=(t+timedelta(days=STEPS[step])).isoformat(timespec="seconds")
+
+def pd_request(method, path, json_body=None):
+    if not PD:
+        return None
+    response = requests.request(
+        method,
+        f"https://api.pipedrive.com/v1/{path.lstrip('/')}",
+        params={"api_token": PD},
+        json=json_body,
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        print("[PD_FAIL]", method, path, response.status_code, response.text[:200])
+        return None
+    return response.json() if response.text else {}
+
+
+def deal_label_tokens(raw) -> set[str]:
+    if raw is None:
+        return set()
+    if isinstance(raw, list):
+        return {str(item.get("id") if isinstance(item, dict) else item).strip() for item in raw if str(item or "").strip()}
+    return {item.strip() for item in str(raw or "").split(",") if item.strip()}
+
+
+def crm_stop_reason(deal_id) -> str:
+    payload = pd_request("GET", f"/deals/{int(deal_id)}")
+    deal = (payload or {}).get("data") or {}
+    status = str(deal.get("status") or "").strip().lower()
+    if status in {"won", "lost"}:
+        return status
+    labels = deal_label_tokens(deal.get("label"))
+    if str(LABEL_RESPONDIDO) in labels:
+        return "replied"
+    return ""
+
+
+def queue_conflict(rows, deal_id, email, phone) -> str:
+    target_email = str(email or "").strip().lower()
+    target_phone = normalize_phone(phone)
+    for row in rows:
+        if int(row.get("deal_id") or 0) == int(deal_id):
+            return "already_queued"
+        status = str(row.get("status") or "").strip()
+        if status in STOP_STATUSES:
+            continue
+        if target_email and row_email(row) == target_email and int(row.get("deal_id") or 0) != int(deal_id):
+            return "shared_email_blocked"
+        if target_phone and row_phone(row) == target_phone and int(row.get("deal_id") or 0) != int(deal_id):
+            return "shared_phone_blocked"
+    return ""
+
 
 def enqueue(deal_id, email, nome="", empresa="", phone="", **metadata):
+    clean_email = str(email or "").strip().lower()
+    clean_phone = normalize_phone(phone)
+    if is_generic_email(clean_email):
+        log_event("EMAIL_QUEUE_SKIP", deal_id=deal_id, email=clean_email, reason="generic_or_invalid_email")
+        return {"ok": True, "skip": "generic_or_invalid_email"}
     rows = load()
-    if any(int(x.get("deal_id", 0)) == int(deal_id) for x in rows):
-        return {"ok": True, "skip": "already_queued"}
-    item = {
+    conflict = queue_conflict(rows, deal_id, clean_email, clean_phone)
+    if conflict:
+        if conflict.startswith("shared_"):
+            rows.append({
+                "deal_id": int(deal_id),
+                "email": clean_email,
+                "phone": clean_phone,
+                "nome": nome,
+                "empresa": empresa,
+                "step": 1,
+                "status": conflict,
+                "next_send": None,
+                "created_at": now(),
+                "source": str(metadata.get("source") or "outbound"),
+            })
+            save(rows)
+        log_event("EMAIL_QUEUE_SKIP", deal_id=deal_id, email=clean_email, phone=clean_phone, reason=conflict)
+        return {"ok": True, "skip": conflict}
+    row = {
         "deal_id": int(deal_id),
-        "email": email,
+        "email": clean_email,
+        "phone": clean_phone,
         "nome": nome,
         "empresa": empresa,
-        "phone": phone,
         "step": 1,
         "status": "pending",
         "next_send": now(),
         "created_at": now(),
+        "last_sent_step_email": 0,
+        "source": str(metadata.get("source") or "outbound"),
     }
-    item.update(metadata or {})
-    rows.append(item)
+    rows.append(row)
     save(rows)
-    return {"ok": True, "queued": deal_id}
+    mark_email_cadence(deal_id, email=clean_email, phone=clean_phone, active=True, origin="outbound")
+    log_event("EMAIL_QUEUE_ADD", deal_id=deal_id, email=clean_email, phone=clean_phone)
+    return {"ok": True, "queued": int(deal_id)}
+
+
+def cta_html(row, step):
+    deal_id = row.get("deal_id") or row.get("id")
+    forms = f"{TRACKING_BASE_URL}/t/{deal_id}/{step}?r={FORM_URL}"
+    calendly = f"{TRACKING_BASE_URL}/t/{deal_id}/{step}?r={CALENDLY_URL}"
+    return (
+        "<br><br>Se fizer sentido, voce pode:<br><br>"
+        f"<a href='{forms}' style='color:#2563eb;text-decoration:underline;font-weight:600;'>Responder em 1 minuto</a><br><br>"
+        f"<a href='{calendly}' style='color:#16a34a;text-decoration:underline;font-weight:600;'>Ou agendar direto comigo</a>"
+    )
+
+
+def open_pixel(row, step):
+    return f"<img src='{TRACKING_BASE_URL}/o/{row.get('deal_id')}/{step}.gif' width='1' height='1' style='display:none' alt='' />"
+
+
+def template(step, row):
+    nome = (row.get("nome") or "").split(" ")[0].title() or "tudo bem"
+    empresa = row.get("empresa") or "a empresa"
+    cta = cta_html(row, step)
+    pixel = open_pixel(row, step)
+    textos = {
+        1: ("duvida rapida sobre campanhas", f"Oi {nome}, tudo bem?<br><br>Queria te fazer uma pergunta direta: hoje voces usam campanhas promocionais para gerar venda ou o crescimento vem mais do fluxo natural?{cta}<br><br>Abs,<br>Carol{pixel}"),
+        2: ("o que tenho visto no mercado", f"Oi {nome},<br><br>Vejo um padrao em empresas como {empresa}: campanhas geram movimento, mas nem sempre capturam dados uteis depois. Com roleta, raspadinha ou premio instantaneo da para medir melhor o interesse.{cta}<br><br>Abs,<br>Carol{pixel}"),
+        3: ("campanha como gatilho", f"Oi {nome},<br><br>Voces ja tem alguma acao para aproveitar datas fortes e aumentar participacao do publico? A Mand estrutura campanhas interativas com captura de dados proprios.{cta}<br><br>Abs,<br>Carol{pixel}"),
+        4: ("campanha que vira dado", f"Oi {nome},<br><br>Um ponto comum: muita campanha gera exposicao, mas pouca inteligencia para o proximo passo. Quando o cliente participa, da para entender interesse, canal e intencao.{cta}<br><br>Abs,<br>Carol{pixel}"),
+        5: ("antes da proxima campanha", f"Oi {nome},<br><br>Quem estrutura campanha antes da data comercial captura mais valor durante o pico: movimento, base propria, dados e recorrencia.{cta}<br><br>Abs,<br>Carol{pixel}"),
+        6: ("faz sentido ou encerro por aqui?", f"Oi {nome},<br><br>Prometo ser minha ultima mensagem. Campanhas interativas orientadas a dados fazem sentido para {empresa} agora ou nao e prioridade?{cta}<br><br>Abs,<br>Carol{pixel}"),
+    }
+    return textos.get(int(step), textos[1])
 
 
 def send_smtp(to, subject, body):
     if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, FROM]):
         print("[DRY_RUN] SMTP env ausente:", to, subject)
-        return {"ok":True,"dry_run":True}
-
-    from email.message import EmailMessage
+        return {"ok": True, "dry_run": True}
     msg = EmailMessage()
     msg["From"] = FROM
     msg["To"] = to
     msg["Subject"] = subject
-    msg.set_content(body.replace("<br>", "<br>").replace("<br/>", "<br>"))
+    msg.set_content(body.replace("<br>", "\n"))
     msg.add_alternative(body, subtype="html")
-
     ctx = ssl.create_default_context()
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx, timeout=30) as server:
         server.login(SMTP_USER, SMTP_PASS)
         server.send_message(msg)
+    return {"ok": True, "dry_run": False}
 
-    print("[SMTP_SEND_OK]", to, subject)
-    return {"ok":True,"dry_run":False}
 
-def smtp_ok(result):
-    if isinstance(result,dict):
-        return bool(result.get("ok"))
-    return bool(result)
+def advance_after_send(row, step, sent_at):
+    row["last_sent_step_email"] = int(step)
+    row["last_sent_at"] = sent_at
+    if step >= 6:
+        row["status"] = "done"
+        row["next_send"] = None
+    else:
+        row["step"] = step + 1
+        row["status"] = "pending"
+        row["next_send"] = (datetime.now() + timedelta(days=STEPS[step])).isoformat(timespec="seconds")
 
-def smtp_dry_run(result):
-    return isinstance(result,dict) and bool(result.get("dry_run"))
 
 def tick():
-    rows=load(); changed=False
-    t=datetime.now()
-    sent_count=0
-    for x in rows:
-        if sent_count >= MAX_EMAILS_PER_TICK:
-            print(f"[CADENCE_LIMIT_REACHED] max={MAX_EMAILS_PER_TICK}")
+    rows = load()
+    changed = False
+    sent_today = 0
+    current = datetime.now()
+    for row in rows:
+        status = str(row.get("status") or "")
+        if status in STOP_STATUSES:
+            continue
+        stop_reason = crm_stop_reason(row.get("deal_id"))
+        if stop_reason:
+            row["status"] = stop_reason
+            row["stopped_at"] = now()
+            row["stop_reason"] = f"crm_{stop_reason}"
+            changed = True
+            log_event("EMAIL_REPLY_STOP", deal_id=row.get("deal_id"), reason=stop_reason)
+            continue
+        if status != "pending":
+            continue
+        if sent_today >= DAILY_LIMIT:
             break
-        if str(x.get("status") or "") in STOP_STATUSES:
+        if not row.get("next_send") or datetime.fromisoformat(row["next_send"]) > current:
             continue
-
-        if x.get("status")!="pending": continue
-        if datetime.fromisoformat(x["next_send"])>t: continue
-        step=int(x.get("step",1))
-        subj,body=template(step, x)
-        if event_exists(x.get("deal_id"),step):
-            advance_after_send(x,step,t)
-            changed=True
+        step = max(1, min(6, int(row.get("step") or 1)))
+        if int(row.get("last_sent_step_email") or 0) >= step or event_exists(row.get("deal_id"), step):
+            advance_after_send(row, step, now())
+            changed = True
             continue
-        result=send_smtp(x["email"],subj,body)
-        if smtp_ok(result):
-            if smtp_dry_run(result):
-                print(f"[SKIP_ADVANCE_DRY_RUN] deal={x.get('deal_id')} email={x.get('email')} step={step}")
+        subject, body = template(step, row)
+        result = send_smtp(row["email"], subject, body)
+        if not (isinstance(result, dict) and result.get("ok")):
+            continue
+        sent_at = now()
+        if not result.get("dry_run"):
+            if not record_sent_event(row, step, subject, sent_at):
+                advance_after_send(row, step, sent_at)
+                changed = True
                 continue
-            sent_at=now()
-            x["last_sent_at"]=sent_at
-            record_sent_event(x,step,subj,sent_at)
-            advance_after_send(x,step,t)
-            sent_count += 1
-            changed=True
-    if changed: save(rows)
+            log_event("EMAIL_SENT", deal_id=row.get("deal_id"), email=row.get("email"), step=step, subject=subject)
+            sent_today += 1
+            time.sleep(MIN_DELAY_SECONDS)
+        advance_after_send(row, step, sent_at)
+        changed = True
+    if changed:
+        save(rows)
     print("[CADENCE_TICK_OK]")
-if __name__=="__main__":
+
+
+if __name__ == "__main__":
     tick()

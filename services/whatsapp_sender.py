@@ -1,23 +1,9 @@
-﻿import requests
+"""Compatibility shim for legacy imports.
 
-def send_whatsapp(numero, mensagem):
-    url = "http://localhost:3000/message/send"
+Automatic WhatsApp sending is centralized in scripts/whatsapp_warm_cadence.py.
+"""
 
-    payload = {
-        "number": numero,
-        "text": mensagem
-    }
 
-    try:
-        res = requests.post(url, json=payload, timeout=20)
-
-        if res.status_code == 200:
-            print(f"[ENVIADO_OK_CENTRAL] {numero}")
-            return True
-        else:
-            print(f"[ERRO_ENVIO_CENTRAL] {res.text}")
-            return False
-
-    except Exception as e:
-        print(f"[ERRO_ENVIO_CENTRAL] {e}")
-        return False
+def send_whatsapp(*_args, **_kwargs):
+    print("[LEGACY_WA_SENDER_DISABLED] use scripts/whatsapp_warm_cadence.py")
+    return False

@@ -419,6 +419,8 @@ def classify_conversation_intent(message):
     nonlead_intent = str(pitch.detect_nonlead_intent(message) or "").strip().lower()
     if closing_key in {"wrong_number", "unknown_person"} or nonlead_intent == "numero_errado":
         return "wrong_contact"
+    if nonlead_intent in {"mensagem_automatica", "menu_ura", "mensagem_institucional", "empresa_incompativel", "setor_errado"}:
+        return "automation_blocked"
     if detect_referral_intent(message):
         return "referred"
     if any(token in text for token in ("case", "exemplo", "modelo", "como funciona", "manda", "envia")):
@@ -457,7 +459,7 @@ def update_whatsapp_conversation_state_for_lead(lead_state, phone, message="", i
             "opt_out": bool(previous.get("opt_out", False) or resolved_intent == "opt_out"),
             "wrong_contact": bool(previous.get("wrong_contact", False) or resolved_intent == "wrong_contact"),
             "referred": bool(previous.get("referred", False) or resolved_intent == "referred"),
-            "stopped": bool(previous.get("stopped", False) or resolved_intent in {"opt_out", "wrong_contact", "referred"}),
+            "stopped": bool(previous.get("stopped", False) or resolved_intent in {"opt_out", "wrong_contact", "referred", "automation_blocked"}),
             "last_intent": resolved_intent,
             "last_bot_reply": str(last_bot_reply or previous.get("last_bot_reply") or ""),
             "last_lead_reply": str(message or previous.get("last_lead_reply") or ""),
@@ -1300,7 +1302,7 @@ def build_agent_decision(data):
         reply = "Perfeito, obrigado pela indicação. Vou seguir por esse contato e não te incomodo mais por aqui."
         reason = "referral_rule"
         confidence = 0.98
-    elif nonlead_intent in {"empresa_incompativel", "setor_errado"}:
+    elif nonlead_intent in {"mensagem_automatica", "menu_ura", "mensagem_institucional", "empresa_incompativel", "setor_errado"}:
         intent = str(nonlead_intent or "empresa_incompativel")
         action = "pause_automation"
         reason = f"nonlead:{nonlead_intent}"
@@ -1470,7 +1472,7 @@ def build_local_agent_decision(data):
             should_pause_automation = True
             should_move_stage = True
             should_send = bool(reply)
-        elif nonlead_intent in {"empresa_incompativel", "setor_errado"}:
+        elif nonlead_intent in {"mensagem_automatica", "menu_ura", "mensagem_institucional", "empresa_incompativel", "setor_errado"}:
             intent = str(nonlead_intent or "empresa_incompativel")
             action = "pause_automation"
             reason = f"nonlead:{nonlead_intent}"
@@ -3107,7 +3109,7 @@ def email_callback():
         note_ok = bool(
             crm.add_note(
                 deal_id=deal_id,
-                content=f"E-mail enviado na cadencia {cadence_step}. Confirmado por callback do n8n."
+                content=f"E-mail enviado na cadencia {cadence_step}. Confirmado por callback nativo do SDR."
             )
         ) if deal_id > 0 else False
         pending.pop(event_id, None)

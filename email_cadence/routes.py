@@ -43,6 +43,19 @@ def merge_label(deal_id, label_id):
     return crm.update_deal(int(deal_id), {"label": current})
 
 
+def load_queue():
+    p = Path("/root/sdr-vps/data/email_cadence_queue.json")
+    try:
+        return p, json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+    except Exception:
+        return p, []
+
+
+def save_queue(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 @router.post("/webhooks/email-cadence")
 async def start_email_cadence(req: Request):
     body = await req.json()
@@ -90,38 +103,44 @@ async def start_email_cadence(req: Request):
 
 @router.get("/t/{deal_id}/{step}")
 async def track_click(deal_id: int, step: int, req: Request):
-    p = Path("/root/sdr-vps/data/email_cadence_queue.json")
-    rows = json.loads(p.read_text()) if p.exists() else []
+    p, rows = load_queue()
+    first_click = True
     for x in rows:
         if int(x.get("deal_id", 0)) == int(deal_id):
+            if x.get("status") == "clicked_warm" and int(x.get("clicked_step") or 0) == int(step):
+                first_click = False
             x["clicked_at"] = datetime.now().isoformat(timespec="seconds")
             x["clicked_step"] = int(step)
             x["status"] = "clicked_warm"
-    p.write_text(json.dumps(rows, ensure_ascii=False, indent=2))
+            x["cadence_email_active"] = False
+    save_queue(p, rows)
 
-    try:
-        crm.add_note(deal_id=deal_id, content=f"CLIQUE detectado no email cadencia {step}. Lead virou warm.")
-    except Exception:
-        pass
-    try:
-        merge_label(deal_id, WARM_WHATSAPP_LABEL_ID)
-        crm.update_deal(int(deal_id), {"stage_id": STAGE_PRONTO_PROSPECCAO})
-    except Exception as exc:
-        print("[WARM_LABEL_FAIL]", deal_id, exc)
-    try:
-        mark_warm(deal_id, source="email_click", score_event="email_click")
-    except Exception as exc:
-        print("[STATE_WARM_FAIL]", deal_id, exc)
-    try:
-        crm.create_activity(
-            deal_id=deal_id,
-            subject="PRIORIDADE: ligar/WhatsApp - clique na campanha Copa",
-            type="call",
-            note="Lead clicou na cadencia. Priorizar ligacao/WhatsApp."
-        )
-    except Exception:
-        pass
-    log_event("EMAIL_CLICK", deal_id=deal_id, step=step)
+    if first_click:
+        try:
+            crm.add_note(deal_id=deal_id, content=f"CLIQUE detectado no email cadencia {step}. Lead virou warm.")
+        except Exception:
+            pass
+        try:
+            merge_label(deal_id, WARM_WHATSAPP_LABEL_ID)
+            crm.update_deal(int(deal_id), {"stage_id": STAGE_PRONTO_PROSPECCAO})
+        except Exception as exc:
+            print("[WARM_LABEL_FAIL]", deal_id, exc)
+        try:
+            mark_warm(deal_id, source="email_click", score_event="email_click")
+        except Exception as exc:
+            print("[STATE_WARM_FAIL]", deal_id, exc)
+        try:
+            crm.create_activity(
+                deal_id=deal_id,
+                subject="PRIORIDADE: ligar/WhatsApp - clique na campanha Copa",
+                type="call",
+                note="Lead clicou na cadencia. Priorizar ligacao/WhatsApp."
+            )
+        except Exception:
+            pass
+        log_event("EMAIL_CLICK", deal_id=deal_id, step=step)
+    else:
+        log_event("EMAIL_CLICK_DUP", deal_id=deal_id, step=step)
     target = str(req.query_params.get("r") or "https://manddigital.com.br/").strip()
     return RedirectResponse(target)
 

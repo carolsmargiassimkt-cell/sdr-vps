@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-cd /root/sdr-vps || exit 1
-python3 -m py_compile supervisor.py || exit 1
-pm2 start ecosystem.vps.config.js --only supervisor
-pm2 save
-pm2 logs supervisor --lines 80
+set -euo pipefail
+echo "[LEGACY_SUPERVISOR_DISABLED] Supervisor antigo nao deve ser iniciado."
+echo "Use: pm2 startOrRestart /root/sdr-vps/ecosystem.vps.config.js --only api,handler,whatsapp"
+exit 0

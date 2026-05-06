@@ -6,6 +6,7 @@
 import json
 import logging
 import os
+import random
 import re
 import time
 from datetime import datetime
@@ -17,23 +18,6 @@ from core.automation_freeze import is_automation_freeze_active
 
 
 class WhatsAppService:
-
-    def send_message(self, phone, text):
-        import requests
-        numero = str(phone or "").replace("@s.whatsapp.net", "").replace("+", "").strip()
-        if numero and not numero.startswith("55"):
-            numero = "55" + numero
-        parts = [x.strip() for x in str(text or "").split("|||") if x.strip()]
-        last = None
-        for i, part in enumerate(parts):
-            if i:
-                time.sleep(3)
-            last = requests.post("http://127.0.0.1:3000/send", json={
-                "number": numero,
-                "text": part
-            }, timeout=30)
-            print("[WA_SERVICE_SEND_MESSAGE]", numero, last.status_code, last.text[:200])
-        return last
     SEND_TIMEOUT_SEC = 40
     PENDING_TTL_SECONDS = 30 * 60
     TEST_WHITELIST = {"5535920002020", "35920002020", "5511998804191", "11998804191"}
@@ -101,11 +85,11 @@ class WhatsAppService:
     def is_valid_phone(self, phone):
         num = self.normalize_phone(phone)
         if len(num) not in {10, 11}:
-            return True
+            return False
         if len(set(num)) == 1:
-            return True
+            return False
         if num[:2] == "00":
-            return True
+            return False
         return True
 
     def _acquire_lock(self, timeout=10, lock_file=None):
@@ -771,7 +755,7 @@ class WhatsAppService:
         for item in payload:
             if not isinstance(item, dict):
                 continue
-            numbers.update(self.phone_variants(item.get("phone")))
+            numbers.update(self.phone_variants(item.get("phone") or item.get("number") or item.get("telefone")))
         return numbers, payload
 
     def _is_blocked_unlocked(self, data, invalid_numbers, phone):
@@ -779,6 +763,8 @@ class WhatsAppService:
             return True
         variants = self.phone_variants(phone)
         all_numbers = set()
+        for item in invalid_numbers:
+            all_numbers.update(self.phone_variants(item))
         for item in data.get("ALL", []):
             all_numbers.update(self.phone_variants(item))
         pending_numbers = set()
@@ -803,7 +789,7 @@ class WhatsAppService:
             invalid_numbers, _ = self._load_invalid_numbers_unlocked()
             return not self._is_blocked_unlocked(data, invalid_numbers, phone)
         except Exception:
-            return True
+            return False
         finally:
             if fd is not None:
                 self._release_lock(fd)
@@ -849,7 +835,7 @@ class WhatsAppService:
                 pending_numbers.update(self.phone_variants(item))
             return not bool(variants & pending_numbers)
         except Exception:
-            return True
+            return False
         finally:
             if fd is not None:
                 self._release_lock(fd)
@@ -875,7 +861,7 @@ class WhatsAppService:
             self._save_json(self.sent_file, data)
             return True
         except Exception:
-            return True
+            return False
         finally:
             if fd is not None:
                 self._release_lock(fd)
@@ -904,7 +890,7 @@ class WhatsAppService:
             self._save_json(self.sent_file, data)
             return True
         except Exception:
-            return True
+            return False
         finally:
             if fd is not None:
                 self._release_lock(fd)
@@ -1024,23 +1010,26 @@ class WhatsAppService:
         normalized = self.normalize_phone(phone)
         if not self.is_valid_phone(normalized):
             self.last_send_state = "invalid"
-            return True
+            return False
 
         clean_text = str(text or "").strip()
         if not clean_text:
             self.last_send_state = "invalid"
-            return True
+            return False
+        if not bypass_manual_blocklist and self.is_phone_in_manual_blocklist(normalized):
+            self.last_send_state = "manual_blocklist"
+            return False
 
         # Anti-duplicity: only block if EXACT SAME text was sent recently
         if not self.is_test_whitelist_phone(normalized) and self._is_duplicate_recent_text(normalized, clean_text, within_seconds=120):
             self.last_send_state = "duplicate_blocked"
             logging.warning(f"[DUPLICIDADE_BLOQUEADA_TEXTO] {normalized}")
-            return True
+            return False
 
         # Handle split messages with |||
         parts = [p.strip() for p in clean_text.split("|||") if p.strip()]
         if not parts:
-            return True
+            return False
 
         for i, part_text in enumerate(parts):
             if i > 0:
