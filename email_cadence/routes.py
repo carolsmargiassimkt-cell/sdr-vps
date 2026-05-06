@@ -84,7 +84,7 @@ async def start_email_cadence(req: Request):
         email,
         p.get("name", ""),
         org_name or "",
-        phone=phone,
+        phone,
     )
 
 

@@ -169,16 +169,25 @@ def advance_after_send(x,step,t):
         x["status"]="pending"
         x["next_send"]=(t+timedelta(days=STEPS[step])).isoformat(timespec="seconds")
 
-def enqueue(deal_id,email,nome="",empresa=""):
-    rows=load()
-    if any(int(x.get("deal_id",0))==int(deal_id) for x in rows):
-        return {"ok":True,"skip":"already_queued"}
-    rows.append({
-      "deal_id":int(deal_id),"email":email,"nome":nome,"empresa":empresa,
-      "step":1,"status":"pending","next_send":now(),"created_at":now()
-    })
+def enqueue(deal_id, email, nome="", empresa="", phone="", **metadata):
+    rows = load()
+    if any(int(x.get("deal_id", 0)) == int(deal_id) for x in rows):
+        return {"ok": True, "skip": "already_queued"}
+    item = {
+        "deal_id": int(deal_id),
+        "email": email,
+        "nome": nome,
+        "empresa": empresa,
+        "phone": phone,
+        "step": 1,
+        "status": "pending",
+        "next_send": now(),
+        "created_at": now(),
+    }
+    item.update(metadata or {})
+    rows.append(item)
     save(rows)
-    return {"ok":True,"queued":deal_id}
+    return {"ok": True, "queued": deal_id}
 
 
 def send_smtp(to, subject, body):
