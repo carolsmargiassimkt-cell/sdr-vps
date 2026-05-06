@@ -943,11 +943,23 @@ class WhatsAppPitchEngine:
 
         # Default fallback for "sim", "oi", etc. if not caught above
         if any(k in latest for k in ("oi", "ola", "bom dia", "boa tarde")):
-             rendered = self._render_placeholders("{Oi|Olá}! Vi sua mensagem por aqui.\n\nPosso te mandar um exemplo rápido de como essa campanha funcionaria para um __SEGMENTO__?", lead=lead)
+             options = [
+                 "{Oi|Olá}! {Tudo certo?|Tudo bem?} 🙂\nVi sua mensagem aqui.\n\n{Posso te mandar um exemplo rápido de campanha para __SEGMENTO__?|Consigo te mostrar rapidinho como isso funcionaria para __SEGMENTO__.}",
+                 "{Oi|Olá}! Claro 🙂\n\n{Posso te mostrar rapidinho como funciona?|Te mando um exemplo curto de campanha interativa e você vê se faz sentido?}",
+                 "Oi! Tudo bem?\n\nConsigo te mandar um exemplo real de campanha que usamos no varejo. {Pode ser?|Quer ver?}",
+                 "{Oi|Olá}! Vi por aqui.\n\n{A ideia é simples: uma ação interativa para gerar engajamento e captar contatos.|Posso te mandar uma ideia prática, sem enrolar.} Faz sentido?",
+             ]
+             rendered = self._render_placeholders(random.choice(options), lead=lead)
              return self._clean_block(self._render_spintax(rendered))
 
         if any(k in latest for k in ("sim", "claro", "pode ser", "beleza", "legal")):
-             return self._render_placeholders("Legal! A ideia é transformar suas campanhas em experiências interativas, tipo roleta ou raspadinha digital.\n\nIsso gera muito mais engajamento e você fica com os dados de quem participou.\n\nQuer ver como funcionaria para um __SEGMENTO__?", lead=lead)
+             options = [
+                 "Legal 🙂\n\nA ideia é transformar a campanha em uma experiência interativa, como roleta ou raspadinha digital, para gerar engajamento e captar contatos.\n\n{Quer que eu te mande um exemplo para __SEGMENTO__?|Posso te mostrar um modelo simples para __SEGMENTO__?}",
+                 "Perfeito. Vou te explicar de um jeito direto:\n\nEm vez de só divulgar a campanha, a pessoa participa, deixa os dados e vocês conseguem medir o resultado.\n\n{Quer ver um exemplo prático?|Posso mandar um case curto?}",
+                 "Boa. Para __SEGMENTO__, costuma funcionar bem quando a campanha entrega um benefício rápido e já captura o contato do cliente.\n\n{Te mando uma ideia aplicada?|Quer que eu adapte um exemplo para vocês?}",
+             ]
+             rendered = self._render_placeholders(random.choice(options), lead=lead)
+             return self._clean_block(self._render_spintax(rendered))
 
         return ""
 
@@ -983,19 +995,25 @@ class WhatsAppPitchEngine:
                 lead=lead,
             )
         if any(k in latest for k in ("sim", "claro", "pode", "beleza", "legal", "interesse", "quero")):
-            return self._render_placeholders(
-                "Legal. O caminho mais simples e te mostrar um exemplo aplicado ao seu contexto e ver se faz sentido.\n\nPrefere que eu te mande um material curto ou marcamos uma conversa rapida?",
-                lead=lead,
-            )
+            options = [
+                "Legal. O caminho mais simples é te mostrar um exemplo aplicado ao seu contexto.\n\n{Prefere que eu te mande um material curto ou marcamos uma conversa rápida?|Posso te mandar um exemplo primeiro e, se fizer sentido, a gente agenda?}",
+                "Perfeito 🙂\n\nPosso te mostrar um modelo rápido e você me diz se faz sentido para vocês. {Pode ser?|Quer que eu mande por aqui?}",
+                "Boa. Vou seguir de forma prática: te mando um exemplo curto de campanha e depois vemos se vale uma conversa rápida. {Combinado?|Pode ser assim?}",
+            ]
+            return self._clean_block(self._render_spintax(self._render_placeholders(random.choice(options), lead=lead)))
         if any(k in latest for k in ("oi", "ola", "bom dia", "boa tarde", "boa noite")):
-            return self._render_placeholders(
-                "Oi! Vi sua mensagem por aqui.\n\nPosso te mandar um exemplo rapido de como essa campanha funcionaria para um __SEGMENTO__?",
-                lead=lead,
-            )
-        return self._render_placeholders(
-            "Entendi. Para te responder melhor, posso seguir por dois caminhos: te mando um exemplo curto ou marcamos uma conversa rapida para ver se faz sentido no seu contexto.\n\nQual prefere?",
-            lead=lead,
-        )
+            options = [
+                "{Oi|Olá}! {Tudo bem?|Tudo certo?} 🙂\nVi sua mensagem aqui.\n\n{Posso te mandar um exemplo rápido para __SEGMENTO__?|Consigo te mostrar uma ideia prática para __SEGMENTO__.}",
+                "Oi! Claro 🙂\n\nPosso te mostrar rapidinho como isso funciona na prática.",
+                "Olá! Vi por aqui.\n\nTenho um exemplo curto de campanha interativa que pode fazer sentido. {Quer que eu mande?|Posso te enviar?}",
+            ]
+            return self._clean_block(self._render_spintax(self._render_placeholders(random.choice(options), lead=lead)))
+        options = [
+            "Entendi. Para te responder melhor, posso seguir de forma prática: {te mando um exemplo curto|te mostro uma ideia aplicada} ou marcamos uma conversa rápida.\n\n{Qual prefere?|O que te ajuda mais agora?}",
+            "Certo. Posso te mandar um exemplo direto e você vê se faz sentido para o seu contexto.\n\n{Pode ser?|Quer que eu envie?}",
+            "Entendi 🙂\n\nAcho melhor te mostrar na prática. {Te mando um exemplo curto por aqui?|Quer ver um modelo rápido?}",
+        ]
+        return self._clean_block(self._render_spintax(self._render_placeholders(random.choice(options), lead=lead)))
 
     def _gemini_api_keys(self) -> List[str]:
         keys: List[str] = []

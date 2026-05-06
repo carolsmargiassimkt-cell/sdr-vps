@@ -212,11 +212,24 @@ def prepare_whatsapp_reply_text(text: str) -> str:
     return after
 
 
+def last_outbound_message_for_phone(phone):
+    normalized_phone = whatsapp.normalize_phone(phone)
+    if not normalized_phone:
+        return ""
+    for item in reversed(load_history().get(normalized_phone, [])):
+        if str(item.get("direction") or "").strip().lower() == "out":
+            return str(item.get("message") or "").strip()
+    return ""
+
+
 def _send_whitelist_reply_via_gateway(phone, text):
     number = normalize_gateway_number(phone)
     clean_text = prepare_whatsapp_reply_text(text)
     if not number or not clean_text:
         print(f"[INBOX_SEND_WHITELIST_RESULT] number={number} status=0 gateway_status=empty_payload ok=0")
+        return False
+    if clean_text == last_outbound_message_for_phone(phone):
+        print(f"[DUPLICIDADE_BLOQUEADA_TEXTO] {phone} motivo=last_outbound_exact")
         return False
     payload = {
         "number": number,
@@ -583,6 +596,8 @@ def classify_conversation_intent(message):
         return "referred"
     if detect_pause_not_now_intent(message):
         return "pause_not_now"
+    if detect_scheduling_time_provided(message):
+        return "scheduling_time_provided"
     if any(token in text for token in ("case", "exemplo", "modelo", "como funciona", "manda", "envia")):
         return "asked_case"
     if detect_positive_intent(message) or detect_scheduling_intent(message):
@@ -616,6 +631,7 @@ def update_whatsapp_conversation_state_for_lead(lead_state, phone, message="", i
             "replied": bool(previous.get("replied", False) or message),
             "asked_case": bool(previous.get("asked_case", False) or resolved_intent == "asked_case"),
             "interested": bool(previous.get("interested", False) or resolved_intent == "interested"),
+            "scheduling_time_provided": bool(previous.get("scheduling_time_provided", False) or resolved_intent == "scheduling_time_provided"),
             "opt_out": bool(previous.get("opt_out", False) or resolved_intent == "opt_out"),
             "wrong_contact": bool(previous.get("wrong_contact", False) or resolved_intent == "wrong_contact"),
             "referred": bool(previous.get("referred", False) or resolved_intent == "referred"),
@@ -1395,6 +1411,88 @@ def detect_scheduling_intent(message):
     return any(token in normalized for token in tokens)
 
 
+def detect_scheduling_time_provided(message):
+    normalized = normalize_stage_text(message)
+    if not normalized:
+        return False
+    hour_patterns = (
+        r"\b(?:[01]?\d|2[0-3])\s*h(?:\s*[0-5]\d)?\b",
+        r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b",
+    )
+    if any(re.search(pattern, normalized) for pattern in hour_patterns):
+        return True
+    day_tokens = (
+        "hoje", "amanha", "amanhã",
+        "segunda", "terca", "terça", "quarta", "quinta", "sexta",
+        "sabado", "sábado", "domingo",
+    )
+    period_tokens = ("manha", "manhã", "tarde", "noite", "cedo")
+    availability_tokens = ("posso", "pode ser", "funciona", "consigo", "livre", "melhor")
+    has_day = any(token in normalized for token in day_tokens)
+    has_period = any(token in normalized for token in period_tokens)
+    has_availability = any(token in normalized for token in availability_tokens)
+    return bool((has_day and (has_period or has_availability)) or (has_period and has_availability))
+
+
+def extract_scheduling_phrase(message):
+    phrase = re.sub(r"\s+", " ", str(message or "").strip())
+    if not phrase:
+        return "esse horário"
+    replacements = {
+        "amanha": "amanhã",
+        " as ": " às ",
+        " as": " às",
+    }
+    lowered = phrase.lower()
+    for before, after in replacements.items():
+        lowered = lowered.replace(before, after)
+    return lowered[:80]
+
+
+def has_scheduling_context(lead_state, phone, history=None):
+    context_texts = []
+    for record in get_whatsapp_conversation_records_for_lead(lead_state, phone):
+        context_texts.append(record.get("last_bot_reply") or "")
+        context_texts.append(record.get("last_intent") or "")
+    for item in reversed(list(history or [])[-8:]):
+        if isinstance(item, dict):
+            if str((item or {}).get("direction") or "").strip().lower() == "out":
+                context_texts.append((item or {}).get("message") or "")
+                break
+            continue
+        context_texts.append(str(item or ""))
+    normalized = normalize_stage_text(" ".join(str(item or "") for item in context_texts))
+    schedule_markers = (
+        "qual horario",
+        "qual horário",
+        "horario te ajuda",
+        "horário te ajuda",
+        "horario fica melhor",
+        "horário fica melhor",
+        "melhor horario",
+        "melhor horário",
+        "agendamento",
+        "agenda",
+        "reuniao",
+        "reunião",
+        "call",
+        "schedule",
+    )
+    return any(marker in normalized for marker in schedule_markers)
+
+
+def build_scheduling_confirmation_reply(message):
+    phrase = extract_scheduling_phrase(message)
+    options = [
+        f"Perfeito, {phrase} funciona 🙂 Vou deixar separado aqui e te mando a confirmação.",
+        f"Perfeito. {phrase.capitalize()} funciona sim. Vou alinhar aqui e te confirmo por aqui 👍",
+        f"Combinado, {phrase} funciona. Vou organizar daqui e te mando a confirmação por aqui.",
+    ]
+    reply = random.choice(options)
+    print(f"[SCHEDULING_CONFIRMATION_REPLY] reply={reply}")
+    return reply
+
+
 def classify_business_intent_gemini(message):
     prompt = (
         "Classifique a mensagem comercial em exatamente um rotulo: "
@@ -1479,6 +1577,13 @@ def build_agent_decision(data):
         action = "pause_automation"
         reason = f"nonlead:{nonlead_intent}"
         confidence = 0.98
+    elif detect_scheduling_time_provided(text) and has_scheduling_context({}, phone, history):
+        print(f"[SCHEDULING_TIME_DETECTED] telefone={phone} texto={text}")
+        intent = "scheduling_time_provided"
+        action = "confirm_schedule"
+        reply = build_scheduling_confirmation_reply(text)
+        reason = "scheduling_time_provided_rule"
+        confidence = 0.97
     elif detect_scheduling_intent(text) or stateful_intent.startswith("agendamento"):
         intent = "agendamento"
         action = "schedule"
@@ -1661,6 +1766,16 @@ def build_local_agent_decision(data):
             confidence = 0.98
             should_pause_automation = True
             should_send = False
+        elif detect_scheduling_time_provided(text) and has_scheduling_context({}, phone, history):
+            print(f"[SCHEDULING_TIME_DETECTED] telefone={phone} texto={text}")
+            intent = "scheduling_time_provided"
+            action = "confirm_schedule"
+            reply = build_scheduling_confirmation_reply(text)
+            reason = "scheduling_time_provided_rule"
+            confidence = 0.97
+            should_pause_automation = True
+            should_create_activity = True
+            should_send = bool(reply)
         elif detect_scheduling_intent(text) or stateful_intent.startswith("agendamento"):
             intent = "agendamento"
             action = "schedule"
@@ -1728,6 +1843,12 @@ def build_local_agent_decision(data):
                 action = "pause_automation"
                 should_pause_automation = True
                 should_send = False
+            elif intent == "scheduling_time_provided" and has_scheduling_context({}, phone, history):
+                action = "confirm_schedule"
+                reply = build_scheduling_confirmation_reply(text)
+                should_pause_automation = True
+                should_create_activity = True
+                should_send = bool(reply)
             elif intent == "agendamento":
                 action = "schedule"
                 reply = "Perfeito. Me fala só o melhor horário para eu organizar isso direitinho."
@@ -3949,6 +4070,25 @@ def inbox():
             for item in history
             if str(item.get("direction") or "").strip().lower() == "in"
         ]
+        if detect_scheduling_time_provided(message) and has_scheduling_context(lead_state, phone, history):
+            print(f"[SCHEDULING_TIME_DETECTED] telefone={phone} texto={message}")
+            reply = prepare_whatsapp_reply_text(build_scheduling_confirmation_reply(message))
+            if not can_emit_reply(phone, reply, within_seconds=REPLY_WINDOW_SECONDS):
+                print(f"[DUPLICIDADE_BLOQUEADA_TEXTO] {phone}")
+                commit_processed_key(key)
+                return jsonify({"ok": True, "confirmed": True, "intent": "scheduling_time_provided", "action": "confirm_schedule", "duplicated": True})
+            ok = blocked_whatsapp_send(phone, reply)
+            if ok:
+                append_history(phone, "out", reply, step=current_step)
+                update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="scheduling_time_provided", last_bot_reply=reply)
+                whatsapp.clear_after_hours_pending(phone)
+                print(f"[RESPOSTA_ENVIADA] {phone}")
+                commit_processed_key(key)
+                return jsonify({"ok": True, "confirmed": True, "intent": "scheduling_time_provided", "action": "confirm_schedule"})
+            release_reply_guard(phone)
+            print(f"[FALHA_ENVIO] {phone}")
+            return jsonify({"ok": False, "confirmed": False, "intent": "scheduling_time_provided", "action": "confirm_schedule"})
+
         agent_payload = maybe_handle_inbound_agent_decision(
             phone=phone,
             message=message,

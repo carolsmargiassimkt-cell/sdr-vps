@@ -53,6 +53,8 @@ def assert_gateway_contract_in_source() -> None:
         '"count_towards_daily_limit": False',
         "[INBOX_SEND_WHITELIST_RESULT]",
         "[OFFICIAL_REPLY_SELECTED]",
+        "[SPINTAX_RENDERED]",
+        "prepare_whatsapp_reply_text",
     )
     missing = [item for item in required if item not in source]
     if missing:
