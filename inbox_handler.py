@@ -58,6 +58,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import re
 import sys
 import time
@@ -186,9 +187,34 @@ def can_auto_reply_inbound(phone, source="", lead_state=None):
     return allowed
 
 
+def render_spintax(text: str) -> str:
+    rendered = str(text or "")
+    pattern = re.compile(r"\{([^{}|]+(?:\|[^{}|]+)+)\}")
+    while True:
+        match = pattern.search(rendered)
+        if not match:
+            break
+        options = [part.strip() for part in match.group(1).split("|") if part.strip()]
+        replacement = random.choice(options) if options else ""
+        rendered = rendered[:match.start()] + replacement + rendered[match.end():]
+    return rendered
+
+
+def prepare_whatsapp_reply_text(text: str) -> str:
+    before = str(text or "").strip()
+    after = render_spintax(before).strip()
+    if before != after:
+        print(f"[SPINTAX_RENDERED] before={before[:160]} after={after[:160]}")
+    if any(token in after for token in ("{", "}", "|")):
+        cleaned = after.replace("{", "").replace("}", "").replace("|", "")
+        print(f"[SPINTAX_RENDERED] before={after[:160]} after={cleaned[:160]}")
+        after = cleaned.strip()
+    return after
+
+
 def _send_whitelist_reply_via_gateway(phone, text):
     number = normalize_gateway_number(phone)
-    clean_text = str(text or "").strip()
+    clean_text = prepare_whatsapp_reply_text(text)
     if not number or not clean_text:
         print(f"[INBOX_SEND_WHITELIST_RESULT] number={number} status=0 gateway_status=empty_payload ok=0")
         return False
@@ -216,6 +242,7 @@ def _send_whitelist_reply_via_gateway(phone, text):
 
 
 def send_reply(phone, text):
+    text = prepare_whatsapp_reply_text(text)
     if is_test_whitelist_phone(phone):
         ok = _send_whitelist_reply_via_gateway(phone, text)
         return jsonify({"ok": bool(ok), "confirmed": bool(ok), "whitelist_test": True})
@@ -224,6 +251,7 @@ def send_reply(phone, text):
 
 
 def blocked_whatsapp_send(phone, text, *args, **kwargs):
+    text = prepare_whatsapp_reply_text(text)
     if is_test_whitelist_phone(phone):
         return _send_whitelist_reply_via_gateway(phone, text)
     print(f"[INBOX_SEND_BLOCKED_NON_WHITELIST] telefone={phone} reason=send_guard texto={str(text or '')[:120]}")
@@ -255,7 +283,7 @@ def select_official_reply(lead, inbound_messages, *, current_step=2, decision_re
                 current_step=step,
                 allow_opening=False,
             )
-            candidate = str(candidate or "").strip()
+            candidate = prepare_whatsapp_reply_text(candidate)
             if candidate and candidate not in recent_outbound:
                 reply = candidate
                 break
@@ -268,7 +296,9 @@ def select_official_reply(lead, inbound_messages, *, current_step=2, decision_re
                     allow_opening=False,
                 )
                 or ""
-            ).strip()
+            )
+            reply = prepare_whatsapp_reply_text(reply)
+    reply = prepare_whatsapp_reply_text(reply)
     if reply and reply in recent_outbound:
         print(f"[OFFICIAL_REPLY_DUPLICATE_CANDIDATE] telefone={phone} source={source}")
     print(f"[OFFICIAL_REPLY_SELECTED] telefone={phone} source={source} step={current_step} text_len={len(reply)}")

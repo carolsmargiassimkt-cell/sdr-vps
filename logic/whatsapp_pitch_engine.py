@@ -943,7 +943,8 @@ class WhatsAppPitchEngine:
 
         # Default fallback for "sim", "oi", etc. if not caught above
         if any(k in latest for k in ("oi", "ola", "bom dia", "boa tarde")):
-             return self._render_placeholders("{Oi|Olá}! Vi sua mensagem por aqui.\n\nPosso te mandar um exemplo rápido de como essa campanha funcionaria para um __SEGMENTO__?", lead=lead)
+             rendered = self._render_placeholders("{Oi|Olá}! Vi sua mensagem por aqui.\n\nPosso te mandar um exemplo rápido de como essa campanha funcionaria para um __SEGMENTO__?", lead=lead)
+             return self._clean_block(self._render_spintax(rendered))
 
         if any(k in latest for k in ("sim", "claro", "pode ser", "beleza", "legal")):
              return self._render_placeholders("Legal! A ideia é transformar suas campanhas em experiências interativas, tipo roleta ou raspadinha digital.\n\nIsso gera muito mais engajamento e você fica com os dados de quem participou.\n\nQuer ver como funcionaria para um __SEGMENTO__?", lead=lead)
