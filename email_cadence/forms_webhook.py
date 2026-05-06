@@ -26,24 +26,7 @@ def clean_crm_name(raw, email=""):
 
 from fastapi import APIRouter, Request, Header, HTTPException
 import os
-<<<<<<< HEAD
-import re
-import requests
-=======
-import requests
-import time
 from dotenv import load_dotenv
-
-
-def clean_lead_name(name, email=""):
-    n = (name or "").strip()
-    if n.lower().startswith("lead email -"):
-        n = n.split("-", 1)[-1].strip()
-    bad = ("lead email", "lead form", "formulário", "formulario")
-    if not n or any(x in n.lower() for x in bad):
-        n = (email or "").split("@")[0].replace(".", " ").replace("_", " ").title()
-    return n or "Lead sem nome"
->>>>>>> 5c858a8be7eb428553fe3b537420d1f403328f7b
 
 router = APIRouter()
 
@@ -157,16 +140,6 @@ async def forms_lead(req: Request, authorization: str = Header(None)):
 
     body = await req.json()
 
-<<<<<<< HEAD
-    nome = (body.get("nome") or body.get("name") or "Lead Forms").strip()
-    email = (body.get("email") or "").strip().lower()
-    whatsapp = (body.get("whatsapp") or body.get("telefone") or body.get("phone") or "").strip()
-    empresa = (body.get("empresa") or body.get("company") or "").strip()
-=======
-    nome = clean_crm_name(body.get("nome") or body.get("name") or body.get("title") or body.get("mensagem") or body.get("message") or "Lead Forms", body.get("email"))
-    email = (body.get("email") or "").strip()
-    whatsapp = (body.get("whatsapp") or "").strip()
->>>>>>> 5c858a8be7eb428553fe3b537420d1f403328f7b
     segmento = body.get("segmento") or ""
     unidades = body.get("unidades") or ""
     campanhas = body.get("campanhas") or ""
@@ -236,46 +209,3 @@ async def forms_lead(req: Request, authorization: str = Header(None)):
 <b>Acao:</b> LEAD_TRAFEGO aplicado e deal movido para Pronto para Prospeccao.
 """
     pd("POST", "/notes", json={"deal_id": deal_id, "content": note})
-
-<<<<<<< HEAD
-    return {
-        "ok": True,
-        "deal_id": deal_id,
-        "person_id": pid,
-        "org_id": org_id,
-        "label": LEAD_TRAFEGO_LABEL_ID,
-        "stage_id": STAGE_PRONTO_PROSPECCAO,
-        "whatsapp_sent": False,
-    }
-=======
-    wa_ok = False
-    if whatsapp:
-        try:
-            numero = whatsapp
-            if numero and not numero.startswith("55"):
-                numero = "55" + numero
-
-            msg1 = f"Oi {nome.split()[0].title() if nome else 'tudo bem'}, tudo bem? Aqui é a Carol da Mand Digital 🙂\n\nVi sua resposta no formulário — obrigada!"
-
-            msg2 = f"Pelo que você comentou sobre {objetivo or 'gerar mais resultado'}, já dá pra ver um caminho interessante aí.\n\nPara empresas do segmento {segmento or 'varejo'} como {body.get('empresa') or 'a sua empresa'}, a Copa costuma ser uma janela bem forte pra transformar campanha em fluxo, venda e dados reais do cliente.\n\nA gente tem feito isso com algumas redes e tem dado bastante resultado.\n\nPosso te mandar um exemplo rápido por aqui?"
-
-            r1 = requests.post("http://127.0.0.1:3000/send", json={
-                "number": numero,
-                "text": msg1
-            }, timeout=30)
-            print("[WA_SEND_1]", r1.status_code, r1.text[:200])
-
-            time.sleep(4)
-
-            r2 = requests.post("http://127.0.0.1:3000/send", json={
-                "number": numero,
-                "text": msg2
-            }, timeout=30)
-            print("[WA_SEND_2]", r2.status_code, r2.text[:200])
-
-            wa_ok = r1.status_code < 400 and r2.status_code < 400
-        except Exception as e:
-            print("[WA_FAIL]", repr(e))
-
-    return {"ok": True, "deal_id": deal_id, "person_id": pid, "whatsapp_sent": wa_ok}
->>>>>>> 5c858a8be7eb428553fe3b537420d1f403328f7b
