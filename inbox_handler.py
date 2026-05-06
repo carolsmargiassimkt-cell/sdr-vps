@@ -212,6 +212,132 @@ def prepare_whatsapp_reply_text(text: str) -> str:
     return after
 
 
+def detect_cta_type(text):
+    normalized = normalize_intent_text(text)
+    if any(token in normalized for token in ("exemplo", "case", "modelo", "material", "ideia")):
+        return "value_example"
+    if any(token in normalized for token in ("horario", "agenda", "reuniao", "call", "conversa rapida")):
+        return "schedule"
+    if any(token in normalized for token in ("como funciona", "explico", "explicar")):
+        return "explain"
+    if "?" in str(text or ""):
+        return "question"
+    return ""
+
+
+def semantic_redundancy_score(reply, history):
+    reply_norm = normalize_intent_text(reply)
+    if not reply_norm:
+        return 1.0
+    last_out = ""
+    for item in reversed(list(history or [])):
+        if isinstance(item, dict) and str(item.get("direction") or "").strip().lower() == "out":
+            last_out = normalize_intent_text(item.get("message") or "")
+            break
+    if not last_out:
+        return 0.0
+    if reply_norm == last_out:
+        return 1.0
+    reply_tokens = {token for token in reply_norm.split() if len(token) > 3}
+    last_tokens = {token for token in last_out.split() if len(token) > 3}
+    if not reply_tokens or not last_tokens:
+        return 0.0
+    return len(reply_tokens & last_tokens) / max(1, len(reply_tokens | last_tokens))
+
+
+def has_recent_cta_type(history, cta_type, max_items=6):
+    if not cta_type:
+        return False
+    checked = 0
+    for item in reversed(list(history or [])):
+        if not isinstance(item, dict) or str(item.get("direction") or "").strip().lower() != "out":
+            continue
+        checked += 1
+        if detect_cta_type(item.get("message") or "") == cta_type:
+            return True
+        if checked >= max_items:
+            break
+    return False
+
+
+def anti_loop_reply(reply, history):
+    prepared = prepare_whatsapp_reply_text(reply)
+    cta_type = detect_cta_type(prepared)
+    score = semantic_redundancy_score(prepared, history)
+    if cta_type and has_recent_cta_type(history, cta_type):
+        print(f"[CTA_SUPPRESSED] cta={cta_type} score={score:.2f}")
+        if cta_type == "value_example":
+            return prepare_whatsapp_reply_text("Vou seguir direto com um exemplo prático, sem te perguntar de novo.")
+        if cta_type == "schedule":
+            return prepare_whatsapp_reply_text("Vou manter o caminho de agenda por aqui e te confirmo os próximos passos.")
+    if score >= 0.78:
+        print(f"[CTA_SUPPRESSED] cta={cta_type or '-'} score={score:.2f}")
+    return prepared
+
+
+def infer_copa_segment(lead):
+    payload = dict(lead or {})
+    text = normalize_intent_text(
+        " ".join(
+            str(payload.get(key) or "")
+            for key in ("segmento", "segment", "industry", "empresa", "company", "objective", "objetivo")
+        )
+    )
+    if any(token in text for token in ("supermercado", "mercado", "atacado", "hortifruti")):
+        return "supermercado"
+    if "shopping" in text:
+        return "shopping"
+    if any(token in text for token in ("industria", "marca", "bebida", "alimento", "fabrica")):
+        return "industria"
+    if any(token in text for token in ("franquia", "franqueadora", "rede")):
+        return "franquia"
+    if any(token in text for token in ("varejo", "loja", "ecommerce", "e-commerce")):
+        return "varejo"
+    return "varejo"
+
+
+def should_deliver_copa_value(latest_message):
+    latest = normalize_intent_text(latest_message)
+    if not latest:
+        return False
+    direct_yes = {
+        "sim",
+        "pode",
+        "pode sim",
+        "claro",
+        "manda",
+        "manda sim",
+        "envia",
+        "quero",
+        "beleza",
+        "legal",
+        "ok",
+    }
+    if latest in direct_yes:
+        return True
+    return any(token in latest for token in ("exemplo", "case", "modelo", "ideia", "campanha", "como funciona", "copa"))
+
+
+def build_copa_value_reply(lead, latest_message=""):
+    segment = infer_copa_segment(lead)
+    forms_context = str((lead or {}).get("objetivo") or (lead or {}).get("objective") or "").strip()
+    examples = {
+        "supermercado": "para supermercado: QR Code no cupom ou no PDV levando para uma roleta/raspadinha da Copa. O cliente participa, deixa nome e WhatsApp, e depois voces conseguem fazer remarketing por loja ou perfil de compra.",
+        "shopping": "para shopping: ativacao de Copa por QR Code nos corredores e lojas. A pessoa participa de uma roleta, escolhe loja de interesse e o shopping mede fluxo, lojista e conversao da campanha.",
+        "industria": "para industria: QR Code na embalagem ou no material de PDV. O consumidor participa da raspadinha da Copa, deixa dados e a marca mede regiao, canal e produto com mais engajamento.",
+        "franquia": "para franquia: uma campanha unica de Copa com ranking por unidade. Cada loja divulga o QR Code, capta dados locais e a rede acompanha participacao e vendas por unidade.",
+        "varejo": "para varejo: QR Code na loja ou nas redes levando para uma roleta da Copa. A pessoa ganha um beneficio, deixa contato e voces medem participacao, conversao e recompra depois.",
+    }
+    context_line = f"\n\nPelo que voce trouxe no formulario, eu puxaria isso para {forms_context}." if forms_context else ""
+    reply = (
+        f"Perfeito. Vou te dar um exemplo direto de Copa {examples.get(segment, examples['varejo'])}"
+        f"{context_line}\n\n"
+        "O ponto principal e nao ser so uma acao bonita: ela gera base propria, captura dados no momento da compra e permite falar com quem participou depois da campanha."
+    )
+    print(f"[VALUE_DELIVERED] pitch=copa segment={segment}")
+    return reply
+
+
 def last_outbound_message_for_phone(phone):
     normalized_phone = whatsapp.normalize_phone(phone)
     if not normalized_phone:
@@ -274,19 +400,27 @@ def blocked_whatsapp_send(phone, text, *args, **kwargs):
 def select_official_reply(lead, inbound_messages, *, current_step=2, decision_reply=""):
     inbound_messages = list(inbound_messages or [])
     recent_outbound = []
+    history_items = []
     phone = str((lead or {}).get("phone") or "").strip()
     if phone:
         try:
-            for item in get_history_items(phone)[-10:]:
+            history_items = get_history_items(phone)[-10:]
+            for item in history_items:
                 if str(item.get("direction") or "").strip().lower() == "out":
                     text = str(item.get("message") or "").strip()
                     if text:
                         recent_outbound.append(text)
         except Exception:
             recent_outbound = []
+            history_items = []
 
     reply = str(decision_reply or "").strip()
     source = "agent_decision" if reply else "pitch_engine"
+    latest_message = str(inbound_messages[-1] if inbound_messages else "").strip()
+    if not reply and should_deliver_copa_value(latest_message):
+        print(f"[CONTEXT_ROUTE] route=copa_value source={source}")
+        print(f"[FUNNEL_STAGE] stage=outbound_engaged pitch=copa")
+        reply = build_copa_value_reply(lead, latest_message)
     if not reply:
         base_step = max(2, int(current_step or 2))
         for step in (base_step, base_step + 1, base_step + 2):
@@ -296,7 +430,7 @@ def select_official_reply(lead, inbound_messages, *, current_step=2, decision_re
                 current_step=step,
                 allow_opening=False,
             )
-            candidate = prepare_whatsapp_reply_text(candidate)
+            candidate = anti_loop_reply(candidate, history_items)
             if candidate and candidate not in recent_outbound:
                 reply = candidate
                 break
@@ -310,8 +444,8 @@ def select_official_reply(lead, inbound_messages, *, current_step=2, decision_re
                 )
                 or ""
             )
-            reply = prepare_whatsapp_reply_text(reply)
-    reply = prepare_whatsapp_reply_text(reply)
+            reply = anti_loop_reply(reply, history_items)
+    reply = anti_loop_reply(reply, history_items)
     if reply and reply in recent_outbound:
         print(f"[OFFICIAL_REPLY_DUPLICATE_CANDIDATE] telefone={phone} source={source}")
     print(f"[OFFICIAL_REPLY_SELECTED] telefone={phone} source={source} step={current_step} text_len={len(reply)}")

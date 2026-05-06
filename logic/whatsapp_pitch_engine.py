@@ -928,6 +928,36 @@ class WhatsAppPitchEngine:
 
         segment = self._get_segment_from_lead(lead)
 
+        copa_signal = any(
+            keyword in latest
+            for keyword in (
+                "oi", "ola", "bom dia", "boa tarde", "sim", "claro", "pode",
+                "manda", "envia", "exemplo", "case", "ideia", "campanha", "copa"
+            )
+        )
+        if copa_signal:
+            print(f"[CONTEXT_ROUTE] route=copa_pitch_engine segment={segment}")
+            print("[FUNNEL_STAGE] stage=warm_followup pitch=copa")
+            options = {
+                "supermercado": [
+                    "Perfeito. Exemplo direto de Copa para supermercado: QR Code no cupom ou no PDV levando para uma roleta/raspadinha. O cliente participa, deixa nome e WhatsApp, e depois voces conseguem fazer remarketing por loja ou perfil de compra.",
+                    "Para supermercado, eu usaria a Copa no PDV: QR Code, roleta digital, premio simples e captura de WhatsApp. A campanha deixa de ser so movimento e vira base propria para recompra.",
+                ],
+                "shopping": [
+                    "Perfeito. Para shopping, a Copa pode virar uma ativacao com QR Code nos corredores e lojas. A pessoa participa de uma roleta, escolhe lojas de interesse e voces medem fluxo, lojista e conversao.",
+                ],
+                "industria": [
+                    "Perfeito. Para industria, eu levaria a Copa para embalagem ou material de PDV: QR Code, raspadinha digital e captura de dados. Depois da para medir regiao, canal e produto com mais engajamento.",
+                ],
+                "default": [
+                    "Perfeito. Exemplo direto de Copa: QR Code levando para uma roleta ou raspadinha digital. A pessoa participa, deixa contato e voces medem engajamento, canal e recompra depois da campanha.",
+                    "A ideia de Copa e transformar a acao em experiencia: QR Code, premio ou beneficio, captura de nome/WhatsApp e mensuracao em tempo real. Assim a campanha gera base propria, nao so alcance.",
+                ],
+            }
+            chosen = random.choice(options.get(segment) or options["default"])
+            print(f"[VALUE_DELIVERED] pitch=copa segment={segment}")
+            return self._clean_block(self._render_placeholders(chosen, lead=lead))
+
         for intent_keys, content in self.FLUID_REPLY_RULES:
             if any(keyword in latest for keyword in intent_keys):
                 if isinstance(content, dict):
