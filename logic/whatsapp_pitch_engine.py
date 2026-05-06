@@ -255,6 +255,22 @@ class WhatsAppPitchEngine:
     ]
     FLUID_REPLY_RULES = (
         (
+            (
+                "da onde fala",
+                "de onde fala",
+                "quem fala",
+                "quem e",
+                "quem é",
+                "qual empresa",
+                "de onde voce",
+                "de onde você",
+            ),
+            [
+                "{Aqui é a Carol da Mand Digital|Carol da Mand Digital por aqui}. A gente ajuda empresas a transformar campanhas promocionais em experiências interativas, como roleta e raspadinha digital, para captar dados e gerar vendas.\n\nTe chamei por esse contexto de campanhas, principalmente com a Copa chegando. Quer que eu te mande um exemplo rápido?",
+                "{Falo da Mand Digital|Aqui é a Carol, da Mand Digital}. A Mand estrutura campanhas gamificadas para empresas captarem contatos, medirem participação e venderem melhor em ações promocionais.\n\nSe fizer sentido, te mando um exemplo curto aplicado ao seu contexto.",
+            ],
+        ),
+        (
             ("explicacao", "me explica", "como funciona", "entender", "o que vocês fazem", "o que é"),
             [
                 "Claro! A Mand ajuda empresas a transformarem campanhas tradicionais em experiências gamificadas (tipo roletas, raspadinhas ou jornadas interativas).\n\nO objetivo é captar dados reais dos clientes e converter o engajamento em venda direta, tudo acompanhado em tempo real.\n\nFaz sentido eu te dar um exemplo de como funcionaria para o seu segmento?",

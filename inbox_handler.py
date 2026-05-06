@@ -1,7 +1,31 @@
 
+WHITELIST_TEST_PHONES = {"5535920002020", "35920002020"}
+BLOCKED_INBOUND_SOURCES = {"backlog", "retry_queue", "after_hours_resume"}
+
+
+def _normalize_test_phone_value(phone):
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    if len(digits) == 10 or len(digits) == 11:
+        digits = "55" + digits
+    return digits
+
+
+def _is_whitelist_test_phone_value(phone):
+    digits = _normalize_test_phone_value(phone)
+    return digits in WHITELIST_TEST_PHONES or str(phone or "").strip() in WHITELIST_TEST_PHONES
+
+
+def _is_blocked_inbound_source(data):
+    source = str((data or {}).get("source") or "").strip().lower()
+    return source in BLOCKED_INBOUND_SOURCES
+
+
 def _session_guard_allows_inbound(data):
     try:
         import json, os, time
+        if _is_blocked_inbound_source(data):
+            print(f"[SESSION_GUARD_SOURCE_BLOCKED] source={str((data or {}).get('source') or '').strip().lower()}")
+            return False
         guard_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "whatsapp_session_guard.json")
         if not os.path.exists(guard_path):
             return True
@@ -18,6 +42,8 @@ def _session_guard_allows_inbound(data):
         except Exception:
             print("[SESSION_GUARD_NO_VALID_TIMESTAMP] bloqueando inbound sem timestamp confiavel")
             return False
+        if _is_whitelist_test_phone_value(data.get("phone") or data.get("number") or data.get("from")):
+            return True
         return msg_ts >= (started_at - 300)
     except Exception as e:
         print(f"[SESSION_GUARD_CHECK_ERROR] {e}")
@@ -134,14 +160,119 @@ def is_auto_reply_router_enabled():
     return str(os.getenv("AUTO_REPLY_ROUTER_ENABLED", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def normalize_gateway_number(phone):
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    if len(digits) in {10, 11}:
+        digits = "55" + digits
+    return digits
+
+
+def is_test_whitelist_phone(phone):
+    return normalize_gateway_number(phone) in TEST_WHITELIST
+
+
+def can_auto_reply_inbound(phone, source="", lead_state=None):
+    if str(source or "").strip().lower() in BLOCKED_INBOUND_SOURCES:
+        if not is_test_whitelist_phone(phone):
+            print(f"[INBOX_SEND_BLOCKED_NON_WHITELIST] telefone={phone} reason=blocked_source source={source}")
+        return False
+    if is_test_whitelist_phone(phone):
+        if not is_auto_reply_router_enabled():
+            print(f"[WHITELIST_TEST_BYPASS_SEND_GUARDS] telefone={phone} guard=router_flags")
+        return True
+    allowed = is_auto_reply_router_enabled()
+    if not allowed:
+        print(f"[INBOX_SEND_BLOCKED_NON_WHITELIST] telefone={phone} reason=router_disabled")
+    return allowed
+
+
+def _send_whitelist_reply_via_gateway(phone, text):
+    number = normalize_gateway_number(phone)
+    clean_text = str(text or "").strip()
+    if not number or not clean_text:
+        print(f"[INBOX_SEND_WHITELIST_RESULT] number={number} status=0 gateway_status=empty_payload ok=0")
+        return False
+    payload = {
+        "number": number,
+        "text": clean_text,
+        "count_towards_daily_limit": False,
+    }
+    try:
+        response = requests.post("http://127.0.0.1:3000/send", json=payload, timeout=20)
+        gateway_status = ""
+        try:
+            gateway_status = str((response.json() or {}).get("status") or "")
+        except Exception:
+            gateway_status = response.text[:80]
+        ok = response.status_code == 200 and gateway_status == "sent"
+        print(
+            f"[INBOX_SEND_WHITELIST_RESULT] number={number} status={response.status_code} "
+            f"gateway_status={gateway_status} ok={1 if ok else 0}"
+        )
+        return ok
+    except Exception as exc:
+        print(f"[INBOX_SEND_WHITELIST_RESULT] number={number} status=0 gateway_status=error ok=0 erro={exc}")
+        return False
+
+
 def send_reply(phone, text):
-    print(f"[INBOX_SEND_REPLY_BLOCKED_EMISSOR_UNICO] telefone={phone} texto={str(text or '')[:120]}")
+    if is_test_whitelist_phone(phone):
+        ok = _send_whitelist_reply_via_gateway(phone, text)
+        return jsonify({"ok": bool(ok), "confirmed": bool(ok), "whitelist_test": True})
+    print(f"[INBOX_SEND_BLOCKED_NON_WHITELIST] telefone={phone} reason=direct_send_reply texto={str(text or '')[:120]}")
     return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "single_whatsapp_emitter"})
 
 
 def blocked_whatsapp_send(phone, text, *args, **kwargs):
-    print(f"[INBOX_SEND_BLOCKED_EMISSOR_UNICO] telefone={phone} texto={str(text or '')[:120]}")
+    if is_test_whitelist_phone(phone):
+        return _send_whitelist_reply_via_gateway(phone, text)
+    print(f"[INBOX_SEND_BLOCKED_NON_WHITELIST] telefone={phone} reason=send_guard texto={str(text or '')[:120]}")
     return False
+
+
+def select_official_reply(lead, inbound_messages, *, current_step=2, decision_reply=""):
+    inbound_messages = list(inbound_messages or [])
+    recent_outbound = []
+    phone = str((lead or {}).get("phone") or "").strip()
+    if phone:
+        try:
+            for item in get_history_items(phone)[-10:]:
+                if str(item.get("direction") or "").strip().lower() == "out":
+                    text = str(item.get("message") or "").strip()
+                    if text:
+                        recent_outbound.append(text)
+        except Exception:
+            recent_outbound = []
+
+    reply = str(decision_reply or "").strip()
+    source = "agent_decision" if reply else "pitch_engine"
+    if not reply:
+        base_step = max(2, int(current_step or 2))
+        for step in (base_step, base_step + 1, base_step + 2):
+            candidate = pitch.build_reply(
+                lead,
+                inbound_messages,
+                current_step=step,
+                allow_opening=False,
+            )
+            candidate = str(candidate or "").strip()
+            if candidate and candidate not in recent_outbound:
+                reply = candidate
+                break
+        if not reply:
+            reply = str(
+                pitch.build_reply(
+                    lead,
+                    inbound_messages,
+                    current_step=max(2, int(current_step or 2)),
+                    allow_opening=False,
+                )
+                or ""
+            ).strip()
+    if reply and reply in recent_outbound:
+        print(f"[OFFICIAL_REPLY_DUPLICATE_CANDIDATE] telefone={phone} source={source}")
+    print(f"[OFFICIAL_REPLY_SELECTED] telefone={phone} source={source} step={current_step} text_len={len(reply)}")
+    return reply
 
 
 def _as_bool(value):
@@ -183,10 +314,7 @@ def is_hard_negative_message(message):
     ]
     return any(re.search(p, txt) for p in patterns)
 
-def is_test_whitelist_phone(phone):
-    return str(phone) in TEST_WHITELIST
-
-TEST_WHITELIST = {"5535920002020", "35920002020", "5511998804191", "11998804191"}
+TEST_WHITELIST = set(WHITELIST_TEST_PHONES)
 CRM_CACHE_TTL_SECONDS = 24 * 60 * 60
 REPLY_WINDOW_SECONDS = 30 * 60
 LEAD_TRAFEGO_LABEL_ID = 193
@@ -2216,7 +2344,7 @@ def resolve_lead_state_from_payload(payload):
         except Exception as exc:
             print(f"[ERRO_RESOLVE_PERSON_EMAIL] email={email} erro={exc}")
 
-    if not person and phone and phone in TEST_WHITELIST:
+    if not person and phone and is_test_whitelist_phone(phone):
         person = {"id": -1, "name": "Teste", "phone": [{"value": phone}], "email": [{"value": email}] if email else []}
 
     deals = []
@@ -2232,10 +2360,10 @@ def resolve_lead_state_from_payload(payload):
                 print(f"[ERRO_RESOLVE_DEALS] person={resolved_person_id} org={resolved_org_id} erro={exc}")
 
     return {
-        "valid": bool(person or deals or phone in TEST_WHITELIST or email or deal_id or person_id),
+        "valid": bool(person or deals or is_test_whitelist_phone(phone) or email or deal_id or person_id),
         "person": person or {"id": person_id or -1, "name": data.get("name") or data.get("nome") or "Lead"},
         "deals": deals or ([deal] if deal else []),
-        "bypass": bool(phone in TEST_WHITELIST),
+        "bypass": bool(is_test_whitelist_phone(phone)),
         "source": "email_inbound",
     }
 
@@ -2619,14 +2747,19 @@ def maybe_handle_inbound_agent_decision(*, phone, message, source, lead_state, l
         commit_processed_key(key)
         return {"ok": True, "confirmed": True, **decision}
 
-    if not is_auto_reply_router_enabled():
+    if not can_auto_reply_inbound(phone, source=source, lead_state=lead_state):
         clear_email_runtime_state_for_lead(lead_state, phone=phone)
         append_crm_note_for_lead(lead_state, f"Inbound WhatsApp recebido. Auto-resposta bloqueada ate existir roteador por origem/tag. Texto: {message}")
         whatsapp.clear_after_hours_pending(phone)
         commit_processed_key(key)
         return {"ok": True, "confirmed": True, "auto_reply_blocked": True, **decision}
 
-    reply = str(decision.get("reply") or "").strip() or pitch.build_reply(lead, inbound_messages, current_step=current_step, allow_opening=False)
+    reply = select_official_reply(
+        lead,
+        inbound_messages,
+        current_step=current_step,
+        decision_reply=decision.get("reply"),
+    )
     print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
     if False and has_recent_history_entry(phone, "out", reply, within_seconds=1800):
         print(f"[DUPLICADO_HISTORY_OUTBOUND] {phone} ignorado")
@@ -3016,11 +3149,11 @@ def validate_lead_with_cache(phone):
 
     print("[LEAD_NAO_ENCONTRADO_CONTINUANDO]")
     payload = {
-        "valid": bool(phone in TEST_WHITELIST),
-        "person": {"id": -1, "name": "Teste"} if phone in TEST_WHITELIST else {"id": -1, "name": "Lead"},
+        "valid": bool(is_test_whitelist_phone(phone)),
+        "person": {"id": -1, "name": "Teste"} if is_test_whitelist_phone(phone) else {"id": -1, "name": "Lead"},
         "deals": [],
         "bypass": True,
-        "source": "whitelist" if phone in TEST_WHITELIST else "no_crm",
+        "source": "whitelist" if is_test_whitelist_phone(phone) else "no_crm",
     }
     set_cached_lead(phone, **payload)
     return payload
@@ -3396,23 +3529,29 @@ def inbox():
         if not is_brazil_business_hours():
             print(f"[INBOUND_FORA_HORARIO_BR] telefone={phone}")
 
-        if not is_phone_allowed_for_auto_reply(phone):
-            print(f"[BLOCK_NON_LEAD_AUTO_REPLY] telefone={phone}")
-            return jsonify({"ok": True, "ignored": True, "reason": "not_active_lead"})
+        if not is_phone_allowed_for_auto_reply(phone) and not is_test_whitelist_phone(phone):
+            print(f"[INBOX_SEND_BLOCKED_NON_WHITELIST] telefone={phone} reason=not_active_lead")
+            return jsonify({"ok": True, "ignored": True, "auto_reply_blocked": True, "reason": "not_active_lead"})
 
         import os
         flag = os.path.join(os.path.dirname(__file__), "data", "auto_reply_disabled.flag")
         if os.path.exists(flag):
-            print(f"[AUTO_REPLY_BLOCKED_GLOBAL] telefone={phone}")
-            return jsonify({"ok": True, "auto_reply": False})
+            if is_test_whitelist_phone(phone):
+                print(f"[WHITELIST_TEST_BYPASS_SEND_GUARDS] telefone={phone} guard=auto_reply_disabled.flag")
+            else:
+                print(f"[AUTO_REPLY_BLOCKED_GLOBAL] telefone={phone}")
+                return jsonify({"ok": True, "auto_reply": False})
 
 
         try:
             import os as _os
             _flag = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "auto_reply_disabled.flag")
             if _os.path.exists(_flag):
-                print(f"[AUTO_REPLY_HARD_BLOCK] telefone={phone} inbound_capturado_sem_resposta")
-                return jsonify({"ok": True, "auto_reply": False, "reason": "disabled"})
+                if is_test_whitelist_phone(phone):
+                    print(f"[WHITELIST_TEST_BYPASS_SEND_GUARDS] telefone={phone} guard=auto_reply_hard_flag")
+                else:
+                    print(f"[AUTO_REPLY_HARD_BLOCK] telefone={phone} inbound_capturado_sem_resposta")
+                    return jsonify({"ok": True, "auto_reply": False, "reason": "disabled"})
         except Exception as e:
             print(f"[AUTO_REPLY_FLAG_ERROR] {e}")
 
@@ -3428,7 +3567,7 @@ def inbox():
             print(f"[INBOUND_SEM_TEXTO_IGNORADO] {phone}")
             return jsonify({"ok": True})
 
-        if phone in load_manual_blocklist() and phone not in TEST_WHITELIST:
+        if phone in load_manual_blocklist() and not is_test_whitelist_phone(phone):
             print(f"[BLOQUEADO_MANUAL] {phone} ignorado")
             commit_processed_key(processed_key(phone, msg_id, message))
             return jsonify({"ok": True})
@@ -3441,34 +3580,9 @@ def inbox():
             print(f"[PAUSE_NOT_NOW_PRECHECK] telefone={phone} texto={message}")
             _txt = ""
 
-        # 👉 CASO: IDEIA / EXEMPLO
-        if any(x in _txt for x in ["ideia", "exemplo", "promoção", "promocao", "campanha"]):
-            print("[FLOW_EXEMPLO_DIRETO]", phone)
-            import requests
-            numero = str(phone or "").replace("@s.whatsapp.net", "").replace("+", "").strip()
-            if numero and not numero.startswith("55"):
-                numero = "55" + numero
-
-            partes = [
-                "Claro 🙂 Vou te dar um exemplo bem direto pra supermercado:\n\nQR Code no cupom ou na loja levando para uma roleta ou raspadinha da Copa.",
-                "O cliente participa, pode ganhar algo e deixa dados como nome e WhatsApp.\n\nIsso gera engajamento na hora e cria base própria pra próximas campanhas."
-            ]
-
-            for p in partes:
-                print("[INBOX_SEND_BLOCKED_EMISSOR_UNICO]", numero, p[:80])
-
-            return {"ok": True, "flow": "exemplo"}
-
-
-
         _txt = (message or "").lower()
         if detect_pause_not_now_intent(message):
             _txt = ""
-        if any(x in _txt for x in ["ideia", "promoção", "promocao", "campanha", "exemplo", "ação", "acao"]):
-            print("[FORCE_PITCH_FLOW]", phone)
-            return send_reply(phone, "Claro 🙂 Vou te dar um exemplo bem direto pra supermercado:\n\nVocês podem colocar um QR Code no cupom fiscal ou nas peças da loja levando para uma roleta ou raspadinha digital.|||O cliente participa, pode ganhar algo e deixa dados como nome, WhatsApp e loja.\n\nIsso gera engajamento e cria base própria pra próximas campanhas. Quer que eu adapte isso pra vocês?")
-
-
         _txt = (message or "").lower()
         if detect_pause_not_now_intent(message):
             _txt = ""
@@ -3637,7 +3751,7 @@ def inbox():
         is_bot_menu, bot_reason = should_ignore_bot_menu(message)
         if is_bot_menu:
             print(f"[BOT_MENU_DETECTADO] {phone} motivo={bot_reason}")
-            if not is_auto_reply_router_enabled():
+            if not can_auto_reply_inbound(phone, source=source, lead_state=None):
                 commit_processed_key(key)
                 return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "bot_menu_no_router"})
             if handle_bot_menu_navigation(phone, message):
@@ -3656,7 +3770,7 @@ def inbox():
             is_bot = True
         if is_bot:
             print(f"[BOT_MENU_DETECTADO] {phone} motivo=rule_fallback")
-            if not is_auto_reply_router_enabled():
+            if not can_auto_reply_inbound(phone, source=source, lead_state=None):
                 commit_processed_key(key)
                 return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "bot_menu_no_router"})
             if handle_bot_menu_navigation(phone, message):
@@ -3679,12 +3793,12 @@ def inbox():
 
         person = lead_state.get("person") or {}
         deals = lead_state.get("deals") or []
-        if str(lead_state.get("source") or "").strip().lower() == "no_crm" and phone not in TEST_WHITELIST:
-            print(f"[BLOQUEADO_FORA_CRM] {phone}")
+        if str(lead_state.get("source") or "").strip().lower() == "no_crm" and not is_test_whitelist_phone(phone):
+            print(f"[INBOX_SEND_BLOCKED_NON_WHITELIST] telefone={phone} reason=no_crm")
             commit_processed_key(key)
-            return jsonify({"ok": True})
+            return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "no_crm"})
         if not lead_state.get("valid"):
-            if phone in TEST_WHITELIST:
+            if is_test_whitelist_phone(phone):
                 print("[LEAD_NAO_ENCONTRADO_CONTINUANDO]")
                 lead_state = {
                     "valid": True,
@@ -3696,19 +3810,19 @@ def inbox():
                 person = lead_state["person"]
                 deals = []
             else:
-                print(f"[BLOQUEADO_FORA_CRM] {phone}")
+                print(f"[INBOX_SEND_BLOCKED_NON_WHITELIST] telefone={phone} reason=invalid_lead")
                 commit_processed_key(key)
-                return jsonify({"ok": True})
+                return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "invalid_lead"})
 
         if lead_state.get("bypass") or not person or not person.get("id"):
-            if phone in TEST_WHITELIST:
+            if is_test_whitelist_phone(phone):
                 print(f"[TEST_MODE] {phone} autorizado fora do CRM")
                 print("[FLUXO_SEM_CRM]")
                 person = person if person else {"id": -1, "name": "Teste"}
             else:
-                print(f"[BLOQUEADO_FORA_CRM] {phone}")
+                print(f"[INBOX_SEND_BLOCKED_NON_WHITELIST] telefone={phone} reason=no_person")
                 commit_processed_key(key)
-                return jsonify({"ok": True})
+                return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "no_person"})
 
         lead = build_lead_payload_from_state(phone, lead_state)
         clear_email_runtime_state_for_lead(lead_state, phone=phone)
@@ -3733,7 +3847,7 @@ def inbox():
         update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="replied")
         lead = enrich_lead_with_whatsapp_state(lead, lead_state, phone)
 
-        if not is_auto_reply_router_enabled():
+        if not can_auto_reply_inbound(phone, source=source, lead_state=lead_state):
             add_respondido_tag_for_lead(lead_state)
             add_wa_respondeu_tag_for_lead(lead_state)
             append_crm_note_for_lead(lead_state, f"Inbound WhatsApp recebido. Auto-resposta bloqueada ate existir roteador por origem/tag. Texto: {message}")
@@ -3836,11 +3950,10 @@ def inbox():
         elif positive_name_gate and lead_name in generic_names:
             reply = "Perfeito. Como posso te chamar?"
         else:
-            reply = pitch.build_reply(
+            reply = select_official_reply(
                 lead,
                 inbound_messages,
                 current_step=current_step,
-                allow_opening=False,
             )
         print(f"[RESPOSTA_GERADA] telefone={phone} texto={reply}")
 
