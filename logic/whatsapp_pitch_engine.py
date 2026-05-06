@@ -760,6 +760,45 @@ class WhatsAppPitchEngine:
         return ""
 
     @classmethod
+    def detect_pause_not_now_intent(cls, text: str) -> bool:
+        normalized = cls._normalize_opt_out_message(text)
+        if not normalized:
+            return False
+        direct_tokens = (
+            "agora nao",
+            "agora não",
+            "no momento nao da",
+            "no momento não da",
+            "no momento não dá",
+            "estou sem tempo",
+            "to sem tempo",
+            "tô sem tempo",
+            "estou sem tempo agora",
+            "nao posso agora",
+            "não posso agora",
+            "depois vemos",
+            "depois a gente ve",
+            "depois a gente vê",
+            "me chama depois",
+            "chama depois",
+            "fala comigo depois",
+            "ve isso depois",
+            "vê isso depois",
+        )
+        if any(token in normalized for token in direct_tokens):
+            return True
+        patterns = (
+            r"\bagora\s+n[aã]o\b",
+            r"\bno\s+momento\s+n[aã]o\s+d[aá]\b",
+            r"\bestou\s+sem\s+tempo\b",
+            r"\b(to|t[oô])\s+sem\s+tempo\b",
+            r"\bn[aã]o\s+posso\s+agora\b",
+            r"\bdepois\s+(vemos|a gente v[eê])\b",
+            r"\bme\s+chama\s+depois\b",
+        )
+        return any(re.search(pattern, normalized) for pattern in patterns)
+
+    @classmethod
     def _normalize_schedule_phrase(cls, text: str) -> str:
         normalized = cls._normalize_message(text)
         replacements = (
@@ -862,6 +901,8 @@ class WhatsAppPitchEngine:
         raw_latest = str(inbound_messages[-1] or "").strip()
         if self._is_opt_out_message(raw_latest):
             return str(self.get_closing_message("no_interest") or "").strip()
+        if self.detect_pause_not_now_intent(raw_latest):
+            return ""
         if self.detect_nonlead_intent(raw_latest):
             return ""
 
@@ -1127,6 +1168,8 @@ class WhatsAppPitchEngine:
         step = max(1, min(10, int(current_step or 1)))
         state = (lead or {}).get("conversation_state") if isinstance((lead or {}).get("conversation_state"), dict) else {}
         if any(bool(state.get(key)) for key in ("stopped", "opt_out", "wrong_contact", "referred")):
+            return ""
+        if inbound_messages and self.detect_pause_not_now_intent(inbound_messages[-1]):
             return ""
         fluid_reply = self._rule_based_fluid_reply(lead, inbound_messages)
         if fluid_reply:

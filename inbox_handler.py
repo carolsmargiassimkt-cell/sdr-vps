@@ -37,7 +37,7 @@ import sys
 import time
 import unicodedata
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from threading import Lock
 from core.sdr_state import mark_inbound as central_mark_inbound, stop_automation as central_stop_automation, log_event as central_log_event
 
@@ -423,6 +423,8 @@ def classify_conversation_intent(message):
         return "automation_blocked"
     if detect_referral_intent(message):
         return "referred"
+    if detect_pause_not_now_intent(message):
+        return "pause_not_now"
     if any(token in text for token in ("case", "exemplo", "modelo", "como funciona", "manda", "envia")):
         return "asked_case"
     if detect_positive_intent(message) or detect_scheduling_intent(message):
@@ -459,6 +461,7 @@ def update_whatsapp_conversation_state_for_lead(lead_state, phone, message="", i
             "opt_out": bool(previous.get("opt_out", False) or resolved_intent == "opt_out"),
             "wrong_contact": bool(previous.get("wrong_contact", False) or resolved_intent == "wrong_contact"),
             "referred": bool(previous.get("referred", False) or resolved_intent == "referred"),
+            "pause_not_now": bool(previous.get("pause_not_now", False) or resolved_intent == "pause_not_now"),
             "stopped": bool(previous.get("stopped", False) or resolved_intent in {"opt_out", "wrong_contact", "referred", "automation_blocked"}),
             "last_intent": resolved_intent,
             "last_bot_reply": str(last_bot_reply or previous.get("last_bot_reply") or ""),
@@ -475,6 +478,10 @@ def update_whatsapp_conversation_state_for_lead(lead_state, phone, message="", i
             central_log_event("STATE_TRANSITION", deal_id=deal_id, phone=normalized_phone, error=f"central_state_fail:{exc}")
     save_whatsapp_conversation_state(state)
     return updated
+
+
+def detect_pause_not_now_intent(message):
+    return bool(pitch.detect_pause_not_now_intent(message))
 
 
 def get_whatsapp_conversation_records_for_lead(lead_state, phone):
@@ -1302,6 +1309,13 @@ def build_agent_decision(data):
         reply = "Perfeito, obrigado pela indicação. Vou seguir por esse contato e não te incomodo mais por aqui."
         reason = "referral_rule"
         confidence = 0.98
+    elif detect_pause_not_now_intent(text):
+        intent = "pause_not_now"
+        action = "pause_automation"
+        reply = ""
+        reason = "pause_not_now_rule"
+        confidence = 0.97
+        print(f"[PAUSE_NOT_NOW_CLASSIFIED] source=agent_decide texto={text}")
     elif nonlead_intent in {"mensagem_automatica", "menu_ura", "mensagem_institucional", "empresa_incompativel", "setor_errado"}:
         intent = str(nonlead_intent or "empresa_incompativel")
         action = "pause_automation"
@@ -1472,6 +1486,16 @@ def build_local_agent_decision(data):
             should_pause_automation = True
             should_move_stage = True
             should_send = bool(reply)
+        elif detect_pause_not_now_intent(text):
+            intent = "pause_not_now"
+            action = "pause_automation"
+            reply = ""
+            reason = "pause_not_now_rule"
+            confidence = 0.97
+            should_pause_automation = True
+            should_create_activity = True
+            should_send = False
+            print(f"[PAUSE_NOT_NOW_CLASSIFIED] source=build_agent_decision texto={text}")
         elif nonlead_intent in {"mensagem_automatica", "menu_ura", "mensagem_institucional", "empresa_incompativel", "setor_errado"}:
             intent = str(nonlead_intent or "empresa_incompativel")
             action = "pause_automation"
@@ -1536,6 +1560,12 @@ def build_local_agent_decision(data):
                 should_pause_automation = True
                 should_move_stage = True
                 should_send = bool(reply)
+            elif intent == "pause_not_now":
+                action = "pause_automation"
+                reply = ""
+                should_pause_automation = True
+                should_create_activity = True
+                should_send = False
             elif intent == "empresa_incompativel":
                 action = "pause_automation"
                 should_pause_automation = True
@@ -1835,6 +1865,37 @@ def create_scheduling_activity_for_lead(lead_state, summary):
     return created
 
 
+def create_soft_negative_followup_for_lead(lead_state, summary, days=7):
+    current_person = dict((lead_state or {}).get("person") or {})
+    person_id = extract_entity_id(current_person.get("id"))
+    due_date = (datetime.now().date() + timedelta(days=max(1, int(days or 7)))).isoformat()
+    note_text = str(summary or "").strip() or "Lead pediu contato em outro momento."
+    created = False
+    for deal in related_deals_from_state(lead_state):
+        deal_id = extract_entity_id((deal or {}).get("id"))
+        if deal_id <= 0:
+            continue
+        try:
+            ok = bool(
+                crm.create_activity(
+                    subject="Follow-up leve: lead pediu contato depois",
+                    type="task",
+                    deal_id=deal_id,
+                    person_id=person_id,
+                    note=note_text,
+                    due_date=due_date,
+                    done=0,
+                )
+            )
+        except Exception as exc:
+            print(f"[ATIVIDADE_PAUSE_NOT_NOW_FALHA] deal={deal_id} erro={exc}")
+            ok = False
+        if ok:
+            created = True
+            print(f"[ATIVIDADE_PAUSE_NOT_NOW_OK] deal={deal_id} person={person_id} due={due_date}")
+    return created
+
+
 def related_deals_from_state(lead_state):
     current_person = dict((lead_state or {}).get("person") or {})
     current_person_id = extract_entity_id(current_person.get("id"))
@@ -1903,7 +1964,7 @@ def clear_email_runtime_state(*, deal_ids=None, person_id=0, email="", phone="")
     return {"queue_removed": removed_queue, "pending_removed": removed_pending}
 
 
-def stop_whatsapp_warm_cadence_state(deal_ids=None, phone="", email=""):
+def stop_whatsapp_warm_cadence_state(deal_ids=None, phone="", email="", reason="inbound_replied", paused_until=""):
     state_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "whatsapp_warm_cadence.json")
     deal_ids = {int(item) for item in list(deal_ids or []) if int(item or 0) > 0}
     normalized_phone = whatsapp.normalize_phone(phone)
@@ -1916,12 +1977,15 @@ def stop_whatsapp_warm_cadence_state(deal_ids=None, phone="", email=""):
             state = {}
         stopped = state.setdefault("stopped", {})
         now = datetime.now().isoformat(timespec="seconds")
+        payload = {"reason": str(reason or "inbound_replied"), "stopped_at": now}
+        if paused_until:
+            payload["paused_until"] = str(paused_until)
         for deal_id in sorted(deal_ids):
-            stopped[str(deal_id)] = {"reason": "inbound_replied", "stopped_at": now}
+            stopped[str(deal_id)] = dict(payload)
         if normalized_phone:
-            stopped[f"phone:{normalized_phone}"] = {"reason": "inbound_replied", "stopped_at": now}
+            stopped[f"phone:{normalized_phone}"] = dict(payload)
         if target_email:
-            stopped[f"email:{target_email}"] = {"reason": "inbound_replied", "stopped_at": now}
+            stopped[f"email:{target_email}"] = dict(payload)
         if deal_ids or normalized_phone or target_email:
             os.makedirs(os.path.dirname(state_file), exist_ok=True)
             tmp = state_file + ".tmp"
@@ -1952,6 +2016,25 @@ def clear_email_runtime_state_for_lead(lead_state, phone=""):
     )
     stop_whatsapp_warm_cadence_state(deal_ids=deal_ids, phone=target_phone, email=emails[0] if emails else "")
     return result
+
+
+def pause_whatsapp_warm_cadence_for_lead(lead_state, phone="", days=7):
+    current_person = dict((lead_state or {}).get("person") or {})
+    deal_ids = []
+    for deal in list(related_deals_from_state(lead_state) or []):
+        deal_id = extract_entity_id((deal or {}).get("id"))
+        if deal_id > 0:
+            deal_ids.append(deal_id)
+    emails = person_email_values(current_person)
+    target_phone = whatsapp.normalize_phone(phone) or next(iter(person_phone_values(current_person)), "")
+    paused_until = (datetime.now().date() + timedelta(days=max(1, int(days or 7)))).isoformat()
+    return stop_whatsapp_warm_cadence_state(
+        deal_ids=deal_ids,
+        phone=target_phone,
+        email=emails[0] if emails else "",
+        reason="pause_not_now",
+        paused_until=paused_until,
+    )
 
 
 def append_crm_note_for_lead(lead_state, note_text):
@@ -2496,6 +2579,19 @@ def maybe_handle_inbound_agent_decision(*, phone, message, source, lead_state, l
         return {"ok": True, "confirmed": True, **decision}
     if intent == "indicacao":
         handle_referral_redirect(phone, message, lead_state)
+        commit_processed_key(key)
+        return {"ok": True, "confirmed": True, **decision}
+    if intent == "pause_not_now":
+        add_respondido_tag_for_lead(lead_state)
+        add_wa_respondeu_tag_for_lead(lead_state)
+        update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="pause_not_now")
+        clear_email_runtime_state_for_lead(lead_state, phone=phone)
+        pause_whatsapp_warm_cadence_for_lead(lead_state, phone=phone)
+        append_crm_note_for_lead(lead_state, f"Lead pediu pausa/contato futuro. Sem resposta automatica insistente. Texto: {message}")
+        if decision.get("should_create_activity"):
+            create_soft_negative_followup_for_lead(lead_state, f"Follow-up leve apos pausa solicitada pelo lead. Texto: {message}")
+        whatsapp.clear_after_hours_pending(phone)
+        print(f"[PAUSE_NOT_NOW] telefone={phone} action=pause_automation send=0 texto={message}")
         commit_processed_key(key)
         return {"ok": True, "confirmed": True, **decision}
 
@@ -3341,6 +3437,9 @@ def inbox():
         print(f"[INBOUND_ANALISE] {phone}: {message}")
 
         _txt = (message or "").lower()
+        if detect_pause_not_now_intent(message):
+            print(f"[PAUSE_NOT_NOW_PRECHECK] telefone={phone} texto={message}")
+            _txt = ""
 
         # 👉 CASO: IDEIA / EXEMPLO
         if any(x in _txt for x in ["ideia", "exemplo", "promoção", "promocao", "campanha"]):
@@ -3363,12 +3462,16 @@ def inbox():
 
 
         _txt = (message or "").lower()
+        if detect_pause_not_now_intent(message):
+            _txt = ""
         if any(x in _txt for x in ["ideia", "promoção", "promocao", "campanha", "exemplo", "ação", "acao"]):
             print("[FORCE_PITCH_FLOW]", phone)
             return send_reply(phone, "Claro 🙂 Vou te dar um exemplo bem direto pra supermercado:\n\nVocês podem colocar um QR Code no cupom fiscal ou nas peças da loja levando para uma roleta ou raspadinha digital.|||O cliente participa, pode ganhar algo e deixa dados como nome, WhatsApp e loja.\n\nIsso gera engajamento e cria base própria pra próximas campanhas. Quer que eu adapte isso pra vocês?")
 
 
         _txt = (message or "").lower()
+        if detect_pause_not_now_intent(message):
+            _txt = ""
         if any(x in _txt for x in ["ideia", "promoção", "promocao", "campanha", "exemplo", "ação", "acao"]):
             print("[FORCE_INTERESSE_INTENT]", phone)
             intent = "interesse"
@@ -3380,6 +3483,7 @@ def inbox():
         elif is_opt_out(message): current_intent = "nao_interessado_optout"
         elif detect_closing_intent(message): current_intent = "fechamento_" + detect_closing_intent(message)
         elif detect_referral_intent(message): current_intent = "indicacao"
+        elif detect_pause_not_now_intent(message): current_intent = "pause_not_now"
         elif detect_scheduling_intent(message): current_intent = "agendamento"
         elif detect_positive_intent(message): current_intent = "interesse"
         elif detect_neutral_intent(message): current_intent = "duvida"
@@ -3613,6 +3717,19 @@ def inbox():
             whatsapp.clear_after_hours_pending(phone)
             commit_processed_key(key)
             return jsonify({"ok": True, "confirmed": True, "conversation_stopped": True})
+        if detect_pause_not_now_intent(message):
+            add_respondido_tag_for_lead(lead_state)
+            add_wa_respondeu_tag_for_lead(lead_state)
+            clear_email_runtime_state_for_lead(lead_state, phone=phone)
+            pause_whatsapp_warm_cadence_for_lead(lead_state, phone=phone)
+            append_crm_note_for_lead(lead_state, f"Lead pediu pausa/contato futuro. Sem resposta automatica insistente. Texto: {message}")
+            create_soft_negative_followup_for_lead(lead_state, f"Follow-up leve apos pausa solicitada pelo lead. Texto: {message}")
+            history = append_history(phone, "in", message, step=0)
+            update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="pause_not_now")
+            whatsapp.clear_after_hours_pending(phone)
+            print(f"[PAUSE_NOT_NOW] telefone={phone} action=pause_automation send=0 texto={message}")
+            commit_processed_key(key)
+            return jsonify({"ok": True, "confirmed": True, "intent": "pause_not_now", "action": "pause_automation", "should_send": False, "history_items": len(history)})
         update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="replied")
         lead = enrich_lead_with_whatsapp_state(lead, lead_state, phone)
 

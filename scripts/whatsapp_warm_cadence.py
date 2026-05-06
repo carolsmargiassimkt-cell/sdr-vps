@@ -289,6 +289,7 @@ def main(apply=False, send=False, limit=10):
     state=load_state()
     deals=get_open_deals()
     blocked=load_blocklist()
+    stopped_index=state.get("stopped") if isinstance(state.get("stopped"), dict) else {}
     print(LOG_PREFIX,"DEALS_ALVO",len(deals))
 
     sent_count=0
@@ -312,6 +313,11 @@ def main(apply=False, send=False, limit=10):
             continue
 
         rec=state.get(deal_id, {})
+        if deal_id in stopped_index or f"phone:{phone}" in stopped_index:
+            reason=(stopped_index.get(deal_id) or stopped_index.get(f"phone:{phone}") or {}).get("reason")
+            print(LOG_PREFIX,"WA_STOPPED",deal_id,phone,reason or "stopped_index")
+            log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason=reason or "stopped_index")
+            continue
         if rec.get("stopped"):
             print(LOG_PREFIX,"WA_STOPPED",deal_id,phone)
             log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason="state_stopped")
