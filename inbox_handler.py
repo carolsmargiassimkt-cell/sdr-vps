@@ -2928,6 +2928,70 @@ def validate_lead_with_cache(phone):
     return payload
 
 
+
+def _digits_only(v):
+    return "".join(ch for ch in str(v or "") if ch.isdigit())
+
+def _phone_matches(a,b):
+    a=_digits_only(a)
+    b=_digits_only(b)
+    if not a or not b:
+        return False
+    return a==b or a.endswith(b[-10:]) or b.endswith(a[-10:])
+
+def is_phone_allowed_for_auto_reply(phone):
+    import json
+    from pathlib import Path
+    phone=_digits_only(phone)
+    paths=[
+        Path("data/whatsapp_warm_cadence.json"),
+        Path("data/whatsapp_conversation_state.json"),
+    ]
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            data=json.load(open(path,encoding="utf-8"))
+        except Exception as e:
+            print("[AUTO_REPLY_ALLOWLIST_READ_FAIL]", path, e)
+            continue
+
+        if isinstance(data,dict):
+            items=data.items()
+        elif isinstance(data,list):
+            items=enumerate(data)
+        else:
+            continue
+
+        for k,v in items:
+            if _phone_matches(phone,k):
+                return True
+            if isinstance(v,dict):
+                if _phone_matches(phone,v.get("phone")):
+                    return True
+                if _phone_matches(phone,v.get("telefone")):
+                    return True
+    return False
+
+
+
+def is_brazil_business_hours():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    try:
+        import holidays
+        br_holidays = holidays.Brazil()
+    except Exception:
+        br_holidays = set()
+
+    now = datetime.now(ZoneInfo("America/Sao_Paulo"))
+    if now.weekday() >= 5:
+        return False
+    if now.date() in br_holidays:
+        return False
+    return 9 <= now.hour < 18
+
+
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({"ok": True})
@@ -3230,6 +3294,13 @@ def inbox():
         phone = whatsapp.normalize_phone(str(phone_raw).split("@")[0])
         message = str(message_raw).strip()
         print(f"[INBOUND_RECEBIDO] {phone}: {message}")
+
+        if not is_brazil_business_hours():
+            print(f"[INBOUND_FORA_HORARIO_BR] telefone={phone}")
+
+        if not is_phone_allowed_for_auto_reply(phone):
+            print(f"[BLOCK_NON_LEAD_AUTO_REPLY] telefone={phone}")
+            return jsonify({"ok": True, "ignored": True, "reason": "not_active_lead"})
 
         import os
         flag = os.path.join(os.path.dirname(__file__), "data", "auto_reply_disabled.flag")

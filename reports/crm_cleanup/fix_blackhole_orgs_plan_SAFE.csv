@@ -1,0 +1,53 @@
+deal_id,deal_title,old_org_id,old_org_name,new_org_name,new_org_id,action,applied
+2147,Alca Foods,1991,Bettanin,Alca Foods,,create_org,False
+2141,Alintos Triangulo,1991,Bettanin,Alintos Triangulo,1514,reuse_org,False
+2129,Brunsker Tecnologia - Deal,1991,Bettanin,Brunsker Tecnologia,687,reuse_org,False
+2174,Cocacola Fem,1991,Bettanin,Cocacola Fem,1519,reuse_org,False
+2136,Cograin,1991,Bettanin,Cograin,694,reuse_org,False
+1156,Cristiane De Jesus Vieira Do Nascimento - Deal,1991,Bettanin,Cristiane De Jesus Vieira Do Nascimento,555,reuse_org,False
+2183,Industria E Comercio Fm Alimentos - Lead,1991,Bettanin,Industria E Comercio Fm Alimentos - Lead,,create_org,False
+1155,Instituto Glue - Deal,1991,Bettanin,Instituto Glue,554,reuse_org,False
+2134,Jarbas Correa Filho & Cia - Lead,1991,Bettanin,Jarbas Correa Filho & Cia - Lead,,create_org,False
+2149,Laticinios Cambuiense,1991,Bettanin,Laticinios Cambuiense,699,reuse_org,False
+2180,M W A Comercio De Produtos Alimenticios - Lead,1991,Bettanin,M W A Comercio De Produtos Alimenticios - Lead,,create_org,False
+2172,Mini Mercado Fritz Rs - Lead,1991,Bettanin,Mini Mercado Fritz Rs - Lead,,create_org,False
+2186,Nebulize,1991,Bettanin,Nebulize,,create_org,False
+2150,Pescados Bem Fresco,1991,Bettanin,Pescados Bem Fresco,,create_org,False
+2168,Playvender,1991,Bettanin,Playvender,591,reuse_org,False
+2137,Refrigerantes Coroa,1991,Bettanin,Refrigerantes Coroa,1932,reuse_org,False
+2187,Refrimate,1991,Bettanin,Refrimate,,create_org,False
+2135,SUPER KOCH,1991,Bettanin,SUPER KOCH,,create_org,False
+2131,Supermercado São João - Deal,1991,Bettanin,Supermercado São João,560,reuse_org,False
+2175,Vilma Alimentos,1991,Bettanin,Vilma Alimentos,2251,reuse_org,False
+2152,Zd Alintos,1991,Bettanin,Zd Alintos,1516,reuse_org,False
+3197,Supermercado Uniao 04 De Araguari - Lead,2149,Supermercado Uniao 04 De Araguari,Supermercado Uniao 04 De Araguari - Lead,,create_org,False
+2140,Injet Ciclo Industria E Comercio De Componentes Para Calcados - Lead,1991,Bettanin,Injet Ciclo Industria E Comercio De Componentes Para Calcados - Lead,,create_org,False
+2145,ROMA ALIMENTOS,1991,Bettanin,ROMA ALIMENTOS,,create_org,False
+2159,ADCF CIA CANOINHAS DE PAPEL,1991,Bettanin,ADCF CIA CANOINHAS DE PAPEL,,create_org,False
+2179,Arcor,1991,Bettanin,Arcor,,create_org,False
+2173,Bimbo Do Brasil,1991,Bettanin,Bimbo Do Brasil,596,reuse_org,False
+2144,Brasfrut,1991,Bettanin,Brasfrut,568,reuse_org,False
+2132,Dr Ao Vivo - Deal,1991,Bettanin,Dr Ao Vivo,1928,reuse_org,False
+2170,Las Paletitas,1991,Bettanin,Las Paletitas,2201,reuse_org,False
+2188,Macromaq,1991,Bettanin,Macromaq,,create_org,False
+2160,PLUS PACKING DO BRASIL INDUSTRIA E COMERCIO PLASTICOS E,1991,Bettanin,PLUS PACKING DO BRASIL INDUSTRIA E COMERCIO PLASTICOS E,,create_org,False
+2158,Prosegur,1991,Bettanin,Prosegur,2199,reuse_org,False
+2184,Rotoplast,1991,Bettanin,Rotoplast,,create_org,False
+2153,Sd Informatica,1991,Bettanin,Sd Informatica,701,reuse_org,False
+2167,Sepac,1991,Bettanin,Sepac,574,reuse_org,False
+2154,Suinco,1991,Bettanin,Suinco,577,reuse_org,False
+2130,TLANTIC SISTEMAS DE INFORMACAO LTDA - Deal,1991,Bettanin,TLANTIC SISTEMAS DE INFORMACAO LTDA,688,reuse_org,False
+2138,Toyng,1991,Bettanin,Toyng,563,reuse_org,False
+2142,Vinicola Aurora,1991,Bettanin,Vinicola Aurora,,create_org,False
+2163,Vivo S A,1991,Bettanin,Vivo S A,,create_org,False
+2162,omni s a credito financiamento e investimento,1991,Bettanin,omni s a credito financiamento e investimento,,create_org,False
+3196,Super Novo Comercio De Produtos Alimenticios - Lead,2148,Super Novo Comercio De Produtos Alimenticios,Super Novo Comercio De Produtos Alimenticios - Lead,,create_org,False
+2181,Baly Moda - Lead,1991,Bettanin,Baly Moda - Lead,,create_org,False
+2133,HOTELZINHO ANJO DA GUARDA,1991,Bettanin,HOTELZINHO ANJO DA GUARDA,,create_org,False
+2190,JEQUITINHONHA ALIMENTOS,1991,Bettanin,JEQUITINHONHA ALIMENTOS,,create_org,False
+2185,Jj Equipamentos,1991,Bettanin,Jj Equipamentos,608,reuse_org,False
+2151,LAVANDERIA NEW SOFTY BRAND,1991,Bettanin,LAVANDERIA NEW SOFTY BRAND,,create_org,False
+2148,Maceio Flex Embalagens - Lead,1991,Bettanin,Maceio Flex Embalagens - Lead,,create_org,False
+2146,Nacon,1991,Bettanin,Nacon,570,reuse_org,False
+2161,PADARIA ARTE DO TRIGO,1991,Bettanin,PADARIA ARTE DO TRIGO,,create_org,False
+2182,Zinho Alintos,1991,Bettanin,Zinho Alintos,1522,reuse_org,False

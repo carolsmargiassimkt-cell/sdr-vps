@@ -1,3 +1,4 @@
+MAX_EMAILS_PER_TICK=3
 import os,json,time,requests,smtplib,ssl
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -89,8 +90,22 @@ def add_activity(deal_id,subject):
       "note":"Lead clicou na cadência. Priorizar ligação/WhatsApp."
     })
 
+EMAIL_LABEL_IDS = {
+    "EMAIL_CAD1": 197,
+    "EMAIL_CAD2": 198,
+    "EMAIL_CAD3": 199,
+    "EMAIL_CAD4": 200,
+    "EMAIL_CAD5": 201,
+    "EMAIL_CAD6": 219,
+}
+
 def add_deal_label(deal_id,label):
-    add_deal_note(deal_id,f"TAG_SUGERIDA: {label}")
+    label_id = EMAIL_LABEL_IDS.get(str(label))
+    if label_id:
+        pd_request("PUT", f"deals/{int(deal_id)}", {"label": str(label_id)})
+        add_deal_note(deal_id,f"TAG/CADÊNCIA aplicada: {label}")
+    else:
+        add_deal_note(deal_id,f"TAG_SUGERIDA: {label}")
 
 def load():
     return json.loads(DATA.read_text()) if DATA.exists() else []
@@ -198,7 +213,11 @@ def smtp_dry_run(result):
 def tick():
     rows=load(); changed=False
     t=datetime.now()
+    sent_count=0
     for x in rows:
+        if sent_count >= MAX_EMAILS_PER_TICK:
+            print(f"[CADENCE_LIMIT_REACHED] max={MAX_EMAILS_PER_TICK}")
+            break
         if str(x.get("status") or "") in STOP_STATUSES:
             continue
 
@@ -212,11 +231,14 @@ def tick():
             continue
         result=send_smtp(x["email"],subj,body)
         if smtp_ok(result):
+            if smtp_dry_run(result):
+                print(f"[SKIP_ADVANCE_DRY_RUN] deal={x.get('deal_id')} email={x.get('email')} step={step}")
+                continue
             sent_at=now()
             x["last_sent_at"]=sent_at
-            if not smtp_dry_run(result):
-                record_sent_event(x,step,subj,sent_at)
+            record_sent_event(x,step,subj,sent_at)
             advance_after_send(x,step,t)
+            sent_count += 1
             changed=True
     if changed: save(rows)
     print("[CADENCE_TICK_OK]")

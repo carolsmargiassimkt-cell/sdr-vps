@@ -1,9 +1,7 @@
 {
-  "date": "2026-04-29",
+  "date": "2026-05-06",
   "cleaned": true,
-  "geracao_concluida": true,
-  "deals_com_atividade": [
-    3131
-  ],
-  "ultima_execucao": "2026-04-29T12:25:42.348471"
+  "geracao_concluida": false,
+  "deals_com_atividade": [],
+  "ultima_execucao": "2026-05-06T10:36:38.254237"
 }
