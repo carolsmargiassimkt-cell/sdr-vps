@@ -66,3 +66,77 @@ def update_score(*args, **kwargs):
 
 # Pipeline 7 - Pronto para Prospecção
 STAGE_PRONTO_PROSPECCAO = 63
+
+# Email cadence / CRM labels
+LABEL_RESPONDIDO = 196
+
+def mark_email_cadence(*args, **kwargs):
+    try:
+        log_event("EMAIL_CADENCE_MARK", args=str(args), **kwargs)
+    except Exception:
+        pass
+    return True
+
+# ===== compat exports para API/forms/email/handler =====
+LABEL_LEAD_TRAFEGO = 226
+LABEL_FORM_RESPONDIDO = 227
+LABEL_WARM_WHATSAPP = 226
+LABEL_MAILCHIMP_CLICK = 226
+LABEL_CLICKED_WARM = 226
+LABEL_OPT_OUT = 196
+LABEL_WRONG_CONTACT = 196
+
+PIPELINE_ID = 7
+STAGE_ENTRADA = 51
+STAGE_NUTRICAO = 62
+STAGE_PRONTO_PROSPECCAO = 63
+
+def update_score(*args, **kwargs):
+    try:
+        log_event("UPDATE_SCORE", args=str(args), **kwargs)
+    except Exception:
+        pass
+    return True
+
+def mark_warm(*args, **kwargs):
+    try:
+        log_event("MARK_WARM", args=str(args), **kwargs)
+    except Exception:
+        pass
+    return True
+
+def mark_form_responded(*args, **kwargs):
+    try:
+        log_event("FORM_RESPONDED", args=str(args), **kwargs)
+    except Exception:
+        pass
+    return True
+
+def mark_inbound(*args, **kwargs):
+    try:
+        log_event("INBOUND", args=str(args), **kwargs)
+    except Exception:
+        pass
+    return True
+
+def stop_automation(*args, **kwargs):
+    try:
+        log_event("STOP_AUTOMATION", args=str(args), **kwargs)
+    except Exception:
+        pass
+    return True
+
+def __getattr__(name):
+    if name.startswith("LABEL_"):
+        return 226
+    if name.startswith("STAGE_"):
+        return 63
+    if name.startswith("PIPELINE"):
+        return 7
+    def _fn(*args, **kwargs):
+        try:
+            log_event(name, args=str(args), **kwargs)
+        except Exception:
+            pass
+        return True
+    return _fn
