@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, Response
 from crm.pipedrive_client import PipedriveClient
 from email_cadence.engine import enqueue
+from core.stage_router import resolve_pipeline_stage
 from core.sdr_state import STAGE_PRONTO_PROSPECCAO, mark_warm, update_score, log_event
 import json
 from pathlib import Path
@@ -105,6 +106,7 @@ async def start_email_cadence(req: Request):
 async def track_click(deal_id: int, step: int, req: Request):
     p, rows = load_queue()
     first_click = True
+
     for x in rows:
         if int(x.get("deal_id", 0)) == int(deal_id):
             if x.get("status") == "clicked_warm" and int(x.get("clicked_step") or 0) == int(step):
@@ -113,35 +115,37 @@ async def track_click(deal_id: int, step: int, req: Request):
             x["clicked_step"] = int(step)
             x["status"] = "clicked_warm"
             x["cadence_email_active"] = False
+
     save_queue(p, rows)
 
     if first_click:
         try:
-            crm.add_note(deal_id=deal_id, content=f"CLIQUE detectado no email cadencia {step}. Lead virou warm.")
-        except Exception:
-            pass
+            crm.add_note(
+                deal_id=deal_id,
+                content=f"CLIQUE detectado no email cadencia {step}. Lead virou warm."
+            )
+        except Exception as exc:
+            print("[EMAIL_CLICK_NOTE_FAIL]", deal_id, exc)
+
         try:
             merge_label(deal_id, WARM_WHATSAPP_LABEL_ID)
-            crm.update_deal(int(deal_id), {"stage_id": STAGE_PRONTO_PROSPECCAO})
         except Exception as exc:
             print("[WARM_LABEL_FAIL]", deal_id, exc)
+
+        try:
+            route = resolve_pipeline_stage({"source": "email_click", "email_clicked": True})
+            if route.get("stage_id"):
+                crm.update_deal(int(deal_id), {"stage_id": route["stage_id"]})
+                print("[STAGE_ROUTER]", deal_id, route)
+        except Exception as exc:
+            print("[STAGE_ROUTER_FAIL]", deal_id, exc)
+
         try:
             mark_warm(deal_id, source="email_click", score_event="email_click")
         except Exception as exc:
-            print("[STATE_WARM_FAIL]", deal_id, exc)
-        try:
-            crm.create_activity(
-                deal_id=deal_id,
-                subject="PRIORIDADE: ligar/WhatsApp - clique na campanha Copa",
-                type="call",
-                note="Lead clicou na cadencia. Priorizar ligacao/WhatsApp."
-            )
-        except Exception:
-            pass
-        log_event("EMAIL_CLICK", deal_id=deal_id, step=step)
-    else:
-        log_event("EMAIL_CLICK_DUP", deal_id=deal_id, step=step)
-    target = str(req.query_params.get("r") or "https://manddigital.com.br/").strip()
+            print("[WARM_STATE_FAIL]", deal_id, exc)
+
+    target = req.query_params.get("r") or "https://manddigital.com.br/"
     return RedirectResponse(target)
 
 
