@@ -63,3 +63,6 @@ def mark_warm(*args, **kwargs):
 def update_score(*args, **kwargs):
     log_event("UPDATE_SCORE", args=str(args), **kwargs)
     return True
+
+# Pipeline 7 - Pronto para Prospecção
+STAGE_PRONTO_PROSPECCAO = 63
