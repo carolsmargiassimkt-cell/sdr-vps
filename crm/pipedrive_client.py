@@ -644,9 +644,14 @@ class PipedriveClient:
         return dict(response.get("data") or {}) if response else {}
 
     def get_organization_persons(self, org_id: int, limit: int = 100) -> List[Dict[str, Any]]:
+        """Retorna pessoas vinculadas diretamente a uma organização."""
         if not int(org_id or 0):
             return []
-        response = self._request("GET", "persons", params={"org_id": int(org_id), "limit": max(1, int(limit))})
+        response = self._request(
+            "GET",
+            f"organizations/{int(org_id)}/persons",
+            params={"limit": max(1, int(limit))},
+        )
         return list(response.get("data") or []) if response else []
 
     def _write_with_retry(self, operation: str, fn) -> bool:
