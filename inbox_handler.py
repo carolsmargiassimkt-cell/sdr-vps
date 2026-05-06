@@ -1446,7 +1446,22 @@ def extract_scheduling_phrase(message):
     lowered = phrase.lower()
     for before, after in replacements.items():
         lowered = lowered.replace(before, after)
-    return lowered[:80]
+    cleanup_patterns = (
+        r"\beu posso\b",
+        r"\bposso\b",
+        r"\beu consigo\b",
+        r"\bconsigo\b",
+        r"\bpode ser\b",
+        r"\bfunciona\b",
+        r"\bpra mim\b",
+        r"\bpara mim\b",
+        r"\bcombinado\b",
+        r"\bfechado\b",
+    )
+    for pattern in cleanup_patterns:
+        lowered = re.sub(pattern, " ", lowered)
+    lowered = re.sub(r"\s+", " ", lowered).strip(" .,;:-")
+    return (lowered or "esse horario")[:80]
 
 
 def has_scheduling_context(lead_state, phone, history=None):
@@ -1481,12 +1496,79 @@ def has_scheduling_context(lead_state, phone, history=None):
     return any(marker in normalized for marker in schedule_markers)
 
 
+def has_schedule_confirmed_context(lead_state, phone, history=None):
+    context_texts = []
+    for record in get_whatsapp_conversation_records_for_lead(lead_state, phone):
+        context_texts.append(record.get("last_bot_reply") or "")
+        context_texts.append(record.get("last_intent") or "")
+    for item in reversed(list(history or [])[-8:]):
+        if isinstance(item, dict) and str((item or {}).get("direction") or "").strip().lower() == "out":
+            context_texts.append((item or {}).get("message") or "")
+            break
+    normalized = normalize_stage_text(" ".join(str(item or "") for item in context_texts))
+    markers = (
+        "scheduling_time_provided",
+        "confirmacao",
+        "confirmacao por aqui",
+        "te confirmo",
+        "te mando a confirmacao",
+        "vou organizar",
+        "vou alinhar",
+        "deixar separado",
+        "fica bom",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def detect_schedule_ack(message):
+    normalized = normalize_stage_text(message)
+    if not normalized:
+        return False
+    ack_values = {
+        "combinado",
+        "fechado",
+        "perfeito",
+        "ok",
+        "okay",
+        "certo",
+        "beleza",
+        "show",
+        "ta bom",
+        "tá bom",
+        "blz",
+    }
+    return normalized in ack_values or any(normalized.startswith(value + " ") for value in ack_values)
+
+
 def build_scheduling_confirmation_reply(message):
     phrase = extract_scheduling_phrase(message)
     options = [
         f"Perfeito, {phrase} funciona 🙂 Vou deixar separado aqui e te mando a confirmação.",
         f"Perfeito. {phrase.capitalize()} funciona sim. Vou alinhar aqui e te confirmo por aqui 👍",
         f"Combinado, {phrase} funciona. Vou organizar daqui e te mando a confirmação por aqui.",
+    ]
+    reply = random.choice(options)
+    print(f"[SCHEDULING_CONFIRMATION_REPLY] reply={reply}")
+    return reply
+
+
+def build_scheduling_confirmation_reply(message):
+    phrase = extract_scheduling_phrase(message)
+    options = [
+        f"Perfeito, {phrase} fica bom. Vou deixar separado aqui e te mando a confirmacao.",
+        f"Perfeito. {phrase.capitalize()} fica bom sim. Vou alinhar aqui e te confirmo por aqui.",
+        f"Combinado, {phrase}. Vou organizar daqui e te mando a confirmacao por aqui.",
+    ]
+    reply = random.choice(options)
+    print(f"[SCHEDULING_CONFIRMATION_REPLY] reply={reply}")
+    return reply
+
+
+def build_schedule_ack_reply():
+    options = [
+        "Perfeito, combinado. Te confirmo por aqui.",
+        "Fechado. Fica combinado entao, te mando a confirmacao por aqui.",
+        "Combinado. Vou seguir com isso e te confirmo por aqui.",
     ]
     reply = random.choice(options)
     print(f"[SCHEDULING_CONFIRMATION_REPLY] reply={reply}")
@@ -4088,6 +4170,25 @@ def inbox():
             release_reply_guard(phone)
             print(f"[FALHA_ENVIO] {phone}")
             return jsonify({"ok": False, "confirmed": False, "intent": "scheduling_time_provided", "action": "confirm_schedule"})
+
+        if detect_schedule_ack(message) and has_schedule_confirmed_context(lead_state, phone, history):
+            print(f"[SCHEDULING_ACK_DETECTED] telefone={phone} texto={message}")
+            reply = prepare_whatsapp_reply_text(build_schedule_ack_reply())
+            if not can_emit_reply(phone, reply, within_seconds=REPLY_WINDOW_SECONDS):
+                print(f"[DUPLICIDADE_BLOQUEADA_TEXTO] {phone}")
+                commit_processed_key(key)
+                return jsonify({"ok": True, "confirmed": True, "intent": "scheduling_ack", "action": "confirm_schedule", "duplicated": True})
+            ok = blocked_whatsapp_send(phone, reply)
+            if ok:
+                append_history(phone, "out", reply, step=current_step)
+                update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="scheduling_time_provided", last_bot_reply=reply)
+                whatsapp.clear_after_hours_pending(phone)
+                print(f"[RESPOSTA_ENVIADA] {phone}")
+                commit_processed_key(key)
+                return jsonify({"ok": True, "confirmed": True, "intent": "scheduling_ack", "action": "confirm_schedule"})
+            release_reply_guard(phone)
+            print(f"[FALHA_ENVIO] {phone}")
+            return jsonify({"ok": False, "confirmed": False, "intent": "scheduling_ack", "action": "confirm_schedule"})
 
         agent_payload = maybe_handle_inbound_agent_decision(
             phone=phone,
