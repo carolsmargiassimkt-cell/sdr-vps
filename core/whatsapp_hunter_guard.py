@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from core.locked_json_state import locked_load_json, locked_save_json
+from core.production_safety import _locked_file
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 GUARD_FILE = Path(os.getenv("WA_HUNTER_DAILY_GUARD_FILE") or BASE_DIR / "data" / "whatsapp_hunter_daily_guard.json")
@@ -36,27 +38,20 @@ def _empty_guard() -> dict[str, Any]:
 
 
 def load_guard() -> dict[str, Any]:
-    try:
-        if GUARD_FILE.exists():
-            payload = json.loads(GUARD_FILE.read_text(encoding="utf-8-sig") or "{}")
-            if isinstance(payload, dict) and payload.get("date") == today_brt():
-                payload.setdefault("sent_by_phone", {})
-                payload.setdefault("sent_by_deal", {})
-                return payload
-    except Exception as exc:
-        print(f"[WA_HUNTER_GUARD_READ_FAIL] error={exc}")
+    payload = locked_load_json(GUARD_FILE, {})
+    if isinstance(payload, dict) and payload.get("date") == today_brt():
+        payload.setdefault("sent_by_phone", {})
+        payload.setdefault("sent_by_deal", {})
+        return payload
     return _empty_guard()
 
 
 def save_guard(guard: dict[str, Any]) -> None:
-    GUARD_FILE.parent.mkdir(parents=True, exist_ok=True)
     payload = guard if isinstance(guard, dict) else _empty_guard()
     payload.setdefault("date", today_brt())
     payload.setdefault("sent_by_phone", {})
     payload.setdefault("sent_by_deal", {})
-    tmp = GUARD_FILE.with_suffix(GUARD_FILE.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, GUARD_FILE)
+    locked_save_json(GUARD_FILE, payload)
 
 
 def should_send_hunter_today(deal_id: Any, phone: Any, guard: dict[str, Any] | None = None) -> tuple[bool, str, str]:
@@ -90,6 +85,10 @@ def mark_hunter_sent_today(deal_id: Any, phone: Any, sent_at: str | None = None,
     if persist:
         save_guard(state)
     return state
+
+
+def hunter_send_lock(timeout_seconds: float = 30):
+    return _locked_file(str(GUARD_FILE) + ".send.lock", timeout_seconds=timeout_seconds)
 
 
 def duplicate_day_log(deal_id: Any, phone: Any, last_sent_at: str, reason: str) -> str:

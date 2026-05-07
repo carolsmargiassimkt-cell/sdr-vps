@@ -62,6 +62,8 @@ import os
 import random
 import re
 from core.stage_router import resolve_pipeline_stage
+from core.auto_reply_guard import add_auto_reply_block, detect_auto_reply
+from core.locked_json_state import locked_load_json, locked_save_json
 from core.sdr_orchestrator import (
     load_email_state as orch_load_email_state,
     load_wa_state as orch_load_wa_state,
@@ -540,10 +542,9 @@ def append_to_blocklist(phone, reason):
         os.makedirs(LOGS_DIR, exist_ok=True)
         data = []
         if os.path.exists(BLOCKLIST_FILE):
-            with open(BLOCKLIST_FILE, "r", encoding="utf-8-sig") as f:
-                loaded = json.load(f)
-                if isinstance(loaded, list):
-                    data = loaded
+            loaded = locked_load_json(BLOCKLIST_FILE, [])
+            if isinstance(loaded, list):
+                data = loaded
         normalized_phone = whatsapp.normalize_phone(phone)
         if not normalized_phone:
             return False
@@ -554,8 +555,7 @@ def append_to_blocklist(phone, reason):
                 "tag": "blocked_automatic",
                 "created_at": datetime.now().isoformat(),
             })
-            with open(BLOCKLIST_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+            locked_save_json(BLOCKLIST_FILE, data)
             print(f"[BLOCKLIST_ADICIONADO] telefone={normalized_phone} motivo={reason}")
             return True
     except Exception as e:
@@ -590,6 +590,25 @@ def stop_cold_orchestration_for_lead(lead_state, phone="", reason="inbound_reply
         orch_save_email_state(email_rows)
     if changed_wa:
         orch_save_wa_state(wa_state)
+
+
+def handle_auto_reply_block(phone, message, lead_state=None):
+    add_auto_reply_block(phone, message, reason="auto_reply_detected")
+    append_to_blocklist(phone, "auto_reply_detected")
+    try:
+        stop_cold_orchestration_for_lead(lead_state or {}, phone=phone, reason="auto_reply_detected")
+    except Exception as exc:
+        print(f"[AUTO_REPLY_BLOCK_STOP_FAIL] phone={phone} error={exc}")
+    try:
+        pause_whatsapp_warm_cadence_for_lead(lead_state or {}, phone=phone)
+    except Exception:
+        pass
+    try:
+        append_crm_note_for_lead(lead_state or {}, f"[AUTO_REPLY_BLOCK] Auto-resposta institucional detectada. Sem resposta automatica. Texto: {message}")
+    except Exception:
+        pass
+    print(f"[AUTO_REPLY_BLOCK] phone={phone} reason=auto_reply_detected")
+    print(f"[AUTO_REPLY_SKIP_SEND] phone={phone} reason=auto_reply_detected")
 
 
 def acquire_lock(lock_file, timeout=10):
@@ -4112,6 +4131,24 @@ def inbox():
             return jsonify({"ok": True, "status": "sem_interesse_hard_rule", "confirmed": bool(ok)})
 
 
+        early_auto_reply, early_auto_reply_reason = detect_auto_reply(message)
+        if early_auto_reply:
+            try:
+                early_lead_state = validate_lead_with_cache(phone)
+            except Exception:
+                early_lead_state = {}
+            handle_auto_reply_block(phone, message, early_lead_state)
+            history = append_history(phone, "in", message, step=0)
+            commit_processed_key(key)
+            return jsonify({
+                "ok": True,
+                "confirmed": True,
+                "auto_reply_blocked": True,
+                "reason": "auto_reply_detected",
+                "rule": early_auto_reply_reason,
+                "history_items": len(history),
+            })
+
         if not dentro_do_horario() and not is_test_whitelist_phone(phone):
             lead_state = None
             try:
@@ -4245,6 +4282,20 @@ def inbox():
                 print(f"[INBOX_SEND_BLOCKED_NON_WHITELIST] telefone={phone} reason=no_person")
                 commit_processed_key(key)
                 return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "no_person"})
+
+        auto_reply, auto_reply_reason = detect_auto_reply(message)
+        if auto_reply:
+            handle_auto_reply_block(phone, message, lead_state)
+            history = append_history(phone, "in", message, step=0)
+            commit_processed_key(key)
+            return jsonify({
+                "ok": True,
+                "confirmed": True,
+                "auto_reply_blocked": True,
+                "reason": "auto_reply_detected",
+                "rule": auto_reply_reason,
+                "history_items": len(history),
+            })
 
         lead = build_lead_payload_from_state(phone, lead_state)
         clear_email_runtime_state_for_lead(lead_state, phone=phone)

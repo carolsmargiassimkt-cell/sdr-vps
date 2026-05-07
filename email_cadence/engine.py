@@ -13,6 +13,8 @@ from typing import Any
 
 import requests
 
+from core.inflight_actions import acquire_inflight, release_inflight
+from core.locked_json_state import locked_load_json, locked_save_json
 from core.crm_hygiene import is_generic_email
 from core.sdr_orchestrator import (
     ACTION_CREATE_ACTIVITY,
@@ -48,20 +50,11 @@ MIN_DELAY_SECONDS = float(os.getenv("EMAIL_MIN_DELAY_SECONDS", "45") or "45")
 
 
 def load_json(path: Path, default):
-    if not path.exists():
-        return default
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8-sig"))
-        return payload if payload is not None else default
-    except Exception:
-        return default
+    return locked_load_json(path, default)
 
 
 def save_json(path: Path, payload) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    locked_save_json(path, payload)
 
 
 def now() -> str:
@@ -381,8 +374,16 @@ def tick():
             changed = apply_orchestrator_stop(row, decision) or changed
             print("[ORCH_BLOCK] channel=email deal_id=", row.get("deal_id"), "reason=", decision.get("reason"))
             continue
+        inflight_ok, inflight_reason = acquire_inflight(row.get("deal_id"), "email")
+        if not inflight_ok:
+            row["hold_reason"] = f"inflight_{inflight_reason}"
+            changed = True
+            continue
         subject, body = template(step, row)
-        result = send_smtp(row["email"], subject, body, row)
+        try:
+            result = send_smtp(row["email"], subject, body, row)
+        finally:
+            release_inflight(row.get("deal_id"), "email")
         if not (isinstance(result, dict) and result.get("ok")):
             continue
         sent_at = now()

@@ -22,14 +22,33 @@ def key(s):
 def api(method, path, **kwargs):
     if not TOKEN:
         raise SystemExit("ERRO: defina PIPEDRIVE_API_TOKEN no ambiente.")
+
+    retries = kwargs.pop("_retries", 0)
+
     params = kwargs.pop("params", {}) or {}
     params["api_token"] = TOKEN
-    r = requests.request(method, BASE + path, params=params, timeout=40, **kwargs)
+
+    try:
+        r = requests.request(
+            method,
+            BASE + path,
+            params=params,
+            timeout=40,
+            **kwargs
+        )
+    except Exception as e:
+        if retries < 3:
+            wait = 3 * (retries + 1)
+            print(f"[CONNECTION_RETRY] {path} erro={e} wait={wait}s")
+            time.sleep(wait)
+            return api(method, path, params=params, _retries=retries+1, **kwargs)
+        raise
+
     if r.status_code == 429:
         wait = int(r.headers.get("Retry-After", "5"))
         print(f"[RATE_LIMIT] aguardando {wait}s")
         time.sleep(wait)
-        return api(method, path, **kwargs, params=params)
+        return api(method, path, params=params, _retries=retries+1, **kwargs)
     try:
         data = r.json()
     except Exception:
@@ -84,8 +103,7 @@ def read_csvs():
                     if not name:
                         continue
 
-                    if not has_interaction(row):
-                        continue
+                    interaction = has_interaction(row)
 
                     leads.append({
                         "source_file": f.name,
@@ -95,6 +113,7 @@ def read_csvs():
                         "linkedin": linkedin,
                         "email": email,
                         "phone": phone,
+                        "interaction": interaction,
                         "raw": row
                     })
         except Exception as e:
@@ -128,14 +147,39 @@ def search_person(name, email=""):
             return p
     return (items[0].get("item") if items else None)
 
-def search_open_deal_by_person_name(name):
-    data = api("GET", "/deals/search", params={"term": name, "status": "open", "limit": 10})
-    items = ((data.get("data") or {}).get("items") or [])
-    for it in items:
-        d = it.get("item") or {}
-        if key(d.get("title")) == key(name):
+def get_deal_detail(deal_id):
+    data = api("GET", f"/deals/{deal_id}")
+    return data.get("data") or {}
+
+def search_safe_open_deal(lead, person_id=None, org_id=None):
+    terms = [lead.get("company"), lead.get("name")]
+    candidates = []
+
+    for term in terms:
+        if not term:
+            continue
+        data = api("GET", "/deals/search", params={"term": term, "status": "open", "limit": 10})
+        items = ((data.get("data") or {}).get("items") or [])
+        for it in items:
+            d = it.get("item") or {}
+            did = d.get("id")
+            if did and did not in [c.get("id") for c in candidates]:
+                candidates.append(d)
+
+    for d in candidates:
+        detail = get_deal_detail(d.get("id"))
+        d_org = detail.get("org_id")
+        d_person = detail.get("person_id")
+
+        d_org_id = d_org.get("value") if isinstance(d_org, dict) else d_org
+        d_person_id = d_person.get("value") if isinstance(d_person, dict) else d_person
+
+        if org_id and str(d_org_id) == str(org_id):
             return d
-    return (items[0].get("item") if items else None)
+        if person_id and str(d_person_id) == str(person_id):
+            return d
+
+    return None
 
 def create_org(company, dry):
     if dry:
@@ -199,6 +243,35 @@ def add_note(deal_id, lead, dry):
         return
     api("POST", "/notes", json={"deal_id": deal_id, "content": content})
 
+
+def waalaxy_score(lead):
+    score = 0
+    txt = (lead.get("company","") + " " + lead.get("title","") + " " + row_text(lead.get("raw",{}))).lower()
+
+    icp_terms = [
+        "supermerc", "varejo", "shopping", "atacado", "rede", "loja",
+        "farm?cia", "farmacia", "aliment", "bebida", "distribuid"
+    ]
+    role_terms = [
+        "marketing", "trade", "comercial", "crm", "vendas",
+        "growth", "diretor", "gerente", "coordenador", "head"
+    ]
+
+    if any(t in txt for t in icp_terms):
+        score += 30
+    if any(t in txt for t in role_terms):
+        score += 25
+    if lead.get("email"):
+        score += 20
+    if lead.get("phone"):
+        score += 10
+    if lead.get("linkedin"):
+        score += 10
+    if lead.get("interaction"):
+        score += 25
+
+    return min(score, 100)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true")
@@ -209,7 +282,7 @@ def main():
     seen = set()
     unique = []
     for l in leads:
-        k = (key(l["name"]), key(l["company"]))
+        k = (key(l["name"]), key(l["company"]), key(l.get("email") or l.get("linkedin")))
         if k not in seen:
             seen.add(k)
             unique.append(l)
@@ -225,6 +298,14 @@ def main():
         print("EMPRESA:", lead["company"] or "SEM_EMPRESA")
         print("CARGO:", lead["title"])
         print("ARQUIVO:", lead["source_file"])
+        lead["waalaxy_score"] = waalaxy_score(lead)
+        lead["waalaxy_tipo"] = "WARM_IMPORT" if lead.get("interaction") else "ICP_IMPORT"
+        print("TIPO:", lead["waalaxy_tipo"], "WAALAXY_SCORE:", lead["waalaxy_score"])
+
+        if lead["company"].lower() in ["waalaxy international", "kawaak"]:
+            print("[SKIP] empresa teste/fornecedor Waalaxy")
+            report.append({**lead, "action": "skip_vendor"})
+            continue
 
         if not lead["company"]:
             print("[SKIP] sem empresa no CSV, não vou criar bagunça.")
@@ -251,7 +332,7 @@ def main():
             person_id = person.get("id")
             print("[PERSON_CREATE]", person_id, lead["name"])
 
-        deal = search_open_deal_by_person_name(lead["name"])
+        deal = search_safe_open_deal(lead, person_id=person_id, org_id=org_id)
         if deal:
             deal_id = deal.get("id")
             print("[DEAL_FOUND_RENAME]", deal_id, deal.get("title"))
@@ -272,6 +353,9 @@ def main():
             "org_id": org_id,
             "person_id": person_id,
             "deal_id": deal_id,
+            "waalaxy_score": lead.get("waalaxy_score"),
+            "waalaxy_tipo": lead.get("waalaxy_tipo"),
+            "interaction": lead.get("interaction"),
             "action": "ok_dry" if dry else "applied"
         })
 

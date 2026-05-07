@@ -5,6 +5,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+from core.locked_json_state import locked_load_json, locked_save_json
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 STATE_FILE = Path(os.getenv("WA_STRATEGY_STATE_FILE") or BASE_DIR / "data" / "wa_strategy_state.json")
@@ -18,20 +19,12 @@ def strategy_key(deal_id, phone, strategy=""):
 
 
 def load_strategy_state():
-    try:
-        if STATE_FILE.exists():
-            payload = json.loads(STATE_FILE.read_text(encoding="utf-8") or "{}")
-            return payload if isinstance(payload, dict) else {}
-    except Exception as exc:
-        print(f"[WA_STRATEGY_STATE_READ_FAIL] {exc}")
-    return {}
+    payload = locked_load_json(STATE_FILE, {})
+    return payload if isinstance(payload, dict) else {}
 
 
 def save_strategy_state(state):
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
-    tmp.write_text(json.dumps(state if isinstance(state, dict) else {}, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(STATE_FILE)
+    locked_save_json(STATE_FILE, state if isinstance(state, dict) else {})
 
 
 def get_record(state, deal_id, phone, strategy=""):

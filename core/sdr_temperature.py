@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from core.locked_json_state import locked_append_jsonl
+from core.production_safety import _locked_file
 from core.sdr_orchestrator import load_email_state, load_wa_state, save_email_state, save_wa_state, stop_cold_states_for_warm
 from crm.pipedrive_client import PipedriveClient
 
@@ -158,21 +160,23 @@ def event_exists(dedupe_key: str) -> bool:
     if not EVENTS_FILE.exists():
         return False
     try:
-        with EVENTS_FILE.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                if (json.loads(line).get("dedupe_key") or "") == dedupe_key:
-                    return True
+        print(f"[STATE_LOCK_ACQUIRE] path={EVENTS_FILE}")
+        with _locked_file(str(EVENTS_FILE) + ".lock"):
+            with EVENTS_FILE.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    if (json.loads(line).get("dedupe_key") or "") == dedupe_key:
+                        return True
     except Exception as exc:
         print(f"[SDR_SIGNAL_EVENT_READ_FAIL] error={exc}")
+    finally:
+        print(f"[STATE_LOCK_RELEASE] path={EVENTS_FILE}")
     return False
 
 
 def append_event(event: dict[str, Any]) -> None:
-    EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with EVENTS_FILE.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+    locked_append_jsonl(EVENTS_FILE, event)
 
 
 def deal_field_update_payload(crm: PipedriveClient, classification: dict[str, Any]) -> dict[str, Any]:

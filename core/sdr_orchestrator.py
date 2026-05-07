@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from core.locked_json_state import locked_load_json, locked_save_json
 from core.whatsapp_hunter_guard import duplicate_day_log, should_send_hunter_today
 
 
@@ -122,20 +123,11 @@ def normalize_email(value: Any) -> str:
 
 
 def load_json(path: Path, default: Any) -> Any:
-    try:
-        if path.exists():
-            payload = json.loads(path.read_text(encoding="utf-8-sig") or "null")
-            return payload if payload is not None else default
-    except Exception as exc:
-        print(f"[ORCH_BLOCK] reason=json_read_fail path={path} error={exc}")
-    return default
+    return locked_load_json(path, default)
 
 
 def save_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    locked_save_json(path, payload)
 
 
 def backup_state_files() -> list[str]:

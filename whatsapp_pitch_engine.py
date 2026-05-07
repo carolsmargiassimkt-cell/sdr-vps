@@ -7,6 +7,7 @@ import unicodedata
 from typing import Any, Dict, List
 
 import requests
+from core.auto_reply_guard import detect_auto_reply
 
 try:
     from config.config_loader import get_config_value
@@ -765,6 +766,9 @@ class WhatsAppPitchEngine:
 
     @classmethod
     def detect_nonlead_intent(cls, text: str) -> str:
+        auto_reply, _reason = detect_auto_reply(text)
+        if auto_reply:
+            return "mensagem_automatica"
         normalized = cls._normalize_opt_out_message(text)
         if not normalized:
             return ""

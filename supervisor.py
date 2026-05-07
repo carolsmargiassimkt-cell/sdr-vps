@@ -12,11 +12,14 @@ import requests
 
 from core.whatsapp_hunter_guard import (
     duplicate_day_log,
+    hunter_send_lock,
     load_guard as load_hunter_daily_guard,
     mark_hunter_sent_today,
     render_hunter_message,
     should_send_hunter_today,
 )
+from core.auto_reply_guard import is_auto_reply_blocked
+from core.inflight_actions import acquire_inflight, release_inflight
 from core.wa_strategy_state import (
     append_sent_step,
     get_record,
@@ -204,6 +207,9 @@ def hunter_skip_reason(deal, state, blocked):
         return "invalid_phone"
     if phone in blocked or (phone.startswith("55") and phone[2:] in blocked):
         return "blocklist"
+    if is_auto_reply_blocked(phone):
+        print(f"[AUTO_REPLY_SKIP_SEND] deal_id={deal_id} phone={phone} channel=wa_hunter")
+        return "auto_reply_detected"
     tokens = label_tokens(deal)
     if tokens & IMPEDITIVE_TAGS:
         return "impeditive_tag"
@@ -267,6 +273,26 @@ def send_whatsapp(phone, text):
     return response.ok and '"sent"' in response.text
 
 
+def validate_deal_before_send(deal_id, phone, email_state):
+    print(f"[PRE_SEND_REFRESH] deal_id={deal_id} phone={phone}")
+    refreshed_state = load_strategy_state()
+    deal = crm.get_deal_details(int(deal_id)) or {}
+    if not deal:
+        print(f"[PRE_SEND_BLOCK] deal_id={deal_id} phone={phone} reason=deal_missing")
+        return False, None, refreshed_state
+    decision = resolve_next_action(
+        deal,
+        email_state=email_state,
+        wa_state=refreshed_state,
+        channel="wa_hunter",
+        phone=phone,
+    )
+    if decision.get("action") != ACTION_WA_HUNTER_SEND:
+        print(f"[PRE_SEND_BLOCK] deal_id={deal_id} phone={phone} reason={decision.get('reason')}")
+        return False, deal, refreshed_state
+    return True, deal, refreshed_state
+
+
 def add_note(deal_id, content):
     try:
         ok = bool(crm.add_note(deal_id=int(deal_id), content=str(content or "").strip()))
@@ -304,6 +330,8 @@ def run_hunter(*, send=False, limit=None):
     eligible = 0
 
     for deal in deals:
+        state = load_strategy_state()
+        daily_guard = load_hunter_daily_guard()
         deal_id = int((deal or {}).get("id") or 0)
         phone = phone_from_deal(deal)
         reason = hunter_skip_reason(deal, state, blocked)
@@ -357,13 +385,38 @@ def run_hunter(*, send=False, limit=None):
             print(f"[WA_HUNTER_SKIP] reason=daily_cap cap={daily_cap}")
             break
 
-        text = build_hunter_message(deal, step)
-        ok = send_whatsapp(phone, text)
-        if not ok:
-            print(f"[WA_HUNTER_SKIP] deal_id={deal_id} phone={phone} reason=send_failed")
+        try:
+            print(f"[STATE_LOCK_ACQUIRE] path=data/whatsapp_hunter_daily_guard.json.send")
+            with hunter_send_lock():
+                daily_guard = load_hunter_daily_guard()
+                allowed_today, last_sent_at, duplicate_reason = should_send_hunter_today(deal_id, phone, daily_guard)
+                if not allowed_today:
+                    print(duplicate_day_log(deal_id, phone, last_sent_at, duplicate_reason))
+                    continue
+                refreshed_ok, refreshed_deal, refreshed_state = validate_deal_before_send(deal_id, phone, email_state)
+                if not refreshed_ok:
+                    state = refreshed_state
+                    continue
+                state = refreshed_state
+                inflight_ok, inflight_reason = acquire_inflight(deal_id, "whatsapp")
+                if not inflight_ok:
+                    print(f"[WA_HUNTER_SKIP] deal_id={deal_id} phone={phone} reason=inflight_{inflight_reason}")
+                    continue
+                try:
+                    text = build_hunter_message(refreshed_deal or deal, step)
+                    ok = send_whatsapp(phone, text)
+                    if not ok:
+                        print(f"[WA_HUNTER_SKIP] deal_id={deal_id} phone={phone} reason=send_failed")
+                        continue
+                finally:
+                    release_inflight(deal_id, "whatsapp")
+                sent_at = datetime.now(ZoneInfo("America/Sao_Paulo")).isoformat(timespec="seconds")
+                daily_guard = mark_hunter_sent_today(deal_id, phone, sent_at=sent_at, guard=daily_guard)
+        except TimeoutError:
+            print(f"[STATE_LOCK_TIMEOUT] path=data/whatsapp_hunter_daily_guard.json.send deal_id={deal_id} phone={phone}")
             continue
-        sent_at = datetime.now(ZoneInfo("America/Sao_Paulo")).isoformat(timespec="seconds")
-        daily_guard = mark_hunter_sent_today(deal_id, phone, sent_at=sent_at, guard=daily_guard)
+        finally:
+            print(f"[STATE_LOCK_RELEASE] path=data/whatsapp_hunter_daily_guard.json.send")
         append_sent_step(
             state,
             deal_id,

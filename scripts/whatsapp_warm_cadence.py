@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 from core.sdr_orchestrator import ACTION_WA_WARM_SEND, load_email_state, resolve_next_action
 from core.sdr_state import STAGE_TENTATIVA_CONTATO, log_event, update_deal_state
 from core.wa_strategy_state import load_strategy_state, mark_warm, save_strategy_state
+from core.auto_reply_guard import is_auto_reply_blocked
+from core.locked_json_state import locked_load_json, locked_save_json
+from core.inflight_actions import acquire_inflight, release_inflight
 
 load_dotenv("/root/sdr-vps/.env")
 
@@ -122,13 +125,11 @@ def now():
     return datetime.now()
 
 def load_state():
-    if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text())
-    return {}
+    payload = locked_load_json(STATE_FILE, {})
+    return payload if isinstance(payload, dict) else {}
 
 def save_state(state):
-    STATE_FILE.parent.mkdir(exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+    locked_save_json(STATE_FILE, state if isinstance(state, dict) else {})
 
 def pd(method,path,json_body=None,params=None):
     params=params or {}
@@ -309,6 +310,10 @@ def main(apply=False, send=False, limit=10):
             print(LOG_PREFIX,"SKIP_BLOCKLIST",deal_id,phone)
             log_event("WA_SKIP_BLOCKLIST", deal_id=deal_id, phone=phone)
             continue
+        if is_auto_reply_blocked(phone):
+            print("[AUTO_REPLY_SKIP_SEND]", "deal_id=", deal_id, "phone=", phone, "channel=wa_warm")
+            log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason="auto_reply_detected")
+            continue
         if d.get("_skip_reason")=="dup_batch":
             print(LOG_PREFIX,"SKIP_PHONE_DUP_BATCH",deal_id,phone)
             log_event("WA_SKIP_DUP", deal_id=deal_id, phone=phone, reason="phone_dup_batch")
@@ -365,10 +370,17 @@ def main(apply=False, send=False, limit=10):
             print(LOG_PREFIX,"DRY_RUN_NO_MUTATION",deal_id,phone,"step",next_step)
             continue
 
-        ok=send_wa(phone,msgs[next_step])
-        if not ok:
-            print(LOG_PREFIX,"FALHA_ENVIO",deal_id,phone)
+        inflight_ok, inflight_reason = acquire_inflight(deal_id, "whatsapp")
+        if not inflight_ok:
+            print("[INFLIGHT_BLOCK]", "deal_id=", deal_id, "channel=whatsapp", "reason=", inflight_reason)
             continue
+        try:
+            ok=send_wa(phone,msgs[next_step])
+            if not ok:
+                print(LOG_PREFIX,"FALHA_ENVIO",deal_id,phone)
+                continue
+        finally:
+            release_inflight(deal_id, "whatsapp")
 
         state[deal_id]={
             "origin":origin,
