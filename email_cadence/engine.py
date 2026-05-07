@@ -14,6 +14,15 @@ from typing import Any
 import requests
 
 from core.crm_hygiene import is_generic_email
+from core.sdr_orchestrator import (
+    ACTION_CREATE_ACTIVITY,
+    ACTION_EMAIL_SEND,
+    ACTION_HOLD,
+    ACTION_MARK_LOST,
+    ACTION_STOP_ALL,
+    load_wa_state,
+    resolve_next_action,
+)
 from core.sdr_state import LABEL_RESPONDIDO, log_event, mark_email_cadence
 
 
@@ -250,7 +259,43 @@ def template(step, row):
     return textos.get(int(step), textos[1])
 
 
-def send_smtp(to, subject, body):
+def fetch_deal_for_orchestration(deal_id):
+    payload = pd_request("GET", f"/deals/{int(deal_id)}")
+    deal = (payload or {}).get("data") or {}
+    return dict(deal or {}) if isinstance(deal, dict) else {"id": int(deal_id or 0)}
+
+
+def apply_orchestrator_stop(row, decision):
+    action = str((decision or {}).get("action") or "")
+    reason = str((decision or {}).get("reason") or "orchestrator_hold")
+    if action in {ACTION_STOP_ALL, ACTION_MARK_LOST, ACTION_CREATE_ACTIVITY}:
+        row["status"] = "warm" if action == ACTION_CREATE_ACTIVITY else reason
+        row["stopped_at"] = now()
+        row["stop_reason"] = f"orchestrator_{reason}"
+        if action == ACTION_CREATE_ACTIVITY:
+            deal_id = int(row.get("deal_id") or 0)
+            pd_request("POST", "/notes", {"deal_id": deal_id, "content": f"[ORCH_STOP_ALL] Email frio parado por lead warm. Motivo: {reason}."})
+            pd_request("POST", "/activities", {
+                "subject": f"Contato humano SDR - deal {deal_id}",
+                "type": "call",
+                "deal_id": deal_id,
+                "person_id": int((decision or {}).get("person_id") or 0),
+                "done": 0,
+                "note": "Criada pelo orquestrador SDR apos sinal warm; email frio parado.",
+            })
+            if int((decision or {}).get("move_stage") or 0):
+                pd_request("PUT", f"/deals/{deal_id}", {"stage_id": int(decision.get("move_stage"))})
+                print(f"[ORCH_STAGE_MOVE] deal_id={deal_id} stage_id={int(decision.get('move_stage'))}")
+            print(f"[ORCH_ACTIVITY] deal_id={deal_id} reason={reason}")
+        log_event("EMAIL_REPLY_STOP", deal_id=row.get("deal_id"), reason=row["stop_reason"])
+        return True
+    if action == ACTION_HOLD:
+        row["hold_reason"] = reason
+        log_event("EMAIL_HOLD", deal_id=row.get("deal_id"), reason=reason)
+    return False
+
+
+def send_smtp(to, subject, body, row=None):
     if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, FROM]):
         print("[DRY_RUN] SMTP env ausente:", to, subject)
         return {"ok": True, "dry_run": True}
@@ -266,6 +311,7 @@ def send_smtp(to, subject, body):
         server.send_message(msg)
 
         try:
+            item = row or {}
             update_sdr_fields(item.get("deal_id"), {
                 "event_id": f"email_sent:{item.get('deal_id')}:{item.get('step')}",
                 "type": "email_sent",
@@ -322,8 +368,21 @@ def tick():
             advance_after_send(row, step, now())
             changed = True
             continue
+        deal = fetch_deal_for_orchestration(row.get("deal_id"))
+        decision = resolve_next_action(
+            deal,
+            email_state=rows,
+            wa_state=load_wa_state(),
+            channel="email",
+            phone=row.get("phone"),
+            email=row.get("email"),
+        )
+        if decision.get("action") != ACTION_EMAIL_SEND:
+            changed = apply_orchestrator_stop(row, decision) or changed
+            print("[ORCH_BLOCK] channel=email deal_id=", row.get("deal_id"), "reason=", decision.get("reason"))
+            continue
         subject, body = template(step, row)
-        result = send_smtp(row["email"], subject, body)
+        result = send_smtp(row["email"], subject, body, row)
         if not (isinstance(result, dict) and result.get("ok")):
             continue
         sent_at = now()

@@ -62,6 +62,13 @@ import os
 import random
 import re
 from core.stage_router import resolve_pipeline_stage
+from core.sdr_orchestrator import (
+    load_email_state as orch_load_email_state,
+    load_wa_state as orch_load_wa_state,
+    save_email_state as orch_save_email_state,
+    save_wa_state as orch_save_wa_state,
+    stop_cold_states_for_warm,
+)
 import sys
 import time
 import unicodedata
@@ -554,6 +561,35 @@ def append_to_blocklist(phone, reason):
     except Exception as e:
         print(f"[ERRO_BLOCKLIST] {e}")
     return False
+
+
+def stop_cold_orchestration_for_lead(lead_state, phone="", reason="inbound_reply"):
+    deals = list((lead_state or {}).get("deals") or [])
+    if not deals:
+        return
+    email_rows = orch_load_email_state()
+    wa_state = orch_load_wa_state()
+    changed_email = False
+    changed_wa = False
+    for deal in deals:
+        deal_id = int((deal or {}).get("id") or 0)
+        if deal_id <= 0:
+            continue
+        local_phone = phone or ""
+        if not local_phone:
+            person = (deal or {}).get("person_id") or {}
+            if isinstance(person, dict):
+                for item in list(person.get("phone") or []):
+                    local_phone = item.get("value") if isinstance(item, dict) else item
+                    if local_phone:
+                        break
+        email_changed, wa_changed = stop_cold_states_for_warm(deal_id, local_phone, email_rows, wa_state, reason=reason)
+        changed_email = changed_email or email_changed
+        changed_wa = changed_wa or wa_changed
+    if changed_email:
+        orch_save_email_state(email_rows)
+    if changed_wa:
+        orch_save_wa_state(wa_state)
 
 
 def acquire_lock(lock_file, timeout=10):
@@ -4226,11 +4262,13 @@ def inbox():
             create_soft_negative_followup_for_lead(lead_state, f"Follow-up leve apos pausa solicitada pelo lead. Texto: {message}")
             history = append_history(phone, "in", message, step=0)
             update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="pause_not_now")
+            stop_cold_orchestration_for_lead(lead_state, phone=phone, reason="pause_not_now")
             whatsapp.clear_after_hours_pending(phone)
             print(f"[PAUSE_NOT_NOW] telefone={phone} action=pause_automation send=0 texto={message}")
             commit_processed_key(key)
             return jsonify({"ok": True, "confirmed": True, "intent": "pause_not_now", "action": "pause_automation", "should_send": False, "history_items": len(history)})
         update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="replied")
+        stop_cold_orchestration_for_lead(lead_state, phone=phone, reason="wa_inbound_reply")
         lead = enrich_lead_with_whatsapp_state(lead, lead_state, phone)
 
         if not can_auto_reply_inbound(phone, source=source, lead_state=lead_state):
@@ -4253,6 +4291,7 @@ def inbox():
             append_crm_note_for_lead(lead_state, f"Lead informou nao ter interesse. Texto: {message}")
             history = append_history(phone, "in", message, step=0)
             update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="opt_out")
+            stop_cold_orchestration_for_lead(lead_state, phone=phone, reason="opt_out")
             print(f"[CONVERSATION_STOPPED_NO_REPLY] telefone={phone} motivo=opt_out")
             commit_processed_key(key)
             return jsonify({"ok": True, "conversation_stopped": True, "history_items": len(history)})

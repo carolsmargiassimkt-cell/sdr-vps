@@ -18,6 +18,12 @@ from core.wa_strategy_state import (
     save_strategy_state,
     set_record,
 )
+from core.sdr_orchestrator import (
+    ACTION_MARK_LOST,
+    ACTION_WA_HUNTER_SEND,
+    load_email_state,
+    resolve_next_action,
+)
 from crm.pipedrive_client import PipedriveClient
 from services.whatsapp_service import WhatsAppService
 
@@ -30,9 +36,9 @@ MAX_DELAY_SEC = int(os.getenv("WA_HUNTER_MAX_DELAY_SEC", "2700") or 2700)
 GATEWAY_URL = os.getenv("WHATSAPP_GATEWAY_SEND_URL", "http://127.0.0.1:3000/send")
 
 HUNTER_STEPS = {
-    1: "Oi, tudo bem? Aqui e a Carol da Mand Digital. Queria falar com quem cuida de marketing ou campanhas promocionais por ai.",
-    2: "Carol da Mand por aqui. A gente ajuda empresas a transformar campanhas em experiencias interativas, tipo roleta, raspadinha e QR Code para captar dados. Faz sentido eu falar com marketing?",
-    3: "Ultima tentativa por aqui para nao insistir. Se fizer sentido falar sobre campanhas promocionais com captacao de dados e WhatsApp, fico a disposicao.",
+    1: "{Oi|Ola}, tudo bem? Aqui e a Carol da Mand Digital. Queria falar com quem cuida de marketing ou campanhas promocionais na {empresa}.",
+    2: "{Carol da Mand por aqui|Passando rapidinho por aqui}. A gente ajuda empresas a transformar campanhas em experiencias interativas, como QR Code, roleta e raspadinha, para captar dados proprios no PDV. Faz sentido eu falar com marketing?",
+    3: "{Ultima tentativa por aqui|Prometo nao insistir}. Se campanha promocional com Copa, PDV e captacao de dados fizer sentido para a {empresa}, fico a disposicao.",
 }
 
 IMPEDITIVE_TAGS = {
@@ -167,6 +173,30 @@ def deal_stage_name(deal):
     return str((deal or {}).get("stage_name") or "").strip().lower()
 
 
+def render_spintax(text):
+    def repl(match):
+        options = [item.strip() for item in match.group(1).split("|") if item.strip()]
+        return random.choice(options) if options else ""
+
+    rendered = re.sub(r"\{([^{}|]+(?:\|[^{}|]+)+)\}", repl, str(text or ""))
+    return rendered.replace("{", "").replace("}", "").replace("|", "")
+
+
+def deal_company_name(deal):
+    org = (deal or {}).get("org_id") or {}
+    if isinstance(org, dict):
+        name = org.get("name")
+        if name:
+            return str(name).strip()
+    title = str((deal or {}).get("title") or "").strip()
+    return title or "empresa"
+
+
+def build_hunter_message(deal, step):
+    template = HUNTER_STEPS.get(int(step), HUNTER_STEPS[1])
+    return render_spintax(template.replace("{empresa}", deal_company_name(deal)))
+
+
 def is_warm_deal(deal, state, phone):
     deal_id = int((deal or {}).get("id") or 0)
     tokens = label_tokens(deal)
@@ -199,11 +229,9 @@ def hunter_skip_reason(deal, state, blocked):
     if is_warm_deal(deal, state, phone):
         return "warm"
     record = get_record(state, deal_id, phone, "wa_hunter")
-    if record.get("status") in {"warm", "stopped", "blocked", "completed"}:
+    if record.get("status") in {"warm", "stopped", "blocked"}:
         return f"state_{record.get('status')}"
     sent_steps = {str(item) for item in list(record.get("sent_steps") or [])}
-    if len([item for item in sent_steps if item.startswith("hunter_")]) >= 3:
-        return "hunter_completed"
     if has_sent_step(state, deal_id, phone, "wa_hunter", "hunter_1") and int(record.get("hunter_step") or 0) <= 0:
         return "opening_already_sent"
     return ""
@@ -267,6 +295,18 @@ def add_note(deal_id, content):
     return ok
 
 
+def mark_lost_after_hunter(deal_id):
+    note = "[WA_HUNTER_DROP] Perdido/dropado por sem resposta apos cadencia WhatsApp Hunter 3/3."
+    ok = False
+    try:
+        ok = bool(crm.update_deal(int(deal_id), {"status": "lost", "lost_reason": "Sem resposta apos cadencia WhatsApp Hunter"}))
+    except Exception as exc:
+        print(f"[ORCH_DROP_LOST_FAIL] deal_id={deal_id} error={exc}")
+    add_note(deal_id, note)
+    print(f"[ORCH_DROP_LOST] deal_id={deal_id} ok={1 if ok else 0}")
+    return ok
+
+
 def run_hunter(*, send=False, limit=None):
     dry_run = DRY_RUN or not send
     if not is_brazil_business_hours():
@@ -274,6 +314,7 @@ def run_hunter(*, send=False, limit=None):
         return {"eligible": 0, "sent": 0}
 
     state = load_strategy_state()
+    email_state = load_email_state()
     blocked = blocklist_values()
     deals = load_open_deals()
     daily_cap = min(int(limit or DAILY_CAP), DAILY_CAP)
@@ -291,7 +332,25 @@ def run_hunter(*, send=False, limit=None):
                 print(f"[WA_HUNTER_STOP_WARM] deal_id={deal_id} phone={phone} reason=warm_detected")
             continue
 
-        step = next_hunter_step(state, deal_id, phone)
+        decision = resolve_next_action(
+            deal,
+            email_state=email_state,
+            wa_state=state,
+            channel="wa_hunter",
+            phone=phone,
+        )
+        if decision.get("action") == ACTION_MARK_LOST:
+            print(f"[ORCH_DROP_LOST] deal_id={deal_id} phone={phone} dry_run={1 if dry_run else 0} reason={decision.get('reason')}")
+            if not dry_run:
+                mark_lost_after_hunter(deal_id)
+                set_record(state, deal_id, phone, "wa_hunter", status="completed", reason="dropped_lost")
+                save_strategy_state(state)
+            continue
+        if decision.get("action") != ACTION_WA_HUNTER_SEND:
+            print(f"[ORCH_BLOCK] channel=wa_hunter deal_id={deal_id} phone={phone} reason={decision.get('reason')}")
+            continue
+
+        step = int(decision.get("step") or next_hunter_step(state, deal_id, phone))
         if step <= 0:
             set_record(state, deal_id, phone, "wa_hunter", status="completed", reason="max_steps")
             print(f"[WA_HUNTER_SKIP] deal_id={deal_id} phone={phone} reason=max_steps")
@@ -312,7 +371,7 @@ def run_hunter(*, send=False, limit=None):
             print(f"[WA_HUNTER_SKIP] reason=daily_cap cap={daily_cap}")
             break
 
-        text = HUNTER_STEPS[step]
+        text = build_hunter_message(deal, step)
         ok = send_whatsapp(phone, text)
         if not ok:
             print(f"[WA_HUNTER_SKIP] deal_id={deal_id} phone={phone} reason=send_failed")

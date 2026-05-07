@@ -3,7 +3,9 @@ import os, re, json, time, requests
 from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from core.sdr_orchestrator import ACTION_WA_WARM_SEND, load_email_state, resolve_next_action
 from core.sdr_state import STAGE_TENTATIVA_CONTATO, log_event, update_deal_state
+from core.wa_strategy_state import load_strategy_state, mark_warm, save_strategy_state
 
 load_dotenv("/root/sdr-vps/.env")
 
@@ -288,6 +290,9 @@ def main(apply=False, send=False, limit=10):
         return
 
     state=load_state()
+    strategy_state=load_strategy_state()
+    email_state=load_email_state()
+    strategy_changed=False
     deals=get_open_deals()
     blocked=load_blocklist()
     stopped_index=state.get("stopped") if isinstance(state.get("stopped"), dict) else {}
@@ -341,6 +346,18 @@ def main(apply=False, send=False, limit=10):
         print(LOG_PREFIX,"ALVO",deal_id,"origem",origin,"step",next_step,title,"phone",phone)
         log_event("WA_TARGET", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
 
+        decision = resolve_next_action(
+            d,
+            email_state=email_state,
+            wa_state=strategy_state,
+            channel="wa_warm",
+            phone=phone,
+        )
+        if decision.get("action") != ACTION_WA_WARM_SEND:
+            print("[ORCH_BLOCK] channel=wa_warm deal_id=", deal_id, "phone=", phone, "reason=", decision.get("reason"))
+            continue
+        log_event("WA_WARM_TRIGGER", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
+
         if not apply:
             continue
 
@@ -377,11 +394,17 @@ def main(apply=False, send=False, limit=10):
             "content":f"[WA_CADENCE_{origin.upper()}_STEP_{next_step}] WhatsApp etapa {next_step}/6 enviada."
         })
         log_event("WA_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
+        mark_warm(strategy_state, deal_id, phone, reason=f"{origin}_sent_step_{next_step}")
+        strategy_changed=True
+        log_event("WA_WARM_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
 
         if int(d.get("stage_id") or 0)==STAGE_PRONTO:
             pd("PUT",f"/deals/{deal_id}",{"stage_id":STAGE_TENTATIVA})
+            print("[ORCH_STAGE_MOVE] deal_id=", deal_id, "stage_id=", STAGE_TENTATIVA)
 
         save_state(state)
+        if strategy_changed:
+            save_strategy_state(strategy_state)
         sent_count += 1
         time.sleep(8)
 
@@ -390,6 +413,8 @@ def main(apply=False, send=False, limit=10):
             break
 
     save_state(state)
+    if strategy_changed:
+        save_strategy_state(strategy_state)
 
 if __name__=="__main__":
     import sys
