@@ -3,6 +3,7 @@ from fastapi.responses import RedirectResponse, Response
 from crm.pipedrive_client import PipedriveClient
 from email_cadence.engine import enqueue
 from core.stage_router import resolve_pipeline_stage
+from crm.sdr_field_updater import update_sdr_fields
 from core.sdr_state import STAGE_PRONTO_PROSPECCAO, mark_warm, update_score, log_event
 import json
 from pathlib import Path
@@ -142,6 +143,18 @@ async def track_click(deal_id: int, step: int, req: Request):
 
         try:
             mark_warm(deal_id, source="email_click", score_event="email_click")
+            update_sdr_fields(deal_id, {
+                "event_id": f"email_click:{deal_id}:{step}",
+                "type": "email_click",
+                "channel": "email_click",
+                "source": "email_click",
+                "warm_source": "email_click",
+                "email_clicked": "sim",
+                "clicked_step": step,
+                "status_sdr": "warm",
+                "automation_status": "clicked_warm",
+                "lead_source": "email_cadence",
+            })
         except Exception as exc:
             print("[WARM_STATE_FAIL]", deal_id, exc)
 
