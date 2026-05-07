@@ -9,13 +9,13 @@ MAP_PATH = Path("data/pipedrive_sdr_fields.json")
 IDEMPOTENCY_PATH = Path("data/sdr_field_events.json")
 
 FIELD_ALIASES = {
-    "WhatsApp Status": "whatsapp_status",
-    "tentativas_contato": "tentativas_contato",
+    # REMOVIDO_SDR_REFACTOR: "WhatsApp Status": "whatsapp_status",
+    # REMOVIDO_SDR_REFACTOR: "tentativas_contato": "tentativas_contato",
     "ultimo_contato": "ultimo_contato",
     "canal_ultimo_contato": "canal_ultimo_contato",
-    "Origem Oficial": "origem_oficial",
+    # REMOVIDO_SDR_REFACTOR: "Origem Oficial": "origem_oficial",
     "Status SDR": "status_sdr",
-    "Etapa Cadencia": "etapa_cadencia",
+    # REMOVIDO_SDR_REFACTOR: "Etapa Cadencia": "etapa_cadencia",
     "lead_score": "lead_score",
 }
 
@@ -118,29 +118,29 @@ def update_sdr_fields(deal_id, event):
     set_field("sdr_last_touch_channel", event.get("channel"))
     set_field("sdr_automation_status", event.get("automation_status") or event.get("status"))
     set_field("sdr_conversation_phase", event.get("phase"))
-    set_field("sdr_email_clicked", event.get("email_clicked"))
-    set_field("sdr_clicked_step", str(event.get("clicked_step") or event.get("step") or "") if event.get("email_clicked") else None)
+    # REMOVIDO_SDR_REFACTOR: set_field("sdr_email_clicked", event.get("email_clicked"))
+    # REMOVIDO_SDR_REFACTOR: set_field("sdr_clicked_step", str(event.get("clicked_step") or event.get("step") or "") if event.get("email_clicked") else None)
     set_field("sdr_meeting_status", event.get("meeting_status"))
-    set_field("sdr_contamination_status", event.get("contamination_status"))
-    set_field("sdr_last_event_at", event.get("event_at") or _now())
+    # REMOVIDO_SDR_REFACTOR: set_field("sdr_contamination_status", event.get("contamination_status"))
+    # REMOVIDO_SDR_REFACTOR: set_field("sdr_last_event_at", event.get("event_at") or _now())
 
     # campos existentes/operacionais
     for logical, value in {
-        "WhatsApp Status": event.get("whatsapp_status"),
+        # REMOVIDO_SDR_REFACTOR: "WhatsApp Status": event.get("whatsapp_status"),
         "ultimo_contato": event.get("last_contact_at") or _now(),
         "canal_ultimo_contato": event.get("channel"),
-        "Origem Oficial": event.get("origin"),
+        # REMOVIDO_SDR_REFACTOR: "Origem Oficial": event.get("origin"),
         "Status SDR": event.get("status_sdr"),
-        "Etapa Cadencia": str(event.get("cadence_step") or event.get("step") or "") if event.get("step") else None,
+        # REMOVIDO_SDR_REFACTOR: "Etapa Cadencia": str(event.get("cadence_step") or event.get("step") or "") if event.get("step") else None,
         "lead_score": event.get("lead_score"),
     }.items():
         k = _key(fmap, logical) or _key(fmap, logical.lower())
         if k and value not in [None, ""]:
             payload[k] = value
 
-    # tentativas_contato += 1 idempotente
+    # REMOVIDO_SDR_REFACTOR: # tentativas_contato += 1 idempotente
     if event.get("increment_attempt"):
-        k = _key(fmap, "tentativas_contato")
+        # REMOVIDO_SDR_REFACTOR: k = _key(fmap, "tentativas_contato")
         if k:
             current = deal.get(k) or 0
             try:

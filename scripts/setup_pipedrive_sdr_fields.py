@@ -13,11 +13,11 @@ FIELDS=[
   ("sdr_last_touch_channel","varchar"),
   ("sdr_automation_status","varchar"),
   ("sdr_conversation_phase","varchar"),
-  ("sdr_email_clicked","varchar"),
-  ("sdr_clicked_step","varchar"),
+  # REMOVIDO_SDR_REFACTOR ("sdr_email_clicked","varchar"),
+  # REMOVIDO_SDR_REFACTOR ("sdr_clicked_step","varchar"),
   ("sdr_meeting_status","varchar"),
-  ("sdr_contamination_status","varchar"),
-  ("sdr_last_event_at","varchar"),
+  # REMOVIDO_SDR_REFACTOR ("sdr_contamination_status","varchar"),
+  # REMOVIDO_SDR_REFACTOR ("sdr_last_event_at","varchar"),
 ]
 
 existing=requests.get(f"{BASE}/dealFields",params={"api_token":TOKEN},timeout=30).json().get("data") or []

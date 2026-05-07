@@ -1,11 +1,12 @@
-"""Legacy supervisor intentionally disabled.
+from pathlib import Path
 
-The production SDR flow is native Python/FastAPI and uses a single automatic
-WhatsApp emitter: scripts/whatsapp_warm_cadence.py.
-"""
+p = Path("supervisor.py")
+txt = p.read_text(encoding="utf-8")
+bak = p.with_suffix(".py.bak_strategy")
+if not bak.exists():
+    bak.write_text(txt, encoding="utf-8")
 
-from __future__ import annotations
-
+imports = """
 # SDR_STRATEGY_PATCH
 try:
     from sdr_core.strategy import resolve_sdr_strategy
@@ -13,19 +14,18 @@ try:
 except Exception as _sdr_patch_err:
     resolve_sdr_strategy = None
     already_sent = mark_sent = stop_hunter = None
+"""
 
+if "SDR_STRATEGY_PATCH" not in txt:
+    lines = txt.splitlines()
+    insert_at = 0
+    for i, line in enumerate(lines[:80]):
+        if line.startswith("import ") or line.startswith("from "):
+            insert_at = i + 1
+    lines.insert(insert_at, imports)
+    txt = "\n".join(lines) + "\n"
 
-
-def main() -> int:
-    print("[LEGACY_SUPERVISOR_DISABLED] Use scripts/whatsapp_warm_cadence.py for WhatsApp warm cadence.")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
-
+guard = r'''
 def sdr_should_send_hunter(deal, phone, step="hunter_1"):
     """
     Guard central para WA Hunter.
@@ -59,4 +59,10 @@ def sdr_mark_hunter_sent(deal, phone, step="hunter_1"):
     if mark_sent and deal_id and phone:
         mark_sent(deal_id, phone, "hunter", step)
         print(f"[WA_HUNTER_SENT] deal={deal_id} phone={phone} step={step}")
+'''
 
+if "def sdr_should_send_hunter" not in txt:
+    txt += "\n\n" + guard + "\n"
+
+p.write_text(txt, encoding="utf-8")
+print("SUPERVISOR_PATCH_OK")

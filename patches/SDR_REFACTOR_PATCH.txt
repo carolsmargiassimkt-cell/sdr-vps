@@ -1,0 +1,150 @@
+PATCH OBJETIVO
+
+Limpar a lógica SDR para reduzir dependência de campos redundantes e usar:
+
+1. ETAPA = estado principal do lead
+2. TAGS = bloqueios/exceções/contexto
+3. CAMPOS = inteligência mínima
+
+MANTER campos úteis:
+- lead_score
+- Status SDR
+- sdr_lead_source
+- sdr_warm_source
+- sdr_last_intent
+- sdr_last_touch_channel
+- sdr_automation_status
+- sdr_conversation_phase
+- sdr_meeting_status
+- ultimo_contato
+- canal_ultimo_contato
+
+PARAR DE ESCREVER / NÃO DEPENDER MAIS:
+- sdr_email_clicked
+- sdr_clicked_step
+- Etapa Cadencia
+- WhatsApp Status
+- tentativas_contato
+- sdr_last_event_at
+- sdr_contamination_status
+- Origem Oficial
+
+REGRA NOVA
+
+Etapas do pipeline mandam no dashboard:
+
+- Entrada
+- Nutrição / Enriquecimento
+- Pronto para Prospecção
+- Tentativa de Conexão
+- Conexão Realizada
+- Qualificado
+- Reunião Agendada
+- No Show
+- Diagnóstico
+- Proposta
+
+Criar função central:
+
+resolve_sdr_strategy(deal)
+
+Retorno:
+- hunter
+- warm
+- inbound_warm
+- meeting
+- blocked
+- paused
+- completed
+
+REGRAS
+
+Se tag em:
+- conversando
+- respondido
+- indicação
+- caro evento
+- linkedin
+- lead trafego
+
+=> nunca entra no WA hunter.
+
+Se lead_trafego:
+=> strategy = inbound_warm
+
+Se clicked_warm / email click / form / resposta positiva:
+=> strategy = warm
+=> parar hunter
+=> mover para Conexão Realizada ou Qualificado conforme intent
+
+Se reunião criada:
+=> strategy = meeting
+=> mover para Reunião Agendada
+
+Se sem_interesse / numero_errado / menu_bot:
+=> strategy = blocked
+=> adicionar blocklist
+=> não enviar mais WA
+
+MENU BOT:
+Adicionar tag whatsapp_bot ou menu_bot.
+Adicionar blocklist.
+NÃO mover para perdido.
+
+INDICAÇÃO:
+Se detectar telefone/email novo:
+- criar nova Person
+- criar nota no deal original
+- bloquear telefone de quem indicou
+- tag indicação
+- não continuar hunter no contato original
+
+ANTI-DUPLICIDADE
+
+Antes de qualquer WhatsApp:
+- checar data/wa_strategy_state.json
+- chave: deal_id:phone
+- se sent_steps contém hunter_1, não reenviar abertura
+- se status blocked/warm/completed/paused, não enviar hunter
+
+Formato:
+
+{
+  "deal_id:phone": {
+    "strategy": "hunter|warm|meeting|blocked",
+    "hunter_step": 1,
+    "sent_steps": ["hunter_1"],
+    "last_sent_at": "...",
+    "status": "active|warm|blocked|completed",
+    "reason": ""
+  }
+}
+
+LOGS:
+[SDR_STRATEGY_RESOLVED]
+[WA_HUNTER_SKIP_TAG]
+[WA_HUNTER_DUP_GUARD]
+[WA_HUNTER_SENT]
+[WA_HUNTER_STOP_WARM]
+[WA_WARM_TRIGGER]
+[WA_BLOCKLIST_ADD]
+[WA_MENU_BOT_BLOCKED]
+[WA_REFERRAL_PERSON_CREATED]
+[PIPE_STAGE_MOVE]
+
+VALIDAÇÃO:
+Criar script scripts/audit_sdr_strategy.py que imprime:
+- total deals avaliados
+- hunter elegíveis
+- warm elegíveis
+- bloqueados por tag
+- bloqueados por blocklist
+- duplicados deal+phone+step
+- leads tráfego encontrados
+- menu_bot bloqueados
+
+Critério:
+duplicados deal+phone+step = 0
+nenhum hunter para tags impeditivas
+nenhum lead_trafego em hunter
+warm sempre para hunter
