@@ -10,6 +10,13 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from core.whatsapp_hunter_guard import (
+    duplicate_day_log,
+    load_guard as load_hunter_daily_guard,
+    mark_hunter_sent_today,
+    render_hunter_message,
+    should_send_hunter_today,
+)
 from core.wa_strategy_state import (
     append_sent_step,
     get_record,
@@ -34,12 +41,6 @@ DRY_RUN = str(os.getenv("WA_HUNTER_DRY_RUN", "true") or "true").strip().lower() 
 MIN_DELAY_SEC = int(os.getenv("WA_HUNTER_MIN_DELAY_SEC", "900") or 900)
 MAX_DELAY_SEC = int(os.getenv("WA_HUNTER_MAX_DELAY_SEC", "2700") or 2700)
 GATEWAY_URL = os.getenv("WHATSAPP_GATEWAY_SEND_URL", "http://127.0.0.1:3000/send")
-
-HUNTER_STEPS = {
-    1: "{Oi|Ola}, tudo bem? Aqui e a Carol da Mand Digital. Queria falar com quem cuida de marketing ou campanhas promocionais na {empresa}.",
-    2: "{Carol da Mand por aqui|Passando rapidinho por aqui}. A gente ajuda empresas a transformar campanhas em experiencias interativas, como QR Code, roleta e raspadinha, para captar dados proprios no PDV. Faz sentido eu falar com marketing?",
-    3: "{Ultima tentativa por aqui|Prometo nao insistir}. Se campanha promocional com Copa, PDV e captacao de dados fizer sentido para a {empresa}, fico a disposicao.",
-}
 
 IMPEDITIVE_TAGS = {
     "CONVERSANDO",
@@ -173,28 +174,8 @@ def deal_stage_name(deal):
     return str((deal or {}).get("stage_name") or "").strip().lower()
 
 
-def render_spintax(text):
-    def repl(match):
-        options = [item.strip() for item in match.group(1).split("|") if item.strip()]
-        return random.choice(options) if options else ""
-
-    rendered = re.sub(r"\{([^{}|]+(?:\|[^{}|]+)+)\}", repl, str(text or ""))
-    return rendered.replace("{", "").replace("}", "").replace("|", "")
-
-
-def deal_company_name(deal):
-    org = (deal or {}).get("org_id") or {}
-    if isinstance(org, dict):
-        name = org.get("name")
-        if name:
-            return str(name).strip()
-    title = str((deal or {}).get("title") or "").strip()
-    return title or "empresa"
-
-
 def build_hunter_message(deal, step):
-    template = HUNTER_STEPS.get(int(step), HUNTER_STEPS[1])
-    return render_spintax(template.replace("{empresa}", deal_company_name(deal)))
+    return render_hunter_message(deal, (deal or {}).get("person_id") if isinstance((deal or {}).get("person_id"), dict) else None, (deal or {}).get("org_id") if isinstance((deal or {}).get("org_id"), dict) else None, step=f"hunter_{int(step)}", phone=phone_from_deal(deal))
 
 
 def is_warm_deal(deal, state, phone):
@@ -314,6 +295,7 @@ def run_hunter(*, send=False, limit=None):
         return {"eligible": 0, "sent": 0}
 
     state = load_strategy_state()
+    daily_guard = load_hunter_daily_guard()
     email_state = load_email_state()
     blocked = blocklist_values()
     deals = load_open_deals()
@@ -362,6 +344,10 @@ def run_hunter(*, send=False, limit=None):
         if phone_cooldown_active(state, phone):
             print(f"[WA_HUNTER_SKIP] deal_id={deal_id} phone={phone} reason=phone_cooldown")
             continue
+        allowed_today, last_sent_at, duplicate_reason = should_send_hunter_today(deal_id, phone, daily_guard)
+        if not allowed_today:
+            print(duplicate_day_log(deal_id, phone, last_sent_at, duplicate_reason))
+            continue
 
         eligible += 1
         print(f"[WA_HUNTER_ELIGIBLE] deal_id={deal_id} phone={phone} step={step_name} dry_run={1 if dry_run else 0}")
@@ -376,6 +362,8 @@ def run_hunter(*, send=False, limit=None):
         if not ok:
             print(f"[WA_HUNTER_SKIP] deal_id={deal_id} phone={phone} reason=send_failed")
             continue
+        sent_at = datetime.now(ZoneInfo("America/Sao_Paulo")).isoformat(timespec="seconds")
+        daily_guard = mark_hunter_sent_today(deal_id, phone, sent_at=sent_at, guard=daily_guard)
         append_sent_step(
             state,
             deal_id,
@@ -383,7 +371,7 @@ def run_hunter(*, send=False, limit=None):
             "wa_hunter",
             step_name,
             hunter_step=step,
-            last_sent_at=datetime.now().isoformat(timespec="seconds"),
+            last_sent_at=sent_at,
             status="active" if step < 3 else "completed",
             reason="sent",
         )

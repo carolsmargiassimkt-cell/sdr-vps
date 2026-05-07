@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from core.whatsapp_hunter_guard import duplicate_day_log, should_send_hunter_today
+
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 EMAIL_QUEUE_FILE = BASE_DIR / "data" / "email_cadence_queue.json"
@@ -452,6 +454,10 @@ def resolve_next_action(
             return build_action(ACTION_HOLD, reason="outside_business_hours", deal_id=deal_id, phone=phone_value, email=email_value, **base)
         if not phone_value:
             return build_action(ACTION_HOLD, reason="missing_phone", deal_id=deal_id, phone=phone_value, email=email_value, **base)
+        allowed_today, last_guard_sent_at, guard_reason = should_send_hunter_today(deal_id, phone_value)
+        if not allowed_today:
+            print(duplicate_day_log(deal_id, phone_value, last_guard_sent_at, guard_reason))
+            return build_action(ACTION_HOLD, reason="hunter_daily_guard", deal_id=deal_id, phone=phone_value, email=email_value, **base)
         if tokens & IMPEDITIVE_HUNTER_TAGS:
             return build_action(ACTION_HOLD, reason="impeditive_tag", deal_id=deal_id, phone=phone_value, email=email_value, **base)
         if stage_id in EMAIL_ALLOWED_STAGE_IDS and not allow_explicit_hunter_in_nutrition:
