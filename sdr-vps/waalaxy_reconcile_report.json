@@ -1,0 +1,62 @@
+[
+  {
+    "name": "El fedda",
+    "company": "Waalaxy International",
+    "title": "J’aide les équipes commerciales B2B à générer 30+ réunions qualifiées/mois via l’automatisation LinkedIn | Account Manager @Waalaxy",
+    "source_file": "Invitation__2_messages_1.csv",
+    "org_id": "DRY_ORG",
+    "person_id": "DRY_PERSON",
+    "deal_id": "DRY_DEAL",
+    "action": "ok_dry"
+  },
+  {
+    "name": "Logan",
+    "company": "Waalaxy International",
+    "title": "I help B2B sales teams generate 30%+ more qualified pipeline every quarter — through structured outbound & sales automation at scale | VP Sales @Waalaxy",
+    "source_file": "Invitation__2_messages_1.csv",
+    "org_id": "DRY_ORG",
+    "person_id": "DRY_PERSON",
+    "deal_id": "DRY_DEAL",
+    "action": "ok_dry"
+  },
+  {
+    "name": "Guillaume",
+    "company": "Kawaak",
+    "title": "Co-founder @ Waalaxy & Kawaak - From prospecting to storytelling — build influence where decision-makers scroll",
+    "source_file": "Invitation__2_messages_1.csv",
+    "org_id": "DRY_ORG",
+    "person_id": "DRY_PERSON",
+    "deal_id": "DRY_DEAL",
+    "action": "ok_dry"
+  },
+  {
+    "name": "Sasha",
+    "company": "Kawaak",
+    "title": "B2B Influencer Marketing: Helping Brands Partner with High-Quality Creators",
+    "source_file": "Invitation__2_messages_1.csv",
+    "org_id": "DRY_ORG",
+    "person_id": "DRY_PERSON",
+    "deal_id": "DRY_DEAL",
+    "action": "ok_dry"
+  },
+  {
+    "name": "Mathilde",
+    "company": "Kawaak",
+    "title": "B2B Influencer Marketing: Helping Brands Partner with High-Quality Creators",
+    "source_file": "Invitation__2_messages_1.csv",
+    "org_id": "DRY_ORG",
+    "person_id": "DRY_PERSON",
+    "deal_id": "DRY_DEAL",
+    "action": "ok_dry"
+  },
+  {
+    "name": "André",
+    "company": "Sovena Group",
+    "title": "Gerente de Trade Marketing na Sovena Group",
+    "source_file": "Message_1st_relations_only_2.csv",
+    "org_id": "DRY_ORG",
+    "person_id": 578,
+    "deal_id": 3397,
+    "action": "ok_dry"
+  }
+]
