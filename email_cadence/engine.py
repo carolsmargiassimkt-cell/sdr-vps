@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import smtplib
+from crm.sdr_field_updater import update_sdr_fields
 import ssl
 import time
 from datetime import datetime, timedelta
@@ -263,6 +264,21 @@ def send_smtp(to, subject, body):
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx, timeout=30) as server:
         server.login(SMTP_USER, SMTP_PASS)
         server.send_message(msg)
+
+        try:
+            update_sdr_fields(item.get("deal_id"), {
+                "event_id": f"email_sent:{item.get('deal_id')}:{item.get('step')}",
+                "type": "email_sent",
+                "channel": "email",
+                "source": "email_cadence",
+                "step": item.get("step"),
+                "cadence_step": item.get("step"),
+                "automation_status": "email_sent",
+                "status_sdr": "em_cadencia_email",
+                "increment_attempt": True,
+            })
+        except Exception as exc:
+            print("[SDR_FIELDS_EMAIL_SENT_FAIL]", item.get("deal_id"), exc)
     return {"ok": True, "dry_run": False}
 
 
