@@ -243,7 +243,9 @@ def pending(payload: PendingPayload) -> dict[str, Any]:
 
 
 from app.webhooks_pipedrive import router as pipedrive_router
+from app.sdr_temperature_webhooks import router as sdr_temperature_router
 app.include_router(pipedrive_router)
+app.include_router(sdr_temperature_router)
 
 
 app.include_router(email_cadence_router)

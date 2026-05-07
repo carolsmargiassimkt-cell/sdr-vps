@@ -5,7 +5,9 @@ from email_cadence.engine import enqueue
 from core.stage_router import resolve_pipeline_stage
 from crm.sdr_field_updater import update_sdr_fields
 from core.sdr_state import STAGE_PRONTO_PROSPECCAO, mark_warm, update_score, log_event
+from core.sdr_temperature import apply_temperature_to_deal
 import json
+import os
 from pathlib import Path
 from datetime import datetime
 
@@ -18,6 +20,10 @@ PIXEL_GIF = (
     b"\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,"
     b"\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
 )
+
+
+def temperature_apply_enabled():
+    return str(os.getenv("SDR_TEMPERATURE_APPLY", "false") or "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def label_items(raw):
@@ -143,6 +149,12 @@ async def track_click(deal_id: int, step: int, req: Request):
 
         try:
             mark_warm(deal_id, source="email_click", score_event="email_click")
+            apply_temperature_to_deal(
+                deal_id,
+                signal_type="email_click",
+                payload={"deal_id": deal_id, "step": step, "source": "email_cadence"},
+                dry_run=not temperature_apply_enabled(),
+            )
             update_sdr_fields(deal_id, {
                 "event_id": f"email_click:{deal_id}:{step}",
                 "type": "email_click",
@@ -166,6 +178,12 @@ async def track_click(deal_id: int, step: int, req: Request):
 async def track_open(deal_id: int, step: int):
     try:
         update_score(deal_id, "", "email_open")
+        apply_temperature_to_deal(
+            deal_id,
+            signal_type="email_open",
+            payload={"deal_id": deal_id, "step": step, "source": "email_cadence"},
+            dry_run=not temperature_apply_enabled(),
+        )
         log_event("EMAIL_OPEN", deal_id=deal_id, step=step)
     except Exception as exc:
         print("[EMAIL_OPEN_FAIL]", deal_id, exc)

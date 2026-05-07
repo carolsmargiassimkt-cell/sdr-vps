@@ -17,6 +17,7 @@ from core.sdr_state import (
     mark_warm,
 )
 from core.crm_hygiene import is_generic_email, person_org_id
+from core.sdr_temperature import apply_temperature_to_deal
 
 
 router = APIRouter()
@@ -278,6 +279,29 @@ async def forms_lead(req: Request, authorization: str = Header(None)):
 """
     pd("POST", "/notes", json={"deal_id": deal_id, "content": note})
     mark_warm(deal_id, phone=whatsapp, source="lead_trafego", score_event="form")
+    try:
+        apply_temperature_to_deal(
+            deal_id,
+            person_id=pid,
+            org_id=org_id,
+            signal_type="forms_lead",
+            payload={
+                "deal_id": deal_id,
+                "person_id": pid,
+                "org_id": org_id,
+                "email": email,
+                "phone": whatsapp,
+                "name": nome,
+                "company": empresa,
+                "segmento": segmento,
+                "unidades": unidades,
+                "objetivo": objetivo,
+                "source": "forms_lead",
+            },
+            dry_run=str(os.getenv("SDR_TEMPERATURE_APPLY", "false")).strip().lower() not in {"1", "true", "yes", "on"},
+        )
+    except Exception as exc:
+        print("[SDR_TEMPERATURE_FORM_FAIL]", deal_id, exc)
     log_event("CRM_LABEL_UPDATE", deal_id=deal_id, label=LABEL_LEAD_TRAFEGO, source="form")
     log_event("CRM_STAGE_UPDATE", deal_id=deal_id, stage_id=STAGE_PRONTO_PROSPECCAO, source="form")
     return {"ok": True, "deal_id": deal_id, "person_id": pid, "stage_id": STAGE_PRONTO_PROSPECCAO, "label": LABEL_LEAD_TRAFEGO}
