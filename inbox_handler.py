@@ -55,11 +55,13 @@ def _force_positive_intent(text):
     kws = ["ok", "tá bom", "ta bom", "sim", "beleza", "pode ser"]
     return any(k in t for k in kws)
 import hashlib
+from crm.sdr_field_updater import update_sdr_fields
 import json
 import logging
 import os
 import random
 import re
+from core.stage_router import resolve_pipeline_stage
 import sys
 import time
 import unicodedata
@@ -3970,6 +3972,23 @@ def inbox():
         elif detect_neutral_intent(message): current_intent = "duvida"
         
         print(f"[INTENT_DETECTED] telefone={phone} intent={current_intent} texto={message}")
+
+        try:
+            if lead_state and lead_state.get("deal_id"):
+                update_sdr_fields(lead_state.get("deal_id"), {
+                    "event_id": f"inbound:{lead_state.get('deal_id')}:{phone}:{intent}",
+                    "type": "whatsapp_inbound",
+                    "channel": "whatsapp_inbound",
+                    "source": "whatsapp_inbound",
+                    "intent": intent,
+                    "phase": "conversation",
+                    "automation_status": "replied",
+                    "status_sdr": "respondeu",
+                })
+                print("[INBOUND_SDR_FIELDS_OK]", lead_state.get("deal_id"))
+        except Exception as exc:
+            print("[INBOUND_SDR_FIELDS_FAIL]", exc)
+
         try:
             _deal_id = None
             try:
@@ -4398,3 +4417,17 @@ def inbox():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001)
+
+
+def route_inbound_stage_safe(deal_id=None, source="inbound", intent=None, has_phone=True):
+    try:
+        route = resolve_pipeline_stage({
+            "source": source,
+            "intent": intent,
+            "has_phone": has_phone,
+        })
+        print("[STAGE_ROUTER_INBOUND]", deal_id, route)
+        return route
+    except Exception as exc:
+        print("[STAGE_ROUTER_INBOUND_FAIL]", deal_id, exc)
+        return {"action":"skip","reason":"error"}

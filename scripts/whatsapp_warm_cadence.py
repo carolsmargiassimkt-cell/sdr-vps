@@ -1,3 +1,4 @@
+from core.stage_router import resolve_pipeline_stage
 import os, re, json, time, requests
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -393,3 +394,17 @@ def main(apply=False, send=False, limit=10):
 if __name__=="__main__":
     import sys
     main(apply="--apply" in sys.argv, send="--send" in sys.argv)
+
+
+def route_warm_stage_safe(deal_id=None, source="warm_whatsapp", intent=None):
+    try:
+        route = resolve_pipeline_stage({
+            "source": source,
+            "intent": intent,
+            "has_phone": True,
+        })
+        print("[STAGE_ROUTER_WARM]", deal_id, route)
+        return route
+    except Exception as exc:
+        print("[STAGE_ROUTER_WARM_FAIL]", deal_id, exc)
+        return {"action":"skip","reason":"error"}

@@ -76,15 +76,16 @@
     "replied": true,
     "asked_case": false,
     "interested": false,
+    "scheduling_time_provided": true,
     "opt_out": false,
     "wrong_contact": false,
     "referred": false,
     "pause_not_now": false,
     "stopped": false,
     "last_intent": "replied",
-    "last_bot_reply": "",
-    "last_lead_reply": "sim",
-    "updated_at": "2026-05-06T13:39:02"
+    "last_bot_reply": "Certo. Posso te mandar um exemplo direto e você vê se faz sentido para o seu contexto. Quer que eu envie?",
+    "last_lead_reply": "combinado",
+    "updated_at": "2026-05-06T17:01:47"
   },
   "3247:35920002020": {
     "deal_id": 3247,
@@ -93,15 +94,16 @@
     "wa1_sent": false,
     "replied": true,
     "asked_case": false,
-    "interested": false,
+    "interested": true,
+    "scheduling_time_provided": false,
     "opt_out": false,
     "wrong_contact": false,
     "referred": false,
     "pause_not_now": false,
     "stopped": false,
-    "last_intent": "replied",
-    "last_bot_reply": "",
-    "last_lead_reply": "oi teste",
-    "updated_at": "2026-05-06T15:07:45"
+    "last_intent": "interested",
+    "last_bot_reply": "Boa. Para marketing, costuma funcionar bem quando a campanha entrega um benefício rápido e já captura o contato do cliente. Quer que eu adapte um exemplo para vocês?",
+    "last_lead_reply": "Sim, pode mandar",
+    "updated_at": "2026-05-06T20:04:06"
   }
 }

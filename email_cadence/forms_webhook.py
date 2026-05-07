@@ -5,8 +5,10 @@ import re
 
 import requests
 from dotenv import load_dotenv
+from crm.sdr_field_updater import update_sdr_fields
 from fastapi import APIRouter, Header, HTTPException, Request
 
+from core.stage_router import resolve_pipeline_stage
 from core.sdr_state import (
     LABEL_LEAD_TRAFEGO,
     PIPELINE_ID,
@@ -279,3 +281,20 @@ async def forms_lead(req: Request, authorization: str = Header(None)):
     log_event("CRM_LABEL_UPDATE", deal_id=deal_id, label=LABEL_LEAD_TRAFEGO, source="form")
     log_event("CRM_STAGE_UPDATE", deal_id=deal_id, stage_id=STAGE_PRONTO_PROSPECCAO, source="form")
     return {"ok": True, "deal_id": deal_id, "person_id": pid, "stage_id": STAGE_PRONTO_PROSPECCAO, "label": LABEL_LEAD_TRAFEGO}
+
+
+def route_form_stage(deal_id, source="form", form_qualified=False, has_phone=False):
+    try:
+        route = resolve_pipeline_stage({
+            "source": source,
+            "form_responded": True,
+            "form_qualified": form_qualified,
+            "has_phone": has_phone,
+        })
+        if route.get("stage_id"):
+            pd("PUT", f"/deals/{int(deal_id)}", json={"stage_id": route["stage_id"]})
+            print("[STAGE_ROUTER_FORM]", deal_id, route)
+        return route
+    except Exception as exc:
+        print("[STAGE_ROUTER_FORM_FAIL]", deal_id, exc)
+        return {"action":"skip","reason":"error"}
