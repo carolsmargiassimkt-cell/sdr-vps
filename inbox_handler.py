@@ -63,7 +63,9 @@ import random
 import re
 from core.stage_router import resolve_pipeline_stage
 from core.auto_reply_guard import add_auto_reply_block, detect_auto_reply
+from core.human_handoff import is_human_handoff
 from core.locked_json_state import locked_load_json, locked_save_json
+from core.pipedrive_safe import merge_deal_labels
 from core.sdr_orchestrator import (
     load_email_state as orch_load_email_state,
     load_wa_state as orch_load_wa_state,
@@ -393,6 +395,9 @@ def _send_whitelist_reply_via_gateway(phone, text):
 
 def send_reply(phone, text):
     text = prepare_whatsapp_reply_text(text)
+    if is_human_handoff(phone):
+        print(f"[AUTO_REPLY_BLOCKED_HUMAN_HANDOFF] telefone={phone} reason=send_reply")
+        return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "human_handoff"})
     if is_test_whitelist_phone(phone):
         ok = _send_whitelist_reply_via_gateway(phone, text)
         return jsonify({"ok": bool(ok), "confirmed": bool(ok), "whitelist_test": True})
@@ -402,6 +407,9 @@ def send_reply(phone, text):
 
 def blocked_whatsapp_send(phone, text, *args, **kwargs):
     text = prepare_whatsapp_reply_text(text)
+    if is_human_handoff(phone):
+        print(f"[AUTO_REPLY_BLOCKED_HUMAN_HANDOFF] telefone={phone} reason=blocked_whatsapp_send")
+        return False
     if is_test_whitelist_phone(phone):
         return _send_whitelist_reply_via_gateway(phone, text)
     print(f"[INBOX_SEND_BLOCKED_NON_WHITELIST] telefone={phone} reason=send_guard texto={str(text or '')[:120]}")
@@ -2633,28 +2641,7 @@ def add_deal_label_id_for_lead(lead_state, label_id):
         if deal_id <= 0:
             continue
         try:
-            current_deal = crm.get_deal_details(deal_id) or deal
-            current_labels = current_deal.get("label") or []
-            if isinstance(current_labels, str):
-                merged = [item.strip() for item in current_labels.split(",") if item.strip()]
-            elif isinstance(current_labels, list):
-                merged = list(current_labels)
-            else:
-                merged = [current_labels]
-            keys = set()
-            normalized = []
-            for item in merged:
-                if isinstance(item, dict):
-                    key = str(item.get("id") or item.get("label") or item.get("name") or item.get("value") or "").strip()
-                else:
-                    key = str(item or "").strip()
-                if not key or key in keys:
-                    continue
-                keys.add(key)
-                normalized.append(item)
-            if str(label_id) not in keys:
-                normalized.append(int(label_id))
-            ok = crm.update_deal(deal_id, {"label": normalized})
+            ok = merge_deal_labels(deal_id, [int(label_id)])
         except Exception:
             ok = False
         tagged = tagged or bool(ok)

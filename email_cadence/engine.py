@@ -16,6 +16,8 @@ import requests
 from core.inflight_actions import acquire_inflight, release_inflight
 from core.locked_json_state import locked_load_json, locked_save_json
 from core.crm_hygiene import is_generic_email
+from core.human_handoff import is_human_handoff
+from core.pipedrive_safe import safe_pd_request
 from core.sdr_orchestrator import (
     ACTION_CREATE_ACTIVITY,
     ACTION_EMAIL_SEND,
@@ -169,19 +171,7 @@ def record_sent_event(row, step, subject, sent_at) -> bool:
 
 
 def pd_request(method, path, json_body=None):
-    if not PD:
-        return None
-    response = requests.request(
-        method,
-        f"https://api.pipedrive.com/v1/{path.lstrip('/')}",
-        params={"api_token": PD},
-        json=json_body,
-        timeout=30,
-    )
-    if response.status_code >= 400:
-        print("[PD_FAIL]", method, path, response.status_code, response.text[:200])
-        return None
-    return response.json() if response.text else {}
+    return safe_pd_request(method, path, json_body)
 
 
 def deal_label_tokens(raw) -> set[str]:
@@ -385,6 +375,13 @@ def tick():
     for row in rows:
         status = str(row.get("status") or "")
         if status in STOP_STATUSES:
+            continue
+        if is_human_handoff(row.get("phone")):
+            row["status"] = "human_handoff"
+            row["stopped_at"] = now()
+            row["stop_reason"] = "human_handoff"
+            changed = True
+            print("[EMAIL_CADENCE_SKIP_HUMAN_HANDOFF]", "deal_id=", row.get("deal_id"), "phone=", row.get("phone"))
             continue
         stop_reason = crm_stop_reason(row.get("deal_id"))
         if stop_reason:

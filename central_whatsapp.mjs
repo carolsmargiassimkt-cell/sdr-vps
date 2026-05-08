@@ -1821,6 +1821,7 @@ app.get('/status', (_req, res) => {
         qr_available: WA_STATE.qr_available === true,
         daily_limit: dailyLimit,
         sent_today: dailySentCount,
+        uptime_seconds: Math.floor(process.uptime()),
     })
 })
 

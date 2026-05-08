@@ -20,8 +20,10 @@ from core.sdr_orchestrator import ACTION_WA_WARM_SEND, load_email_state, resolve
 from core.sdr_state import STAGE_TENTATIVA_CONTATO, log_event, update_deal_state
 from core.wa_strategy_state import load_strategy_state, mark_warm, save_strategy_state
 from core.auto_reply_guard import is_auto_reply_blocked
+from core.human_handoff import is_human_handoff
 from core.locked_json_state import locked_load_json, locked_save_json
 from core.inflight_actions import acquire_inflight, release_inflight
+from core.pipedrive_safe import safe_pd_request
 
 load_dotenv("/root/sdr-vps/.env")
 
@@ -219,11 +221,7 @@ def load_meeting_state():
     return payload if isinstance(payload, dict) else {}
 
 def pd(method,path,json_body=None,params=None):
-    params=params or {}
-    params["api_token"]=TOKEN
-    r=requests.request(method, API+path, params=params, json=json_body, timeout=30)
-    r.raise_for_status()
-    return r.json()
+    return safe_pd_request(method, path, json_body, params) or {}
 
 def phone_clean(v):
     nums=re.sub(r"\D","",v or "")
@@ -550,6 +548,11 @@ def main(apply=False, send=False, limit=10):
 
         if not phone:
             print(LOG_PREFIX,"SKIP_SEM_PHONE",deal_id,title)
+            continue
+        if is_human_handoff(phone):
+            print("[WA_WARM_SKIP_HUMAN_HANDOFF]", "deal_id=", deal_id, "phone=", phone)
+            if apply:
+                log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason="human_handoff")
             continue
 
         rec=state.get(deal_id, {})

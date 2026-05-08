@@ -11,6 +11,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from core.locked_json_state import locked_load_json, locked_save_json
+from core.human_handoff import is_human_handoff
+from core.sdr_stop_rules import should_stop_all_automation
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -444,6 +446,11 @@ def resolve_next_action(
 
     if deal_id <= 0:
         return build_action(ACTION_HOLD, reason="invalid_deal", deal_id=deal_id, phone=phone_value, email=email_value, **base)
+    if phone_value and is_human_handoff(phone_value):
+        print("[AUTO_REPLY_BLOCKED_HUMAN_HANDOFF]", "deal_id=", deal_id, "phone=", phone_value)
+        return build_action(ACTION_STOP_ALL, reason="human_handoff", deal_id=deal_id, phone=phone_value, email=email_value, **base)
+    if should_stop_all_automation(deal, phone=phone_value):
+        return build_action(ACTION_STOP_ALL, reason="stop_rule", deal_id=deal_id, phone=phone_value, email=email_value, **base)
     if status in {"won", "lost"}:
         return build_action(ACTION_STOP_ALL, reason=status, deal_id=deal_id, phone=phone_value, email=email_value, **base)
     if intent_value in {"negative_stop", "sem_interesse", "opt_out"}:
@@ -458,6 +465,7 @@ def resolve_next_action(
     meeting_signal = has_meeting_signal(deal, email_rows, wa_state, deal_id, phone_value)
     if meeting_signal and channel_value == "wa_warm":
         print("[WA_WARM_SKIP_MEETING_BOOKED]", "deal_id=", deal_id, "phone=", phone_value)
+        print("[MEETING_REMINDER_ONLY_MODE]", "deal_id=", deal_id, "phone=", phone_value)
         return build_action(ACTION_MEETING_REMINDER, reason="meeting_booked", deal_id=deal_id, phone=phone_value, email=email_value, strategy="meeting_reminder", stop_email=True, stop_hunter=True, **base)
 
     warm_signal = has_warm_signal(deal, email_rows, wa_state, deal_id, phone_value) or intent_value in {"positive_interest", "scheduling_time_provided"}

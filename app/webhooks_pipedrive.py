@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request
 import os, re, json, requests
 from pathlib import Path
 from core.sdr_temperature import ensure_pronto_call_activity
+from core.pipedrive_safe import safe_pd_request, merge_deal_labels
 
 router = APIRouter()
 PD_TOKEN = os.getenv("PIPEDRIVE_API_TOKEN")
@@ -34,15 +35,20 @@ def clean_phone(p):
 
 
 def pd_get(path):
-    return requests.get(f"https://api.pipedrive.com/v1/{path}?api_token={PD_TOKEN}", timeout=20).json().get("data") or {}
+    return (safe_pd_request("GET", path) or {}).get("data") or {}
 
 
 def pd_put(path, payload):
-    return requests.put(f"https://api.pipedrive.com/v1/{path}?api_token={PD_TOKEN}", json=payload, timeout=20)
+    if str(path or "").startswith("deals/") and "label" in dict(payload or {}):
+        try:
+            return merge_deal_labels(int(str(path).split("/", 1)[1]), list((payload or {}).get("label") or []))
+        except Exception:
+            pass
+    return safe_pd_request("PUT", path, payload)
 
 
 def add_note(deal_id, text):
-    requests.post(f"https://api.pipedrive.com/v1/notes?api_token={PD_TOKEN}", json={"deal_id": deal_id, "content": text}, timeout=20)
+    safe_pd_request("POST", "/notes", {"deal_id": deal_id, "content": text})
 
 
 @router.post("/webhooks/pipedrive")

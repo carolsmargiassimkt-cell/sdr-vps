@@ -19,6 +19,7 @@ from core.whatsapp_hunter_guard import (
     should_send_hunter_today,
 )
 from core.auto_reply_guard import is_auto_reply_blocked
+from core.human_handoff import is_human_handoff
 from core.inflight_actions import acquire_inflight, release_inflight
 from core.wa_strategy_state import (
     append_sent_step,
@@ -207,6 +208,9 @@ def hunter_skip_reason(deal, state, blocked):
         return "invalid_phone"
     if phone in blocked or (phone.startswith("55") and phone[2:] in blocked):
         return "blocklist"
+    if is_human_handoff(phone):
+        print(f"[AUTO_REPLY_BLOCKED_HUMAN_HANDOFF] deal_id={deal_id} phone={phone} channel=wa_hunter")
+        return "human_handoff"
     if is_auto_reply_blocked(phone):
         print(f"[AUTO_REPLY_SKIP_SEND] deal_id={deal_id} phone={phone} channel=wa_hunter")
         return "auto_reply_detected"

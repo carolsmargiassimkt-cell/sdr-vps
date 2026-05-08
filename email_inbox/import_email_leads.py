@@ -1,13 +1,18 @@
 import os, re, imaplib, email, requests, time, json, sys
 from pathlib import Path
 from email.header import decode_header
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except Exception:
+    def load_dotenv(*_args, **_kwargs):
+        return False
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.locked_json_state import locked_load_json, locked_save_json
+from core.pipedrive_safe import safe_pd_request
 
 # Load environment variables from multiple possible locations
 load_dotenv(Path(".") / ".env")
@@ -28,13 +33,17 @@ WA_WARM_DELIVERY_WATCH_FILE = Path("/root/sdr-vps/data/wa_warm_delivery_watch.js
 
 # Helpers for Pipedrive API
 def pd_api(method, path, body=None, params=None):
-    params = params or {}
-    params["api_token"] = PD
-    r = requests.request(method, f"{API}{path}", params=params, json=body, timeout=30)
-    if r.status_code >= 400:
-        print(f"[PD_API_ERROR] {method} {path} {r.status_code} {r.text[:200]}")
-    r.raise_for_status()
-    return r.json()
+    return safe_pd_request(method, path, body, params) or {}
+
+def is_dry_run_mode():
+    return "--dry-run" in sys.argv or "--mock-only" in sys.argv or "--test-only" in sys.argv or "--test-gabriel" in sys.argv
+
+def is_mock_mode():
+    return "--mock-only" in sys.argv or "--test-gabriel" in sys.argv
+
+def is_blocked_test_email(value):
+    email_value = str(value or "").strip().lower()
+    return email_value.startswith("gabriel.test@") or ".test@" in email_value or email_value.endswith("@example.com")
 
 def normalize_phone(phone):
     digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
@@ -182,6 +191,9 @@ def add_wa_warm_delivery_watch(*, deal_id, person_id=0, org_id=0, phone="", mess
 
 
 def trigger_warm_whatsapp(deal_id, phone, name, demand, person_id=0, org_id=0):
+    if is_dry_run_mode():
+        print("[DRY_RUN_SKIP_WRITE] action=trigger_warm_whatsapp deal_id=", deal_id, "phone=", phone)
+        return True
     if not phone or len(phone) < 10:
         print("[WA_WARM_TRIGGER_SKIP] Invalid phone:", phone)
         return False
@@ -249,6 +261,9 @@ def trigger_warm_whatsapp(deal_id, phone, name, demand, person_id=0, org_id=0):
     return False
 
 def update_wa_state(deal_id, phone, name, msg):
+    if is_dry_run_mode():
+        print("[DRY_RUN_SKIP_WRITE] action=update_wa_state deal_id=", deal_id, "phone=", phone)
+        return
     try:
         state = {}
         if WA_STATE_FILE.exists():
@@ -285,6 +300,12 @@ def find_open_deal(person_id):
 
 def process_lead(lead, subject, mid_s=None):
     print("[LEAD_PARSE_OK]", lead["email"] or lead["phone"], lead["nome"], lead["empresa"])
+    if is_dry_run_mode():
+        print("[DRY_RUN_SKIP_WRITE] action=process_lead email=", lead.get("email"), "phone=", lead.get("phone"))
+        return True
+    if is_blocked_test_email(lead.get("email")):
+        print("[DRY_RUN_SKIP_WRITE] action=blocked_test_email email=", lead.get("email"))
+        return False
 
     if not lead["email"] and not lead["phone"]:
         print("[LEAD_SKIP_NO_CONTACT]")
@@ -357,6 +378,7 @@ def main():
             return
     
     if "--test-gabriel" in sys.argv:
+        print("[MOCK_MODE_ACTIVE] test_gabriel")
         print("[TEST_MODE] Simulating Gabriel lead...")
         mock_text = """
         Nome: Gabriel
@@ -368,7 +390,7 @@ def main():
         lead = extract_lead_info(mock_text, "test@ademicon.com.br")
         process_lead(lead, "Novo lead gerado [TEST]")
         print("[TEST_MODE] Gabriel lead processed.")
-        if "--test-only" in sys.argv:
+        if is_mock_mode() or "--test-only" in sys.argv:
             return
 
     processed = set(PROCESSED.read_text().splitlines()) if PROCESSED.exists() else set()
@@ -410,8 +432,11 @@ def main():
             print("[IMPORT_LOOP_ERROR]", mid_s, str(e))
 
     # Save state
-    PROCESSED.parent.mkdir(exist_ok=True, parents=True)
-    PROCESSED.write_text("\n".join(sorted(processed, key=lambda x: int(x) if x.isdigit() else 0)))
+    if is_dry_run_mode():
+        print("[DRY_RUN_SKIP_WRITE] action=save_processed")
+    else:
+        PROCESSED.parent.mkdir(exist_ok=True, parents=True)
+        PROCESSED.write_text("\n".join(sorted(processed, key=lambda x: int(x) if x.isdigit() else 0)))
     imap.logout()
     print("[EMAIL_IMPORT_DONE]")
 

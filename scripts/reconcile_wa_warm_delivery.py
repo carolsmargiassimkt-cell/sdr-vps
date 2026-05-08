@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.locked_json_state import locked_load_json, locked_save_json
+from core.human_handoff import is_human_handoff
 from crm.pipedrive_client import PipedriveClient
 
 
@@ -148,6 +149,24 @@ def gateway_status(message_id: str) -> str:
     except Exception as exc:
         print(f"[WA_WARM_STATUS_EXCEPTION] message_id={message_id} error={exc}")
         return "UNKNOWN"
+
+
+def gateway_is_stable() -> bool:
+    try:
+        response = requests.get(f"{GATEWAY_URL}/status", timeout=8)
+        if response.status_code >= 400:
+            print(f"[WA_RECONCILE_DELAY_GATEWAY_UNSTABLE] reason=status_http_{response.status_code}")
+            return False
+        payload = response.json() or {}
+        stable = bool(payload.get("stable")) or str(payload.get("status") or "").lower() == "online"
+        uptime = float(payload.get("uptime_seconds") or payload.get("uptime") or 0)
+        if not stable or uptime < 300:
+            print(f"[WA_RECONCILE_DELAY_GATEWAY_UNSTABLE] stable={1 if stable else 0} uptime={uptime:.0f}")
+            return False
+        return True
+    except Exception as exc:
+        print(f"[WA_RECONCILE_DELAY_GATEWAY_UNSTABLE] reason=status_exception error={exc}")
+        return False
 
 
 def extract_email(person: dict[str, Any]) -> str:
@@ -294,6 +313,24 @@ def process_row(crm: PipedriveClient, key: str, row: dict[str, Any], *, apply: b
         row["fallback_done"] = True
         row["fallback_done_at"] = iso_now()
         print(f"[WA_WARM_INVALID_OR_NOT_FOUND] deal_id={row.get('deal_id')} message_id={message_id}")
+        return True
+
+    if is_human_handoff(row.get("phone")):
+        add_note(
+            crm,
+            row,
+            f"[WA_WARM_PENDING_HANDOFF]<br>phone={row.get('phone')}<br>message_id={message_id}<br>Fallback automático bloqueado por human_handoff.",
+            apply=apply,
+        )
+        row["fallback_done"] = True
+        row["fallback_done_at"] = iso_now()
+        row["fallback_reason"] = "human_handoff"
+        print(f"[AUTO_REPLY_BLOCKED_HUMAN_HANDOFF] deal_id={row.get('deal_id')} phone={row.get('phone')} channel=wa_reconcile")
+        return True
+
+    if current_status == "PENDING" and not gateway_is_stable():
+        row["status"] = "PENDING"
+        row["fallback_delayed_reason"] = "gateway_unstable"
         return True
 
     subject = "Contato warm - WhatsApp pendente"

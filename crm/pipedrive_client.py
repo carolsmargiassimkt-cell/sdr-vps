@@ -47,8 +47,8 @@ class PipedriveClient:
     TAG_LOCK_168 = 168
     
     CRM_WRITE_RETRIES = 2
-    REQUEST_RETRIES = 3
-    REQUEST_RETRY_DELAYS_SEC = (5.0, 10.0, 20.0)
+    REQUEST_RETRIES = 5
+    REQUEST_RETRY_DELAYS_SEC = (1.0, 2.0, 5.0, 10.0, 10.0)
     REQUEST_TIMEOUT_SEC = 10
     RETRIABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
     RATE_LIMIT_COOLDOWN_SEC = 60
@@ -703,7 +703,23 @@ class PipedriveClient:
 
         label = payload.get("label")
         if label:
-            payload["label"] = self.resolve_label_ids(label, self.get_deal_labels())
+            wanted = self.resolve_label_ids(label, self.get_deal_labels())
+            try:
+                current_deal = self.get_deal_details(deal_id) or {}
+                current = self.resolve_label_ids(current_deal.get("label"), self.get_deal_labels())
+            except Exception:
+                current = []
+            merged = []
+            seen = set()
+            for item in list(current or []) + list(wanted or []):
+                key = str(item or "").strip()
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                merged.append(item)
+            if 193 in set(int(x) for x in seen if str(x).isdigit()) and 193 not in merged:
+                merged.append(193)
+            payload["label"] = merged
         
         ok = self._write_with_retry(
             f"update_deal:{int(deal_id)}",
