@@ -61,6 +61,36 @@ def now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def parse_dt(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def get_next_send(row: dict[str, Any]) -> str:
+    return str(row.get("next_send") or row.get("next_send_at") or "").strip()
+
+
+def set_next_send(row: dict[str, Any], value) -> None:
+    row["next_send"] = value
+    row["next_send_at"] = value
+
+
+def due_from_missing_next_send(row: dict[str, Any], step: int, current: datetime) -> tuple[bool, str | None]:
+    last_sent = parse_dt(row.get("last_sent_at"))
+    if not last_sent:
+        return True, None
+    wait_days = STEPS[max(0, min(5, int(step) - 1))]
+    due_at = last_sent + timedelta(days=wait_days)
+    if due_at <= current:
+        return True, due_at.isoformat(timespec="seconds")
+    return False, due_at.isoformat(timespec="seconds")
+
+
 def normalize_phone(value: Any) -> str:
     import re
 
@@ -194,10 +224,10 @@ def enqueue(deal_id, email, nome="", empresa="", phone="", **metadata):
                 "empresa": empresa,
                 "step": 1,
                 "status": conflict,
-                "next_send": None,
                 "created_at": now(),
                 "source": str(metadata.get("source") or "outbound"),
             })
+            set_next_send(rows[-1], None)
             save(rows)
         log_event("EMAIL_QUEUE_SKIP", deal_id=deal_id, email=clean_email, phone=clean_phone, reason=conflict)
         return {"ok": True, "skip": conflict}
@@ -209,11 +239,11 @@ def enqueue(deal_id, email, nome="", empresa="", phone="", **metadata):
         "empresa": empresa,
         "step": 1,
         "status": "pending",
-        "next_send": now(),
         "created_at": now(),
         "last_sent_step_email": 0,
         "source": str(metadata.get("source") or "outbound"),
     }
+    set_next_send(row, now())
     rows.append(row)
     save(rows)
     mark_email_cadence(deal_id, email=clean_email, phone=clean_phone, active=True, origin="outbound")
@@ -326,11 +356,11 @@ def advance_after_send(row, step, sent_at):
     row["last_sent_at"] = sent_at
     if step >= 6:
         row["status"] = "done"
-        row["next_send"] = None
+        set_next_send(row, None)
     else:
         row["step"] = step + 1
         row["status"] = "pending"
-        row["next_send"] = (datetime.now() + timedelta(days=STEPS[step])).isoformat(timespec="seconds")
+        set_next_send(row, (datetime.now() + timedelta(days=STEPS[step])).isoformat(timespec="seconds"))
 
 
 def tick():
@@ -354,9 +384,33 @@ def tick():
             continue
         if sent_today >= DAILY_LIMIT:
             break
-        if not row.get("next_send") or datetime.fromisoformat(row["next_send"]) > current:
-            continue
         step = max(1, min(6, int(row.get("step") or 1)))
+        next_send = get_next_send(row)
+        if next_send:
+            parsed_next_send = parse_dt(next_send)
+            if parsed_next_send and parsed_next_send > current:
+                continue
+            if parsed_next_send and row.get("next_send") != row.get("next_send_at"):
+                set_next_send(row, parsed_next_send.isoformat(timespec="seconds"))
+                changed = True
+            if not parsed_next_send:
+                is_due, computed_next_send = due_from_missing_next_send(row, step, current)
+                if not is_due:
+                    set_next_send(row, computed_next_send)
+                    changed = True
+                    continue
+                if computed_next_send:
+                    set_next_send(row, computed_next_send)
+                    changed = True
+        else:
+            is_due, computed_next_send = due_from_missing_next_send(row, step, current)
+            if not is_due:
+                set_next_send(row, computed_next_send)
+                changed = True
+                continue
+            if computed_next_send:
+                set_next_send(row, computed_next_send)
+                changed = True
         if int(row.get("last_sent_step_email") or 0) >= step or event_exists(row.get("deal_id"), step):
             advance_after_send(row, step, now())
             changed = True
