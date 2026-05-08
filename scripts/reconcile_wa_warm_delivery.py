@@ -32,9 +32,10 @@ PENDING_AFTER_MINUTES = int(os.getenv("WA_WARM_PENDING_FALLBACK_MINUTES", "10") 
 
 GABRIEL_SEED = {
     "deal_id": 3419,
-    "person_id": 5952,
+    "person_id": 5923,
     "org_id": 2460,
     "phone": "5541999193626",
+    "email": "gabriel.schultz@ademicon.com.br",
     "message_id": "3EB07EED182522F3D35DAE",
     "status": "PENDING",
     "source": "leadster_import",
@@ -98,6 +99,42 @@ def add_seed_gabriel(state: dict[str, dict[str, Any]]) -> bool:
     return True
 
 
+def extract_id(value: Any) -> int:
+    if isinstance(value, dict):
+        for key in ("id", "value"):
+            try:
+                candidate = int(value.get(key) or 0)
+            except Exception:
+                candidate = 0
+            if candidate > 0:
+                return candidate
+        return 0
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def hydrate_row_from_deal(crm: PipedriveClient, row: dict[str, Any]) -> dict[str, Any]:
+    deal_id = int(row.get("deal_id") or 0)
+    if deal_id <= 0:
+        return {}
+    try:
+        deal = crm.get_deal_details(deal_id) or {}
+    except Exception as exc:
+        print(f"[WA_WARM_DEAL_HYDRATE_FAIL] deal_id={deal_id} error={exc}")
+        return {}
+    person_id = extract_id(deal.get("person_id"))
+    org_id = extract_id(deal.get("org_id"))
+    if person_id > 0 and person_id != int(row.get("person_id") or 0):
+        print(f"[WA_WARM_DEAL_PERSON_OVERRIDE] deal_id={deal_id} old={row.get('person_id')} new={person_id}")
+        row["person_id"] = person_id
+    if org_id > 0 and org_id != int(row.get("org_id") or 0):
+        print(f"[WA_WARM_DEAL_ORG_OVERRIDE] deal_id={deal_id} old={row.get('org_id')} new={org_id}")
+        row["org_id"] = org_id
+    return deal
+
+
 def gateway_status(message_id: str) -> str:
     try:
         response = requests.get(f"{GATEWAY_URL}/outbound-status", params={"message_id": message_id}, timeout=10)
@@ -124,6 +161,11 @@ def extract_email(person: dict[str, Any]) -> str:
     if isinstance(values, str):
         return values.strip()
     return ""
+
+
+def is_test_email(email_addr: str) -> bool:
+    clean = str(email_addr or "").strip().lower()
+    return clean.startswith("gabriel.test") or ".test@" in clean
 
 
 def has_open_activity(crm: PipedriveClient, deal_id: int, subject: str) -> bool:
@@ -178,6 +220,9 @@ def add_note(crm: PipedriveClient, row: dict[str, Any], content: str, *, apply: 
 def send_contextual_email(to_addr: str, row: dict[str, Any], *, apply: bool) -> bool:
     if not to_addr:
         return False
+    if is_test_email(to_addr):
+        print(f"[FALLBACK_SKIP_TEST_EMAIL] deal_id={row.get('deal_id')} email={to_addr}")
+        return False
     subject = "Sobre sua solicitação na Mand Digital"
     body = (
         "Oi, tudo bem?<br><br>"
@@ -215,6 +260,7 @@ def process_row(crm: PipedriveClient, key: str, row: dict[str, Any], *, apply: b
     status = str(row.get("status") or "PENDING").upper()
     if status not in {"PENDING", "UNKNOWN", "NOT_FOUND"}:
         return False
+    hydrate_row_from_deal(crm, row)
     sent_at = parse_dt(row.get("sent_at"))
     if sent_at and now_utc() - sent_at < timedelta(minutes=PENDING_AFTER_MINUTES):
         return False
@@ -253,7 +299,7 @@ def process_row(crm: PipedriveClient, key: str, row: dict[str, Any], *, apply: b
     subject = "Contato warm - WhatsApp pendente"
     create_call_activity_once(crm, row, subject, apply=apply)
     person = crm.get_person_details(int(row.get("person_id") or 0)) if int(row.get("person_id") or 0) else {}
-    email_addr = extract_email(person)
+    email_addr = extract_email(person) or str(row.get("email") or "").strip()
     email_ok = send_contextual_email(email_addr, row, apply=apply)
     add_note(
         crm,
