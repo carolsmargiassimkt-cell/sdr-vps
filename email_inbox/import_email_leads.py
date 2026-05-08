@@ -3,6 +3,12 @@ from pathlib import Path
 from email.header import decode_header
 from dotenv import load_dotenv
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from core.locked_json_state import locked_load_json, locked_save_json
+
 # Load environment variables from multiple possible locations
 load_dotenv(Path(".") / ".env")
 load_dotenv("C:/Users/Asus/.env")
@@ -18,6 +24,7 @@ TAG_NAME = "LEAD-TRÁFEGO"
 API = "https://api.pipedrive.com/v1"
 PROCESSED = Path("/root/sdr-vps/data/email_inbox_processed.txt")
 WA_STATE_FILE = Path("/root/sdr-vps/data/whatsapp_warm_cadence.json")
+WA_WARM_DELIVERY_WATCH_FILE = Path("/root/sdr-vps/data/wa_warm_delivery_watch.json")
 
 # Helpers for Pipedrive API
 def pd_api(method, path, body=None, params=None):
@@ -146,7 +153,35 @@ def get_or_create_org(name):
         print("[ORG_ERROR]", name, str(e))
         return None
 
-def trigger_warm_whatsapp(deal_id, phone, name, demand):
+def add_wa_warm_delivery_watch(*, deal_id, person_id=0, org_id=0, phone="", message_id="", text="", source="leadster_import"):
+    if not deal_id or not message_id:
+        return False
+    now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    state = locked_load_json(WA_WARM_DELIVERY_WATCH_FILE, {})
+    if not isinstance(state, dict):
+        state = {}
+    key = str(message_id)
+    previous = state.get(key) if isinstance(state.get(key), dict) else {}
+    state[key] = {
+        **previous,
+        "deal_id": int(deal_id or previous.get("deal_id") or 0),
+        "person_id": int(person_id or previous.get("person_id") or 0),
+        "org_id": int(org_id or previous.get("org_id") or 0),
+        "phone": normalize_phone(phone or previous.get("phone")),
+        "message_id": key,
+        "sent_at": previous.get("sent_at") or now,
+        "status": previous.get("status") or "PENDING",
+        "source": source or previous.get("source") or "leadster_import",
+        "fallback_done": bool(previous.get("fallback_done") or False),
+        "text": text or previous.get("text") or "",
+        "updated_at": now,
+    }
+    locked_save_json(WA_WARM_DELIVERY_WATCH_FILE, state)
+    print("[WA_WARM_DELIVERY_WATCH_ADD]", deal_id, phone, message_id)
+    return True
+
+
+def trigger_warm_whatsapp(deal_id, phone, name, demand, person_id=0, org_id=0):
     if not phone or len(phone) < 10:
         print("[WA_WARM_TRIGGER_SKIP] Invalid phone:", phone)
         return False
@@ -171,9 +206,40 @@ def trigger_warm_whatsapp(deal_id, phone, name, demand):
         }, timeout=30)
         
         if r.status_code == 200 and '"sent"' in r.text.lower():
+            try:
+                payload = r.json()
+            except Exception:
+                payload = {}
+            message_id = str(payload.get("message_id") or payload.get("id") or "").strip()
             print("[WA_WARM_TRIGGER_OK]", deal_id, phone)
             # Update state for whatsapp_warm_cadence.py
             update_wa_state(deal_id, phone, name, msg)
+            if message_id:
+                note_payload = {
+                    "deal_id": int(deal_id),
+                    "content": (
+                        "[WA_WARM_SENT_PENDING_ACK]<br>"
+                        f"phone={phone}<br>"
+                        f"message_id={message_id}<br>"
+                        f"texto={msg.replace(chr(10), '<br>')}"
+                    )
+                }
+                if int(person_id or 0):
+                    note_payload["person_id"] = int(person_id or 0)
+                if int(org_id or 0):
+                    note_payload["org_id"] = int(org_id or 0)
+                pd_api("POST", "/notes", note_payload)
+                add_wa_warm_delivery_watch(
+                    deal_id=deal_id,
+                    person_id=person_id,
+                    org_id=org_id,
+                    phone=phone,
+                    message_id=message_id,
+                    text=msg,
+                    source="leadster_import",
+                )
+            else:
+                print("[WA_WARM_TRIGGER_NO_MESSAGE_ID]", deal_id, phone)
             return True
         else:
             print("[WA_WARM_TRIGGER_FAIL]", deal_id, r.status_code, r.text[:100])
@@ -279,7 +345,7 @@ def process_lead(lead, subject, mid_s=None):
     print("[NOTE_CREATE_OK]", deal_id)
 
     # WhatsApp Trigger
-    trigger_warm_whatsapp(deal_id, lead["phone"], lead["nome"], lead["demanda"])
+    trigger_warm_whatsapp(deal_id, lead["phone"], lead["nome"], lead["demanda"], person_id=person_id, org_id=org_id or 0)
     return True
 
 def main():
