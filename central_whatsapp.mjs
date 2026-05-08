@@ -125,6 +125,7 @@ const WA_PORT = Number(process.env.PORT || 3000)
 const WA_INSTANCE = String(process.env.WA_INSTANCE || (WA_PORT === 3001 ? 'WA2' : 'WA1')).trim() || 'WA1'
 const TEST_WHITELIST = new Set(['5535920002020', '35920002020'])
 const HISTORY_FILE = path.join('logs', 'whatsapp_message_history.json')
+const OUTBOUND_MESSAGES_FILE = path.join('logs', `whatsapp_outbound_messages.${WA_INSTANCE.toLowerCase()}.json`)
 const BACKLOG_STATE_FILE = path.join('logs', `whatsapp_backlog_state.${WA_INSTANCE.toLowerCase()}.json`)
 const INBOUND_RETRY_FILE = path.join('runtime', `inbound_retry_queue.${WA_INSTANCE.toLowerCase()}.json`)
 const AUTH_INFO_DIR = path.join(process.cwd(), 'auth_info_baileys')
@@ -136,6 +137,7 @@ let inboundRetryFlushInProgress = false
 let processLockFd = null
 let server = null
 const inboundRetryQueue = new Map()
+const outboundMessages = new Map()
 
 function clearReconnectTimer() {
     if (reconnectTimer) {
@@ -178,6 +180,108 @@ function parseBoolean(value, fallback = false) {
         return false
     }
     return fallback
+}
+
+function ackStatusName(value) {
+    const raw = Number(value)
+    if (!Number.isFinite(raw)) {
+        return 'PENDING'
+    }
+    if (raw <= 1) return 'PENDING'
+    if (raw === 2) return 'SERVER_ACK'
+    if (raw === 3) return 'DELIVERED'
+    if (raw === 4) return 'READ'
+    if (raw >= 5) return 'PLAYED'
+    return 'PENDING'
+}
+
+function ackRank(status) {
+    const normalized = String(status || 'PENDING').toUpperCase()
+    if (normalized === 'PLAYED') return 5
+    if (normalized === 'READ') return 4
+    if (normalized === 'DELIVERED') return 3
+    if (normalized === 'SERVER_ACK') return 2
+    return 1
+}
+
+function persistOutboundMessages() {
+    try {
+        fs.mkdirSync(path.dirname(OUTBOUND_MESSAGES_FILE), { recursive: true })
+        const payload = {
+            savedAt: new Date().toISOString(),
+            outboundMessages: Array.from(outboundMessages.values()),
+        }
+        const tmp = `${OUTBOUND_MESSAGES_FILE}.tmp`
+        fs.writeFileSync(tmp, JSON.stringify(payload, null, 2))
+        fs.renameSync(tmp, OUTBOUND_MESSAGES_FILE)
+    } catch (error) {
+        console.log('[WA_OUTBOUND_STATE_SAVE_FAIL]', error?.message || String(error))
+    }
+}
+
+function loadOutboundMessages() {
+    try {
+        if (!fs.existsSync(OUTBOUND_MESSAGES_FILE)) return
+        const payload = JSON.parse(fs.readFileSync(OUTBOUND_MESSAGES_FILE, 'utf8') || '{}')
+        const rows = Array.isArray(payload?.outboundMessages) ? payload.outboundMessages : []
+        for (const row of rows) {
+            if (!row?.message_id) continue
+            outboundMessages.set(String(row.message_id), row)
+        }
+    } catch (error) {
+        console.log('[WA_OUTBOUND_STATE_LOAD_FAIL]', error?.message || String(error))
+    }
+}
+
+function recordOutboundPending({ jid, messageId, text, gatewayStatus = 'sent', delayMs = 0 }) {
+    if (!messageId) return
+    const nowIso = new Date().toISOString()
+    const previous = outboundMessages.get(String(messageId)) || {}
+    outboundMessages.set(String(messageId), {
+        ...previous,
+        message_id: String(messageId),
+        jid: String(jid || previous.jid || ''),
+        status: previous.status || 'PENDING',
+        gateway_status: gatewayStatus,
+        sentAt: previous.sentAt || nowIso,
+        ackAt: previous.ackAt || null,
+        deliveredAt: previous.deliveredAt || null,
+        readAt: previous.readAt || null,
+        text_preview: String(text || previous.text_preview || '').slice(0, 180),
+        delay_ms: Number(delayMs || previous.delay_ms || 0),
+        updatedAt: nowIso,
+    })
+    persistOutboundMessages()
+}
+
+function updateOutboundAck({ jid, messageId, statusValue }) {
+    if (!messageId) return
+    const statusName = ackStatusName(statusValue)
+    const nowIso = new Date().toISOString()
+    const previous = outboundMessages.get(String(messageId)) || {
+        message_id: String(messageId),
+        jid: String(jid || ''),
+        status: 'PENDING',
+        gateway_status: '',
+        sentAt: null,
+        ackAt: null,
+        deliveredAt: null,
+        readAt: null,
+    }
+    const currentStatus = previous.status || 'PENDING'
+    const finalStatus = ackRank(statusName) >= ackRank(currentStatus) ? statusName : currentStatus
+    const next = {
+        ...previous,
+        jid: String(jid || previous.jid || ''),
+        status: finalStatus,
+        updatedAt: nowIso,
+    }
+    if (ackRank(finalStatus) >= 2 && !next.ackAt) next.ackAt = nowIso
+    if (ackRank(finalStatus) >= 3 && !next.deliveredAt) next.deliveredAt = nowIso
+    if (ackRank(finalStatus) >= 4 && !next.readAt) next.readAt = nowIso
+    outboundMessages.set(String(messageId), next)
+    persistOutboundMessages()
+    console.log('[WA_ACK_UPDATE]', `jid=${next.jid}`, `id=${messageId}`, `status=${finalStatus}`)
 }
 
 function isTestWhitelistNumber(number) {
@@ -286,6 +390,8 @@ function loadPersistedBacklogState() {
     } catch (_error) {
     }
 }
+
+loadOutboundMessages()
 
 function persistInboundRetryQueue() {
     try {
@@ -1604,11 +1710,11 @@ async function start() {
                 if (!key?.fromMe || !key?.id) {
                     continue
                 }
-                const status = item?.update?.status
+                const status = item?.status ?? item?.update?.status
                 if (typeof status === 'undefined' || status === null) {
                     continue
                 }
-                console.log('[WA_DELIVERY_UPDATE]', key.remoteJid || '', `msg_id=${key.id}`, `status=${status}`)
+                updateOutboundAck({ jid: key.remoteJid || '', messageId: key.id, statusValue: status })
             }
         })
 
@@ -1715,6 +1821,27 @@ app.get('/status', (_req, res) => {
         qr_available: WA_STATE.qr_available === true,
         daily_limit: dailyLimit,
         sent_today: dailySentCount,
+    })
+})
+
+app.get('/outbound-status', (req, res) => {
+    const messageId = String(req.query?.message_id || req.query?.id || '').trim()
+    if (!messageId) {
+        return res.status(400).json({ ok: false, error: 'missing_message_id' })
+    }
+    const row = outboundMessages.get(messageId)
+    if (!row) {
+        return res.status(404).json({ ok: false, message_id: messageId, status: 'not_found' })
+    }
+    return res.json({
+        message_id: row.message_id,
+        jid: row.jid,
+        status: row.status || 'PENDING',
+        gateway_status: row.gateway_status || '',
+        sentAt: row.sentAt || null,
+        ackAt: row.ackAt || null,
+        deliveredAt: row.deliveredAt || null,
+        readAt: row.readAt || null,
     })
 })
 
@@ -1897,7 +2024,14 @@ app.post('/send', async (req, res) => {
             }
             const sent = await sock.sendMessage(jid, { text })
 console.log('[ENVIO_RESULT_RAW]', jid, JSON.stringify(sent || {}))
-            if (sent?.key?.id && sent?.status && sent.status !== "PENDING") {
+            if (sent?.key?.id) {
+                recordOutboundPending({
+                    jid,
+                    messageId: sent.key.id,
+                    text,
+                    gatewayStatus: 'sent',
+                    delayMs,
+                })
                 if (countTowardsDailyLimit) {
                     resetDailyCountersIfNeeded()
                     dailySentCount += 1
