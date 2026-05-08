@@ -44,7 +44,21 @@ FORM_URL = os.getenv("PREFORM_URL", "https://docs.google.com/forms/d/1KWo-Z7uKfl
 CALENDLY_URL = os.getenv("CALENDLY_URL", "https://calendly.com/ana-manddigital/30min")
 
 STEPS = [0, 2, 4, 7, 10, 14]
-STOP_STATUSES = {"clicked_warm", "replied", "won", "lost", "opt_out", "wrong_contact", "done", "stopped", "warm", "shared_email_blocked", "shared_phone_blocked"}
+STOP_STATUSES = {
+    "clicked_warm",
+    "replied",
+    "won",
+    "lost",
+    "opt_out",
+    "wrong_contact",
+    "done",
+    "stopped",
+    "warm",
+    "meeting_booked",
+    "calendly_booked",
+    "shared_email_blocked",
+    "shared_phone_blocked",
+}
 DAILY_LIMIT = int(os.getenv("EMAIL_DAILY_LIMIT", "50") or "50")
 MIN_DELAY_SECONDS = float(os.getenv("EMAIL_MIN_DELAY_SECONDS", "45") or "45")
 

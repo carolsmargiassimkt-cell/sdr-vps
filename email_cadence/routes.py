@@ -6,6 +6,7 @@ from core.stage_router import resolve_pipeline_stage
 from crm.sdr_field_updater import update_sdr_fields
 from core.sdr_state import STAGE_PRONTO_PROSPECCAO, mark_warm, update_score, log_event
 from core.sdr_temperature import apply_temperature_to_deal
+from core.locked_json_state import locked_load_json, locked_save_json
 import json
 import os
 from pathlib import Path
@@ -53,15 +54,11 @@ def merge_label(deal_id, label_id):
 
 def load_queue():
     p = Path("/root/sdr-vps/data/email_cadence_queue.json")
-    try:
-        return p, json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
-    except Exception:
-        return p, []
+    return p, locked_load_json(p, [])
 
 
 def save_queue(path, rows):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    locked_save_json(path, rows)
 
 
 @router.post("/webhooks/email-cadence")

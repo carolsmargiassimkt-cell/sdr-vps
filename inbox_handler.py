@@ -2140,6 +2140,17 @@ def build_local_agent_decision(data):
                 should_pause_automation = False
                 should_send = False
 
+    if str(reason or "").startswith("gemini:"):
+        print(f"[GEMINI_WEAK_SIGNAL] intent={intent} action={action} reason={reason}")
+        intent = "neutro"
+        action = "hold"
+        reply = ""
+        should_send = False
+        should_blocklist = False
+        should_pause_automation = False
+        should_move_stage = False
+        should_create_activity = False
+
     return {
         "intent": intent,
         "confidence": float(confidence),
