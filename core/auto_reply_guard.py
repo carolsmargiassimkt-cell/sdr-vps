@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -11,7 +11,10 @@ from core.locked_json_state import locked_load_json, locked_save_json
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 AUTO_REPLY_BLOCKLIST_FILE = BASE_DIR / "data" / "whatsapp_auto_reply_blocklist.json"
-TZ = ZoneInfo("America/Sao_Paulo")
+try:
+    TZ = ZoneInfo("America/Sao_Paulo")
+except Exception:
+    TZ = timezone(timedelta(hours=-3))
 
 PATTERNS = [
     r"\bbem[- ]?vindo",

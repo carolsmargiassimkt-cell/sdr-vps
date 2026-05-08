@@ -5,13 +5,12 @@ import os
 import re
 import shutil
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from core.locked_json_state import locked_load_json, locked_save_json
-from core.whatsapp_hunter_guard import duplicate_day_log, should_send_hunter_today
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -34,6 +33,7 @@ ACTION_CREATE_ACTIVITY = "CREATE_ACTIVITY"
 ACTION_MOVE_STAGE = "MOVE_STAGE"
 ACTION_MARK_LOST = "MARK_LOST"
 ACTION_STOP_ALL = "STOP_ALL"
+ACTION_MEETING_REMINDER = "MEETING_REMINDER"
 
 WARM_REASONS = {
     "clicked_warm",
@@ -42,7 +42,9 @@ WARM_REASONS = {
     "form",
     "form_responded",
     "calendly",
+    "calendly_booked",
     "meeting",
+    "meeting_booked",
     "positive_intent",
     "wa_positive",
     "lead_trafego",
@@ -50,6 +52,7 @@ WARM_REASONS = {
 }
 
 STOP_REASONS = {"won", "lost", "opt_out", "negative_stop", "wrong_contact", "stopped", "shared_email_blocked", "shared_phone_blocked"}
+MEETING_REASONS = {"calendly", "calendly_booked", "meeting", "meeting_booked", "reuniao_agendada", "reunião_agendada"}
 
 HUNTER_ALLOWED_STAGE_IDS = {PIPELINE_STAGES["pronto"]}
 EMAIL_ALLOWED_STAGE_IDS = {PIPELINE_STAGES["nutricao"]}
@@ -91,7 +94,11 @@ LEGACY_WA_TAGS = {"wa_cad4", "wa_cad5", "wa_cad6"}
 
 
 def now_brt() -> datetime:
-    return datetime.now(ZoneInfo("America/Sao_Paulo"))
+    try:
+        tz = ZoneInfo("America/Sao_Paulo")
+    except Exception:
+        tz = timezone(timedelta(hours=-3))
+    return datetime.now(tz)
 
 
 def utcish_parse(value: Any) -> datetime | None:
@@ -320,6 +327,29 @@ def has_warm_signal(deal: dict[str, Any] | None, email_rows: list[dict[str, Any]
     return str(warm.get("status") or "").lower() in {"active", "sent", "warm"}
 
 
+def has_meeting_signal(deal: dict[str, Any] | None, email_rows: list[dict[str, Any]], wa_state: dict[str, Any], deal_id: int, phone: str) -> bool:
+    tokens = label_tokens(deal)
+    status_values = {
+        str((deal or {}).get("status_bot") or "").strip().lower(),
+        str((deal or {}).get("status_sdr") or "").strip().lower(),
+        str((deal or {}).get("automation_status") or "").strip().lower(),
+        str((deal or {}).get("meeting_status") or "").strip().lower(),
+    }
+    if tokens & MEETING_REASONS:
+        return True
+    if status_values & MEETING_REASONS:
+        return True
+    if any(str(row.get("status") or "").strip().lower() in MEETING_REASONS for row in email_rows):
+        return True
+    for record in wa_records_for_deal_phone(wa_state, deal_id, phone):
+        status = str(record.get("status") or "").strip().lower()
+        strategy = str(record.get("strategy") or "").strip().lower()
+        reason = str(record.get("reason") or "").strip().lower()
+        if status in MEETING_REASONS or strategy == "meeting_reminder" or reason in MEETING_REASONS:
+            return True
+    return False
+
+
 def is_business_hours_brt() -> bool:
     current = now_brt()
     if current.weekday() >= 5:
@@ -425,6 +455,11 @@ def resolve_next_action(
     if intent_value in {"referral", "indicacao"}:
         return build_action(ACTION_STOP_ALL, reason="referral", deal_id=deal_id, phone=phone_value, email=email_value, create_referral=True, **base)
 
+    meeting_signal = has_meeting_signal(deal, email_rows, wa_state, deal_id, phone_value)
+    if meeting_signal and channel_value == "wa_warm":
+        print("[WA_WARM_SKIP_MEETING_BOOKED]", "deal_id=", deal_id, "phone=", phone_value)
+        return build_action(ACTION_MEETING_REMINDER, reason="meeting_booked", deal_id=deal_id, phone=phone_value, email=email_value, strategy="meeting_reminder", stop_email=True, stop_hunter=True, **base)
+
     warm_signal = has_warm_signal(deal, email_rows, wa_state, deal_id, phone_value) or intent_value in {"positive_interest", "scheduling_time_provided"}
     if warm_signal:
         if channel_value == "wa_warm":
@@ -446,6 +481,7 @@ def resolve_next_action(
             return build_action(ACTION_HOLD, reason="outside_business_hours", deal_id=deal_id, phone=phone_value, email=email_value, **base)
         if not phone_value:
             return build_action(ACTION_HOLD, reason="missing_phone", deal_id=deal_id, phone=phone_value, email=email_value, **base)
+        from core.whatsapp_hunter_guard import duplicate_day_log, should_send_hunter_today
         allowed_today, last_guard_sent_at, guard_reason = should_send_hunter_today(deal_id, phone_value)
         if not allowed_today:
             print(duplicate_day_log(deal_id, phone_value, last_guard_sent_at, guard_reason))

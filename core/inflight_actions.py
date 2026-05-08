@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -10,7 +10,10 @@ from core.locked_json_state import locked_load_json, locked_save_json
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 INFLIGHT_FILE = BASE_DIR / "data" / "inflight_actions.json"
-TZ = ZoneInfo("America/Sao_Paulo")
+try:
+    TZ = ZoneInfo("America/Sao_Paulo")
+except Exception:
+    TZ = timezone(timedelta(hours=-3))
 TTL_MINUTES = 5
 
 

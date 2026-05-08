@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request
 import os, re, json, requests
 from pathlib import Path
+from core.sdr_temperature import ensure_pronto_call_activity
 
 router = APIRouter()
 PD_TOKEN = os.getenv("PIPEDRIVE_API_TOKEN")
@@ -52,6 +53,11 @@ async def pipedrive_webhook(req: Request):
         return {"ok": True, "skip": "no_deal"}
 
     deal = pd_get(f"deals/{deal_id}")
+    try:
+        ensure_pronto_call_activity(deal, dry_run=False)
+    except Exception as exc:
+        print("[CALL_ACTIVITY_CREATE_FAIL]", deal_id, exc)
+
     if str(deal.get(FIELD_KEY)) != str(WA_CAD1_ENVIAR):
         return {"ok": True, "skip": f"status_{deal.get(FIELD_KEY)}"}
 
