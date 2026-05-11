@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """Read-only audit for LP/Leadster import and WhatsApp warm safety.
 
+
+def is_paused_or_stopped_record(rec):
+    return bool(
+        rec.get("stopped")
+        or rec.get("paused")
+        or rec.get("do_not_advance_without_inbound")
+        or str(rec.get("stop_reason") or "").startswith("blocked_step2_without_real_inbound")
+    )
+
 This script does not call Pipedrive, IMAP or the WhatsApp gateway. It checks
 local state/logs and exits non-zero only when it finds evidence that step 2+
 was already advanced without a real inbound reply.
@@ -25,6 +34,18 @@ from scripts.whatsapp_warm_cadence import (
 
 DATA_DIR = ROOT / "data"
 LOG_DIR = ROOT / "logs"
+
+
+def is_paused_or_stopped_record(rec):
+    return bool(
+        rec.get("stopped")
+        or rec.get("paused")
+        or rec.get("do_not_advance_without_inbound")
+        or str(rec.get("stop_reason") or "").startswith(
+            "blocked_step2_without_real_inbound"
+        )
+    )
+
 
 
 def load_json(path, default):
@@ -111,7 +132,7 @@ def audit_warm_state():
         has_inbound = has_real_inbound_after_wa1(rec, deal_id, phone, conversation_state, sdr_state)
         if step == 1 and not has_inbound:
             results["blocked_step2_without_inbound"].append(base)
-        if step >= 2 and not has_inbound:
+        if step >= 2 and not has_inbound and not is_paused_or_stopped_record(rec):
             results["violations_step2_already_sent_without_inbound"].append(base)
     return results
 
