@@ -1,0 +1,6 @@
+metric,value
+DELIVERED,1
+PENDING,2
+emails_enviados,47
+fallback_acionado,1
+warm_enviados,2

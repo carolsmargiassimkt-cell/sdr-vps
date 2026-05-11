@@ -1,0 +1,11 @@
+{
+  "date": "2026-05-08",
+  "generated_at": "2026-05-09T01:00:02+00:00",
+  "metrics": {
+    "emails_enviados": 47,
+    "warm_enviados": 2,
+    "DELIVERED": 1,
+    "PENDING": 2,
+    "fallback_acionado": 1
+  }
+}

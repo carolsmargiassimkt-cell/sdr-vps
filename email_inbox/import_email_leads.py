@@ -417,9 +417,16 @@ def main():
             text = get_body(msg)
 
             # Check if it's a lead email
-            is_lead = ("leads@leadster.com.br" in sender.lower() and "novo lead gerado" in subject.lower()) \
-                      or ("comercial@manddigital.com.br" in sender.lower() and "formulário lp" in subject.lower())
+            sender_l = sender.lower()
+            subject_l = subject.lower().strip()
 
+            is_lead = (
+                ("leads@leadster.com.br" in sender_l and "novo lead gerado" in subject_l)
+                or (
+                    "comercial@manddigital.com.br" in sender_l
+                    and subject_l in ("formulário lp", "formulario lp", "home")
+                )
+            )
             if not is_lead:
                 processed.add(mid_s); continue
 

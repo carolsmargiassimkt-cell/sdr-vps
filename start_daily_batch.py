@@ -66,10 +66,10 @@ def main():
                 skipped += 1
                 continue
             seen_deals.add(deal_id)
+            # Fase atual: não bloquear por hygiene no batch.
+            # A rota /webhooks/email-cadence ainda valida se existe email aproveitável.
             if not is_safe_deal_for_outbound(deal):
-                skipped += 1
-                log_event("EMAIL_QUEUE_SKIP", deal_id=deal_id, reason="crm_hygiene_unsafe")
-                continue
+                log_event("EMAIL_QUEUE_WARN", deal_id=deal_id, reason="crm_hygiene_unsafe_allowed")
             try:
                 response = requests.post(f"{API_URL}/webhooks/email-cadence", json={"deal_id": deal_id}, timeout=60)
                 print(f"[BATCH_ITEM] deal={deal_id} status={response.status_code} body={response.text[:300]}")

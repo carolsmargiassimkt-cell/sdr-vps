@@ -31,7 +31,7 @@ TOKEN=os.getenv("PIPEDRIVE_API_TOKEN")
 API="https://api.pipedrive.com/v1"
 
 PIPELINE_ID=7
-STAGE_PRONTO=63
+STAGE_PRONTO=52
 STAGE_TENTATIVA=STAGE_TENTATIVA_CONTATO
 
 LABEL_LEAD_TRAFEGO="193"
@@ -300,7 +300,7 @@ def get_open_deals():
     start=0
     while True:
         try:
-            r=pd("GET","/deals",params={"status":"open","start":start,"limit":100})
+            r=pd("GET","/deals",params={"status":"open","start":start,"limit":100,"sort":"add_time DESC"})
         except Exception as exc:
             print(LOG_PREFIX,"PIPEDRIVE_READ_FAIL",str(exc).split(" for url: ")[0])
             return out
@@ -597,6 +597,18 @@ def main(apply=False, send=False, limit=10):
 
         if not due_for_step(rec,next_step):
             print(LOG_PREFIX,"SKIP_AGUARDANDO",deal_id,"step",next_step)
+            continue
+
+        # Segurança: não avançar para step 2+ sem resposta real do lead.
+        # Lead frio/warm de LP recebe abertura e depois aguarda interação humana/inbound.
+        if next_step > 1 and not (
+            rec.get("lead_replied")
+            or rec.get("replied")
+            or rec.get("last_inbound_at")
+            or rec.get("last_reply_at")
+            or rec.get("responded_at")
+        ):
+            print(LOG_PREFIX, "SKIP_SEM_RESPOSTA_LEAD", deal_id, "step", next_step)
             continue
 
         msg=render_warm_message(d, origin, next_step, phone)
