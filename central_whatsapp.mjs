@@ -98,6 +98,9 @@ let reconnectTimer = null
 let connectTimeoutTimer = null
 let qrReminderTimer = null
 let currentQR = null
+let lastConnectionUpdate = null
+let lastSendStatus = null
+let lastAckStatus = null
 let reconnectAttempt = 0
 let connectionMode = 'booting'
 let needsQr = false
@@ -138,6 +141,7 @@ let processLockFd = null
 let server = null
 const inboundRetryQueue = new Map()
 const outboundMessages = new Map()
+const outboundAckWaiters = new Map()
 
 function clearReconnectTimer() {
     if (reconnectTimer) {
@@ -282,6 +286,75 @@ function updateOutboundAck({ jid, messageId, statusValue }) {
     outboundMessages.set(String(messageId), next)
     persistOutboundMessages()
     console.log('[WA_ACK_UPDATE]', `jid=${next.jid}`, `id=${messageId}`, `status=${finalStatus}`)
+    lastAckStatus = {
+        jid: next.jid,
+        message_id: String(messageId),
+        status: finalStatus,
+        updatedAt: nowIso,
+    }
+    if (ackRank(finalStatus) >= 2) {
+        resolveAckWaiters(String(messageId), next)
+    }
+}
+
+function resolveAckWaiters(messageId, row) {
+    const waiters = outboundAckWaiters.get(String(messageId)) || []
+    if (waiters.length === 0) {
+        return
+    }
+    for (const waiter of waiters) {
+        try {
+            waiter(row)
+        } catch (_error) {
+        }
+    }
+    outboundAckWaiters.delete(String(messageId))
+}
+
+function waitForOutboundAck(messageId, timeoutMs = 30000) {
+    const cleanId = String(messageId || '').trim()
+    if (!cleanId) {
+        return Promise.resolve(null)
+    }
+    const existing = outboundMessages.get(cleanId)
+    if (existing && ackRank(existing.status) >= 2) {
+        return Promise.resolve(existing)
+    }
+    return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+            const waiters = outboundAckWaiters.get(cleanId) || []
+            outboundAckWaiters.set(cleanId, waiters.filter((fn) => fn !== onAck))
+            if ((outboundAckWaiters.get(cleanId) || []).length === 0) {
+                outboundAckWaiters.delete(cleanId)
+            }
+            resolve(outboundMessages.get(cleanId) || null)
+        }, timeoutMs)
+        const onAck = (row) => {
+            if (ackRank(row?.status) < 2) {
+                return
+            }
+            clearTimeout(timer)
+            resolve(row)
+        }
+        const waiters = outboundAckWaiters.get(cleanId) || []
+        waiters.push(onAck)
+        outboundAckWaiters.set(cleanId, waiters)
+    })
+}
+
+function pendingUnconfirmedCount() {
+    let count = 0
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000
+    for (const row of outboundMessages.values()) {
+        if (ackRank(row?.status) >= 2) {
+            continue
+        }
+        const sentMs = Date.parse(row?.sentAt || '')
+        if (!Number.isFinite(sentMs) || sentMs >= cutoff) {
+            count += 1
+        }
+    }
+    return count
 }
 
 function isTestWhitelistNumber(number) {
@@ -1575,6 +1648,11 @@ async function start() {
 
         sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
             const update = { connection, lastDisconnect }
+            lastConnectionUpdate = {
+                at: new Date().toISOString(),
+                connection: connection || '',
+                statusCode: lastDisconnect?.error?.output?.statusCode || null,
+            }
             console.log('[DEBUG_CONNECTION_UPDATE]', JSON.stringify(update, null, 2))
             console.log('[DEBUG_DISCONNECT]', lastDisconnect || null)
             const statusCode = lastDisconnect?.error?.output?.statusCode
@@ -1812,9 +1890,16 @@ app.get('/status', (_req, res) => {
     res.json({
         status: global.connected === true ? 'online' : 'offline',
         connected: WA_STATE.connected === true,
+        mode: connectionMode,
         session_invalid: global.session_invalid === true,
         needs_qr: WA_STATE.needs_qr === true || Boolean(currentQR),
-        mode: connectionMode,
+        last_connection_update: lastConnectionUpdate,
+        last_send_status: lastSendStatus,
+        last_ack_status: lastAckStatus,
+        pending_unconfirmed_count: pendingUnconfirmedCount(),
+        backlog_count: backlogMessages.size,
+        inbound_retry_count: inboundRetryQueue.size,
+        user_jid: sock?.user?.id || sock?.user?.jid || '',
         reconnect_attempt: WA_STATE.reconnect_attempts,
         stable: global.connected === true && global.session_invalid !== true,
         backlog_processed: backlogProcessedOnce,
@@ -2011,6 +2096,7 @@ app.post('/send', async (req, res) => {
             console.log('[ENVIO_BLOQUEADO_LIMITE]', `limite=${dailyLimit}`, `enviados=${dailySentCount}`)
             return res.status(429).json({ status: 'warmup_limit' })
         }
+        const ackTimeoutMs = parsePositiveInt(process.env.WHATSAPP_ACK_TIMEOUT_MS || process.env.WA_ACK_TIMEOUT_MS, 30000)
         const result = await queueStealthSend(async () => {
             if (!global.connected || global.session_invalid || !sock) {
                 console.log('[ENVIO_ABORTADO_SEM_CONEXAO]')
@@ -2024,28 +2110,63 @@ app.post('/send', async (req, res) => {
             } catch (_presenceError) {
             }
             const sent = await sock.sendMessage(jid, { text })
-console.log('[ENVIO_RESULT_RAW]', jid, JSON.stringify(sent || {}))
+            console.log('[ENVIO_RESULT_RAW]', jid, JSON.stringify(sent || {}))
             if (sent?.key?.id) {
+                const immediateStatus = ackStatusName(sent?.status ?? sent?.message?.status ?? sent?.update?.status)
                 recordOutboundPending({
                     jid,
                     messageId: sent.key.id,
                     text,
-                    gatewayStatus: 'sent',
+                    gatewayStatus: immediateStatus === 'PENDING' ? 'pending_unconfirmed' : 'sent',
                     delayMs,
                 })
-                if (countTowardsDailyLimit) {
-                    resetDailyCountersIfNeeded()
-                    dailySentCount += 1
+                if (ackRank(immediateStatus) >= 2) {
+                    updateOutboundAck({ jid, messageId: sent.key.id, statusValue: sent?.status })
                 }
                 watchOutboundChat(jid)
+                console.log('[ENVIO_PENDING]', jid, `msg_id=${sent.key.id}`, `status=${immediateStatus}`)
             }
             return { sent, delayMs }
         })
         if (!result?.sent || !result.sent.key || !result.sent.key.id) {
             throw new Error('ENVIO_FALHOU')
         }
-        console.log('[ENVIO_OK_REAL]', jid, `msg_id=${result.sent.key.id}`, `delay=${result.delayMs}ms`)
-        return res.json({ status: 'sent', delay_ms: result.delayMs, message_id: result.sent.key.id })
+        const messageId = result.sent.key.id
+        const confirmed = await waitForOutboundAck(messageId, ackTimeoutMs)
+        const confirmedStatus = confirmed?.status || 'PENDING'
+        lastSendStatus = {
+            jid,
+            message_id: messageId,
+            status: ackRank(confirmedStatus) >= 2 ? 'sent' : 'pending_unconfirmed',
+            ack_status: confirmedStatus,
+            updatedAt: new Date().toISOString(),
+        }
+        if (ackRank(confirmedStatus) < 2) {
+            console.log('[ENVIO_CONFIRM_TIMEOUT]', jid, `msg_id=${messageId}`, `timeout_ms=${ackTimeoutMs}`, `status=${confirmedStatus}`)
+            return res.json({
+                status: 'pending_unconfirmed',
+                delay_ms: result.delayMs,
+                message_id: messageId,
+                ack_status: confirmedStatus,
+            })
+        }
+        if (confirmedStatus === 'SERVER_ACK') {
+            console.log('[ENVIO_ACK_SERVER]', jid, `msg_id=${messageId}`)
+        } else {
+            console.log('[ENVIO_ACK_DELIVERY]', jid, `msg_id=${messageId}`, `status=${confirmedStatus}`)
+        }
+        if (countTowardsDailyLimit) {
+            resetDailyCountersIfNeeded()
+            dailySentCount += 1
+        }
+        console.log('[ENVIO_CONFIRMED_REAL]', jid, `msg_id=${messageId}`, `ack=${confirmedStatus}`, `delay=${result.delayMs}ms`)
+        console.log('[ENVIO_OK_REAL]', jid, `msg_id=${messageId}`, `delay=${result.delayMs}ms`)
+        return res.json({
+            status: 'sent',
+            delay_ms: result.delayMs,
+            message_id: messageId,
+            ack_status: confirmedStatus,
+        })
     } catch (e) {
         console.log('[ENVIO_FALHOU]', req.body?.number || '', e.message)
         return res.status(500).json({ status: 'failed', error: e.message })

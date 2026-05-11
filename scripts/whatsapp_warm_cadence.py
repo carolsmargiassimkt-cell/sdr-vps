@@ -401,6 +401,10 @@ def sent_today(record):
     raw=str((record or {}).get("last_sent_at") or "").strip()
     return bool(raw and raw[:10] == today_key())
 
+def attempted_today(record):
+    raw=str((record or {}).get("last_attempt_at") or "").strip()
+    return bool(raw and raw[:10] == today_key())
+
 def already_sent_today(state, deal_id, phone):
     rec=state.get(str(deal_id), {}) if isinstance(state, dict) else {}
     if sent_today(rec):
@@ -527,10 +531,21 @@ def render_warm_message(deal, origin, step, phone):
 def send_wa(phone,text):
     if any(token in str(text or "") for token in ("{","}","|")):
         print(LOG_PREFIX,"SPINTAX_NOT_RENDERED_BLOCK",phone)
-        return False
-    r=requests.post("http://127.0.0.1:3000/send",json={"number":phone,"text":text},timeout=60)
+        return {"ok": False, "status": "spintax_not_rendered", "message_id": ""}
+    r=requests.post("http://127.0.0.1:3000/send",json={"number":phone,"text":text},timeout=90)
     print(LOG_PREFIX,"WA",phone,r.status_code,r.text[:160])
-    return r.ok and '"sent"' in r.text
+    try:
+        payload=r.json()
+    except Exception:
+        payload={}
+    status=str(payload.get("status") or "").strip().lower()
+    message_id=str(payload.get("message_id") or payload.get("id") or "").strip()
+    if r.ok and status == "sent":
+        return {"ok": True, "status": "sent", "message_id": message_id, "payload": payload}
+    if status == "pending_unconfirmed":
+        print("[WA_PENDING_UNCONFIRMED]", "phone=", phone, "message_id=", message_id)
+        return {"ok": False, "status": "pending_unconfirmed", "message_id": message_id, "payload": payload}
+    return {"ok": False, "status": status or f"http_{r.status_code}", "message_id": message_id, "payload": payload}
 
 def deal_has_meeting_booked(deal_id, phone, meeting_state=None):
     state=meeting_state if isinstance(meeting_state, dict) else load_meeting_state()
@@ -601,8 +616,8 @@ def process_meeting_reminders(meeting_state, *, apply=False, send=False, limit=1
             if not send:
                 print(LOG_PREFIX,"DRY_RUN_NO_MUTATION",deal_id,phone,"meeting_reminder",reminder_key)
                 continue
-            ok=send_wa(phone,msg)
-            if not ok:
+            result=send_wa(phone,msg)
+            if not result.get("ok"):
                 continue
             reminders[reminder_key]="sent"
             rec["reminders"]=reminders
@@ -716,6 +731,11 @@ def main(apply=False, send=False, limit=10):
             print("[WA_DUPLICATE_BLOCKED]", "deal_id=", deal_id, "phone=", phone, "reason=", today_reason)
             continue
 
+        if attempted_today(rec):
+            print("[WA_SKIP_ALREADY_SENT]", "deal_id=", deal_id, "phone=", phone, "last_attempt_at=", rec.get("last_attempt_at"), "reason=attempted_today")
+            print("[WA_DUPLICATE_BLOCKED]", "deal_id=", deal_id, "phone=", phone, "reason=attempted_today")
+            continue
+
         if next_step == 1:
             legacy_sent, legacy_reason = legacy_opening_sent(legacy_lead_trafego_sent, deal_id, phone)
             if legacy_sent:
@@ -770,9 +790,24 @@ def main(apply=False, send=False, limit=10):
             print("[INFLIGHT_BLOCK]", "deal_id=", deal_id, "channel=whatsapp", "reason=", inflight_reason)
             continue
         try:
-            ok=send_wa(phone,msg)
-            if not ok:
-                print(LOG_PREFIX,"FALHA_ENVIO",deal_id,phone)
+            send_result=send_wa(phone,msg)
+            if not send_result.get("ok"):
+                print(LOG_PREFIX,"FALHA_ENVIO",deal_id,phone,send_result.get("status"))
+                if send_result.get("status") == "pending_unconfirmed":
+                    pending_rec=dict(rec)
+                    pending_rec.update({
+                        "origin": origin,
+                        "phone": phone,
+                        "send_status": "pending_unconfirmed",
+                        "needs_manual_check": True,
+                        "message_id": send_result.get("message_id") or "",
+                        "last_attempt_at": now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "require_reply_before_next_step": True,
+                        "do_not_advance_without_inbound": True,
+                        "title": title,
+                    })
+                    state[deal_id]=pending_rec
+                    save_state(state)
                 continue
         finally:
             release_inflight(deal_id, "whatsapp")
@@ -786,6 +821,10 @@ def main(apply=False, send=False, limit=10):
             "last_sent_step_whatsapp": next_step,
             "last_sent_at":now().strftime("%Y-%m-%d %H:%M:%S"),
             "last_message_preview": msg[:180],
+            "message_id": send_result.get("message_id") or "",
+            "send_status": "sent_confirmed",
+            "require_reply_before_next_step": True,
+            "do_not_advance_without_inbound": True,
             "stopped": bool(next_step >= MAX_WARM_STEP),
             "title":title,
         })
