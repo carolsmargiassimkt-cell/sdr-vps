@@ -40,6 +40,9 @@ LABEL_RESPONDIDO="196"
 
 STATE_FILE=Path("/root/sdr-vps/data/whatsapp_warm_cadence.json")
 MEETING_STATE_FILE=Path("/root/sdr-vps/data/sdr_meeting_reminders.json")
+CONVERSATION_STATE_FILE=Path("/root/sdr-vps/data/whatsapp_conversation_state.json")
+SDR_STATE_FILE=Path("/root/sdr-vps/data/sdr_state.json")
+LEGACY_LEAD_TRAFEGO_SENT_FILE=Path("/root/sdr-vps/data/lead_trafego_wa_sent.json")
 BLOCKLIST_FILES=[
     Path("/root/sdr-vps/data/whatsapp_manual_blocklist.json"),
     Path("/root/sdr-vps/data/whatsapp_blocklist.json"),
@@ -220,6 +223,18 @@ def load_meeting_state():
     payload = locked_load_json(MEETING_STATE_FILE, {})
     return payload if isinstance(payload, dict) else {}
 
+def load_conversation_state():
+    payload = locked_load_json(CONVERSATION_STATE_FILE, {})
+    return payload if isinstance(payload, dict) else {}
+
+def load_sdr_state():
+    payload = locked_load_json(SDR_STATE_FILE, {})
+    return payload if isinstance(payload, dict) else {}
+
+def load_legacy_lead_trafego_sent():
+    payload = locked_load_json(LEGACY_LEAD_TRAFEGO_SENT_FILE, {})
+    return payload if isinstance(payload, (dict, list)) else {}
+
 def pd(method,path,json_body=None,params=None):
     return safe_pd_request(method, path, json_body, params) or {}
 
@@ -228,6 +243,19 @@ def phone_clean(v):
     if len(nums) in (10,11):
         nums="55"+nums
     return nums
+
+def is_valid_warm_phone(v):
+    nums=phone_clean(v)
+    if not nums or nums.startswith("0800") or len(nums) > 13:
+        return False
+    if not nums.startswith("55"):
+        return False
+    national=nums[2:]
+    if len(national) not in (10,11):
+        return False
+    if national.startswith("00") or len(set(national)) <= 2:
+        return False
+    return True
 
 def phone_variants(v):
     num=phone_clean(v)
@@ -385,6 +413,88 @@ def already_sent_today(state, deal_id, phone):
             return True, item.get("last_sent_at") or "", f"phone_sent_today:{key}"
     return False, "", ""
 
+def legacy_opening_sent(legacy_state, deal_id, phone):
+    variants=phone_variants(phone)
+    if isinstance(legacy_state, dict):
+        for key, item in legacy_state.items():
+            if str(key) == str(deal_id):
+                return True, f"legacy_deal:{key}"
+            if phone_clean(key) in variants:
+                return True, f"legacy_phone_key:{key}"
+            if isinstance(item, dict):
+                item_deal=str(item.get("deal_id") or "").strip()
+                item_phone=phone_clean(item.get("phone") or item.get("telefone") or item.get("number"))
+                if item_deal == str(deal_id) or item_phone in variants:
+                    return True, f"legacy_record:{key}"
+            elif isinstance(item, (str, int)) and phone_clean(item) in variants:
+                return True, f"legacy_value:{key}"
+    if isinstance(legacy_state, list):
+        for index, item in enumerate(legacy_state):
+            if isinstance(item, dict):
+                item_deal=str(item.get("deal_id") or "").strip()
+                item_phone=phone_clean(item.get("phone") or item.get("telefone") or item.get("number"))
+                if item_deal == str(deal_id) or item_phone in variants:
+                    return True, f"legacy_list:{index}"
+            elif phone_clean(item) in variants:
+                return True, f"legacy_list:{index}"
+    return False, ""
+
+def parse_state_datetime(value):
+    raw=str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z","+00:00")).replace(tzinfo=None)
+    except Exception:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(raw[:19], fmt)
+        except Exception:
+            pass
+    return None
+
+def record_has_inbound_marker(record, wa1_sent_at=None):
+    if not isinstance(record, dict):
+        return False
+    if record.get("lead_replied") is True or record.get("replied") is True:
+        return True
+    text=str(record.get("last_lead_reply") or record.get("last_inbound_text") or "").strip()
+    if text and text != "[MENSAGEM_SEM_TEXTO]":
+        return True
+    for field in ("last_inbound_at","last_reply_at","responded_at","inbound_at"):
+        inbound_dt=parse_state_datetime(record.get(field))
+        if not inbound_dt:
+            continue
+        if not wa1_sent_at or inbound_dt >= wa1_sent_at:
+            return True
+    return False
+
+def has_real_inbound_after_wa1(record, deal_id, phone, conversation_state=None, sdr_state=None):
+    sent_at=parse_state_datetime((record or {}).get("wa1_sent_at") or (record or {}).get("last_sent_at"))
+    if record_has_inbound_marker(record, sent_at):
+        return True
+    variants=phone_variants(phone)
+    possible_keys={f"{deal_id}:{phone}", str(deal_id)}
+    possible_keys.update({f"{deal_id}:{variant}" for variant in variants})
+    for key in possible_keys:
+        item=(conversation_state or {}).get(str(key))
+        if record_has_inbound_marker(item, sent_at):
+            return True
+    for key, item in (conversation_state or {}).items():
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("deal_id") or "").strip() not in {"", str(deal_id)}:
+            continue
+        item_phone=phone_clean(item.get("phone") or key)
+        if item_phone in variants and record_has_inbound_marker(item, sent_at):
+            return True
+    for key in [str(deal_id), *variants]:
+        item=(sdr_state or {}).get(str(key))
+        if record_has_inbound_marker(item, sent_at):
+            return True
+    return False
+
 def _rng_for(deal_id, phone, origin, step):
     seed=f"{deal_id}:{phone_clean(phone)}:{origin}:{step}:{today_key()}"
     digest=hashlib.sha256(seed.encode("utf-8")).hexdigest()
@@ -511,6 +621,9 @@ def main(apply=False, send=False, limit=10):
 
     state=load_state()
     meeting_state=load_meeting_state()
+    conversation_state=load_conversation_state()
+    sdr_state=load_sdr_state()
+    legacy_lead_trafego_sent=load_legacy_lead_trafego_sent()
     strategy_state=load_strategy_state()
     email_state=load_email_state()
     strategy_changed=False
@@ -520,6 +633,7 @@ def main(apply=False, send=False, limit=10):
     print(LOG_PREFIX,"DEALS_ALVO",len(deals))
 
     sent_count=0
+    batch_sent_phones=set()
     state_changed=False
     meeting_sent=process_meeting_reminders(meeting_state, apply=apply, send=send, limit=limit)
     if apply and send and meeting_sent:
@@ -542,12 +656,17 @@ def main(apply=False, send=False, limit=10):
             continue
         if d.get("_skip_reason")=="dup_batch":
             print(LOG_PREFIX,"SKIP_PHONE_DUP_BATCH",deal_id,phone)
+            print("[WA_DUPLICATE_BLOCKED]", "deal_id=", deal_id, "phone=", phone, "reason=phone_dup_batch")
             if apply:
                 log_event("WA_SKIP_DUP", deal_id=deal_id, phone=phone, reason="phone_dup_batch")
             continue
 
         if not phone:
             print(LOG_PREFIX,"SKIP_SEM_PHONE",deal_id,title)
+            print("[WA_INVALID_PHONE]", "deal_id=", deal_id, "phone=", phone, "reason=missing")
+            continue
+        if not is_valid_warm_phone(phone):
+            print("[WA_INVALID_PHONE]", "deal_id=", deal_id, "phone=", phone, "reason=invalid_format")
             continue
         if is_human_handoff(phone):
             print("[WA_WARM_SKIP_HUMAN_HANDOFF]", "deal_id=", deal_id, "phone=", phone)
@@ -593,6 +712,20 @@ def main(apply=False, send=False, limit=10):
         blocked_today, last_sent_at, today_reason = already_sent_today(state, deal_id, phone)
         if blocked_today:
             print("[WA_WARM_SKIP_ALREADY_SENT_TODAY]", "deal_id=", deal_id, "phone=", phone, "last_sent_at=", last_sent_at, "reason=", today_reason)
+            print("[WA_SKIP_ALREADY_SENT]", "deal_id=", deal_id, "phone=", phone, "last_sent_at=", last_sent_at, "reason=", today_reason)
+            print("[WA_DUPLICATE_BLOCKED]", "deal_id=", deal_id, "phone=", phone, "reason=", today_reason)
+            continue
+
+        if next_step == 1:
+            legacy_sent, legacy_reason = legacy_opening_sent(legacy_lead_trafego_sent, deal_id, phone)
+            if legacy_sent:
+                print("[WA_SKIP_ALREADY_SENT]", "deal_id=", deal_id, "phone=", phone, "reason=", legacy_reason)
+                print("[WA_DUPLICATE_BLOCKED]", "deal_id=", deal_id, "phone=", phone, "reason=", legacy_reason)
+                continue
+
+        clean_batch_phone=phone_clean(phone)
+        if clean_batch_phone in batch_sent_phones:
+            print("[WA_DUPLICATE_BLOCKED]", "deal_id=", deal_id, "phone=", phone, "reason=batch_sent_this_run")
             continue
 
         if not due_for_step(rec,next_step):
@@ -601,18 +734,14 @@ def main(apply=False, send=False, limit=10):
 
         # Segurança: não avançar para step 2+ sem resposta real do lead.
         # Lead frio/warm de LP recebe abertura e depois aguarda interação humana/inbound.
-        if next_step > 1 and not (
-            rec.get("lead_replied")
-            or rec.get("replied")
-            or rec.get("last_inbound_at")
-            or rec.get("last_reply_at")
-            or rec.get("responded_at")
-        ):
+        if next_step > 1 and not has_real_inbound_after_wa1(rec, deal_id, phone, conversation_state, sdr_state):
+            print("[WA_BLOCK_NO_REPLY]", "deal_id=", deal_id, "phone=", phone, "step=", next_step)
             print(LOG_PREFIX, "SKIP_SEM_RESPOSTA_LEAD", deal_id, "step", next_step)
             continue
 
         msg=render_warm_message(d, origin, next_step, phone)
         print(LOG_PREFIX,"ALVO",deal_id,"origem",origin,"step",next_step,title,"phone",phone)
+        print("[WA_TARGET]", "deal_id=", deal_id, "phone=", phone, "origin=", origin, "step=", next_step, "dry_run=", not (apply and send))
         if apply:
             log_event("WA_TARGET", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
 
@@ -680,6 +809,7 @@ def main(apply=False, send=False, limit=10):
             "content":f"[WA_CADENCE_{origin.upper()}_STEP_{next_step}] WhatsApp etapa {next_step}/{MAX_WARM_STEP} enviada."
         })
         log_event("WA_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
+        print("[WA_SENT]", "deal_id=", deal_id, "phone=", phone, "origin=", origin, "step=", next_step)
         mark_warm(strategy_state, deal_id, phone, reason=f"{origin}_sent_step_{next_step}")
         strategy_changed=True
         log_event("WA_WARM_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
@@ -693,6 +823,7 @@ def main(apply=False, send=False, limit=10):
         if strategy_changed:
             save_strategy_state(strategy_state)
         sent_count += 1
+        batch_sent_phones.add(phone_clean(phone))
         time.sleep(8)
 
         if sent_count >= limit:

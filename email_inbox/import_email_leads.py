@@ -1,4 +1,5 @@
 import os, re, imaplib, email, requests, time, json, sys
+import unicodedata
 from pathlib import Path
 from email.header import decode_header
 try:
@@ -47,11 +48,38 @@ def is_blocked_test_email(value):
 
 def normalize_phone(phone):
     digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
-    if digits.startswith("55") and len(digits) >= 12:
-        return digits
-    if len(digits) in (10, 11):
-        return "55" + digits
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if digits.startswith("0800") or len(digits) > 13:
+        return ""
+    if digits.startswith("55") and len(digits) in (12, 13):
+        national = digits[2:]
+        if len(national) not in (10, 11):
+            return ""
+        digits = "55" + national
+    elif len(digits) in (10, 11):
+        digits = "55" + digits
+    else:
+        return ""
+    national = digits[2:]
+    ddd = national[:2]
+    if ddd == "00" or len(set(national)) <= 2:
+        return ""
     return digits
+
+def normalize_text_token(value):
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+def is_allowed_lead_email(sender, subject):
+    sender_l = str(sender or "").lower()
+    subject_n = normalize_text_token(subject)
+    if "leads@leadster.com.br" in sender_l and "novo lead gerado" in subject_n:
+        return True
+    if "comercial@manddigital.com.br" in sender_l and subject_n in {"formulario lp", "home"}:
+        return True
+    return False
 
 def is_valid_org_name(name):
     if not name: return False
@@ -95,12 +123,22 @@ def get_body(msg):
     return ""
 
 def clean_html_content(t):
-    t = re.sub(r"<br\s*/?>", "\n", t, flags=re.I)
+    t = re.sub(r"<br\s*/?>", "\n", str(t or ""), flags=re.I)
+    t = re.sub(r"</(?:p|div|tr|li|table|section|article|h\d)>", "\n", t, flags=re.I)
     t = re.sub(r"<[^>]+>", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
 
 def extract_field(text, names):
+    clean_names = {normalize_text_token(n) for n in names}
+    field_names = "Nome|Name|Email|E-mail|Telefone|Phone|WhatsApp|Whatsapp|Celular|Empresa|Company|Mensagem|Message|Data|Horário|Horario|Demanda|Organização|Organizacao"
+    for line in re.split(r"[\r\n]+", str(text or "")):
+        clean_line = clean_html_content(line)
+        if not clean_line or len(clean_line) > 500:
+            continue
+        m_line = re.match(rf"^\s*({field_names})\s*[:\-]\s*(.+?)\s*$", clean_line, flags=re.I)
+        if m_line and normalize_text_token(m_line.group(1)) in clean_names:
+            return clean_html_content(m_line.group(2)).strip()
     for n in names:
         # Match field name followed by : or - and capture until next field or end of line
         m = re.search(rf"{n}\s*[:\-]\s*(.+?)(?=\s+(?:Nome|Name|Email|E-mail|Telefone|Phone|WhatsApp|Empresa|Company|Mensagem|Message|Data|Horário|Horario|Demanda)\s*[:\-]|$)", text, re.I)
@@ -109,14 +147,28 @@ def extract_field(text, names):
             return val.strip()
     return ""
 
+def extract_explicit_phone(raw_text, clean_text):
+    for source in (raw_text, clean_text):
+        value = extract_field(source, ["telefone", "phone", "whatsapp", "celular"])
+        if value:
+            phone = normalize_phone(value)
+            if phone:
+                return phone
+            for candidate in re.findall(r'(?:\+?55\s*)?\(?\d{2}\)?\s*\d{4,5}[-\s]?\d{4}', value):
+                phone = normalize_phone(candidate)
+                if phone:
+                    return phone
+            print("[LEAD_INVALID_PHONE_FIELD]", str(value)[:120])
+    return ""
+
 def extract_lead_info(text, sender_email):
     # Prepare text by converting <br> to \n for better field extraction
-    clean_text = text.replace("<br>", "\n").replace("<br/>", "\n")
-    clean_text = clean_html_content(clean_text)
+    raw_text = str(text or "").replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+    clean_text = clean_html_content(raw_text)
     
-    nome = extract_field(clean_text, ["nome", "name"])
-    email_val = extract_field(clean_text, ["email", "e-mail"])
-    phone = extract_field(clean_text, ["telefone", "phone", "whatsapp", "celular"])
+    nome = extract_field(raw_text, ["nome", "name"])
+    email_val = extract_field(raw_text, ["email", "e-mail"])
+    phone = extract_explicit_phone(raw_text, clean_text)
     empresa = extract_field(clean_text, ["empresa", "company", "loja", "organização", "organizacao"])
     demanda = extract_field(clean_text, ["mensagem", "message", "demanda"])
 
@@ -125,10 +177,6 @@ def extract_lead_info(text, sender_email):
         found_emails = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', clean_text + " " + sender_email)
         email_val = next((x for x in found_emails if not any(b in x.lower() for b in ["leadster", "manddigital"])), "")
     
-    if not phone:
-        found_phones = re.findall(r'(?:\+?55)?\s?\(?\d{2}\)?\s?\d{4,5}[-\s]?\d{4}', clean_text)
-        phone = found_phones[0] if found_phones else ""
-
     if not nome and email_val:
         nome = email_val.split("@")[0].replace(".", " ").replace("_", " ").title()
 
@@ -136,7 +184,7 @@ def extract_lead_info(text, sender_email):
         "nome": (nome or "Lead sem nome").strip()[:100],
         "empresa": clean_org_name(empresa),
         "email": email_val.lower().strip(),
-        "phone": normalize_phone(phone),
+        "phone": phone,
         "demanda": demanda.strip(),
         "texto_completo": clean_text[:3000]
     }
@@ -197,92 +245,45 @@ def trigger_warm_whatsapp(deal_id, phone, name, demand, person_id=0, org_id=0):
     if not phone or len(phone) < 10:
         print("[WA_WARM_TRIGGER_SKIP] Invalid phone:", phone)
         return False
-    
-    # Contextual message logic
-    demand_lower = demand.lower()
-    if "totem" in demand_lower:
-        msg = f"Oi {name}, tudo bem? Aqui é a Carol da Mand Digital. 😊\n\nVi que você perguntou sobre a solução de totem digital para captação de leads. Posso te explicar como funciona e sobre a impressão do canhoto de sorteio?"
-    elif len(demand) > 10:
-        # Contextual but generic
-        context = demand[:60] + "..." if len(demand) > 60 else demand
-        msg = f"Oi {name}, tudo bem? Aqui é a Carol da Mand Digital. 😊\n\nRecebi seu contato sobre '{context}'. Como posso te ajudar com isso hoje?"
-    else:
-        # Generic Warm
-        msg = f"Oi {name}, tudo bem? Aqui é a Carol da Mand Digital. 😊\n\nVi seu interesse em nossas soluções e gostaria de entender melhor seu projeto. Podemos falar?"
-
-    try:
-        # Use WhatsApp Gateway
-        r = requests.post("http://127.0.0.1:3000/send", json={
-            "number": phone,
-            "text": msg
-        }, timeout=30)
-        
-        if r.status_code == 200 and '"sent"' in r.text.lower():
-            try:
-                payload = r.json()
-            except Exception:
-                payload = {}
-            message_id = str(payload.get("message_id") or payload.get("id") or "").strip()
-            print("[WA_WARM_TRIGGER_OK]", deal_id, phone)
-            # Update state for whatsapp_warm_cadence.py
-            update_wa_state(deal_id, phone, name, msg)
-            if message_id:
-                note_payload = {
-                    "deal_id": int(deal_id),
-                    "content": (
-                        "[WA_WARM_SENT_PENDING_ACK]<br>"
-                        f"phone={phone}<br>"
-                        f"message_id={message_id}<br>"
-                        f"texto={msg.replace(chr(10), '<br>')}"
-                    )
-                }
-                if int(person_id or 0):
-                    note_payload["person_id"] = int(person_id or 0)
-                if int(org_id or 0):
-                    note_payload["org_id"] = int(org_id or 0)
-                pd_api("POST", "/notes", note_payload)
-                add_wa_warm_delivery_watch(
-                    deal_id=deal_id,
-                    person_id=person_id,
-                    org_id=org_id,
-                    phone=phone,
-                    message_id=message_id,
-                    text=msg,
-                    source="leadster_import",
-                )
-            else:
-                print("[WA_WARM_TRIGGER_NO_MESSAGE_ID]", deal_id, phone)
-            return True
-        else:
-            print("[WA_WARM_TRIGGER_FAIL]", deal_id, r.status_code, r.text[:100])
-    except Exception as e:
-        print("[WA_WARM_TRIGGER_ERR]", deal_id, str(e))
-    
-    return False
+    update_wa_state(deal_id, phone, name, "")
+    note_payload = {
+        "deal_id": int(deal_id),
+        "content": "[WA_WARM_QUEUED] Lead de LP/Leadster elegivel para abertura WhatsApp warm. Envio oficial: scripts/whatsapp_warm_cadence.py.",
+    }
+    if int(person_id or 0):
+        note_payload["person_id"] = int(person_id or 0)
+    if int(org_id or 0):
+        note_payload["org_id"] = int(org_id or 0)
+    pd_api("POST", "/notes", note_payload)
+    print("[WA_WARM_QUEUED]", deal_id, phone)
+    return True
 
 def update_wa_state(deal_id, phone, name, msg):
     if is_dry_run_mode():
         print("[DRY_RUN_SKIP_WRITE] action=update_wa_state deal_id=", deal_id, "phone=", phone)
         return
     try:
-        state = {}
-        if WA_STATE_FILE.exists():
-            try:
-                state = json.loads(WA_STATE_FILE.read_text())
-            except:
-                state = {}
+        state = locked_load_json(WA_STATE_FILE, {})
+        if not isinstance(state, dict):
+            state = {}
         
+        previous = state.get(str(deal_id)) if isinstance(state.get(str(deal_id)), dict) else {}
+        if int(previous.get("step") or 0) > 0 or previous.get("wa1_sent"):
+            print("[WA_STATE_KEEP_EXISTING]", deal_id, phone, "step", previous.get("step"))
+            return
         state[str(deal_id)] = {
-            "step": 1,
-            "last_sent_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "step": 0,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "phone": phone,
             "name": name,
             "origin": "trafego",
             "last_message_preview": msg[:100],
-            "wa1_sent": True,
-            "last_sent_step_whatsapp": 1
+            "wa1_sent": False,
+            "last_sent_step_whatsapp": 0,
+            "lead_replied": False,
+            "replied": False
         }
-        WA_STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False))
+        locked_save_json(WA_STATE_FILE, state)
     except Exception as e:
         print("[WA_STATE_UPDATE_ERR]", str(e))
 
@@ -297,6 +298,21 @@ def find_open_deal(person_id):
     except:
         pass
     return None
+
+def search_person_by_term(term):
+    clean = str(term or "").strip()
+    if not clean:
+        return None
+    try:
+        items = pd_api("GET", "/persons/search", params={"term": clean, "exact_match": True}).get("data", {}).get("items", [])
+        if items:
+            return items[0]["item"]
+    except Exception as exc:
+        print("[PERSON_SEARCH_ERROR]", clean, str(exc))
+    return None
+
+def find_existing_person(email_value, phone_value):
+    return search_person_by_term(email_value) or search_person_by_term(phone_value)
 
 def process_lead(lead, subject, mid_s=None):
     print("[LEAD_PARSE_OK]", lead["email"] or lead["phone"], lead["nome"], lead["empresa"])
@@ -315,12 +331,8 @@ def process_lead(lead, subject, mid_s=None):
     org_id = get_or_create_org(lead["empresa"])
 
     # Person Handling
-    existing_person = None
+    existing_person = find_existing_person(lead["email"], lead["phone"])
     term = lead["email"] or lead["phone"]
-    if term:
-        search_res = pd_api("GET", "/persons/search", params={"term": term, "exact_match": True}).get("data", {}).get("items", [])
-        if search_res:
-            existing_person = search_res[0]["item"]
 
     if existing_person:
         person_id = existing_person["id"]
@@ -329,12 +341,13 @@ def process_lead(lead, subject, mid_s=None):
         if org_id and not existing_person.get("organization"):
                 pd_api("PUT", f"/persons/{person_id}", {"org_id": org_id})
     else:
-        person_id = pd_api("POST", "/persons", {
+        person_payload = {
             "name": lead["nome"],
             "org_id": org_id,
             "email": [{"value": lead["email"], "primary": True}] if lead["email"] else [],
             "phone": [{"value": lead["phone"], "primary": True}] if lead["phone"] else []
-        })["data"]["id"]
+        }
+        person_id = pd_api("POST", "/persons", person_payload)["data"]["id"]
         print("[PERSON_CREATE_OK]", person_id, lead["nome"])
 
     # Deal Handling
@@ -416,18 +429,8 @@ def main():
             subject = hdr(msg.get("Subject"))
             text = get_body(msg)
 
-            # Check if it's a lead email
-            sender_l = sender.lower()
-            subject_l = subject.lower().strip()
-
-            is_lead = (
-                ("leads@leadster.com.br" in sender_l and "novo lead gerado" in subject_l)
-                or (
-                    "comercial@manddigital.com.br" in sender_l
-                    and subject_l in ("formulário lp", "formulario lp", "home")
-                )
-            )
-            if not is_lead:
+            if not is_allowed_lead_email(sender, subject):
+                print("[EMAIL_RUIDO]", sender, subject)
                 processed.add(mid_s); continue
 
             lead = extract_lead_info(text, sender)
