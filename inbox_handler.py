@@ -3951,6 +3951,21 @@ def inbox():
         if not is_brazil_business_hours():
             print(f"[INBOUND_FORA_HORARIO_BR] telefone={phone}")
             try:
+                import requests
+                msg = FORA_HORARIO_MENSAGEM
+                rr = requests.post(
+                    "http://127.0.0.1:3000/send",
+                    json={"number": phone, "text": msg},
+                    timeout=90,
+                )
+                try:
+                    body = rr.json()
+                except Exception:
+                    body = {"raw": rr.text}
+                print(f"[FORA_HORARIO_FORCE_SEND] telefone={phone} code={rr.status_code} body={body}")
+            except Exception as e:
+                print(f"[FORA_HORARIO_FORCE_SEND_ERROR] telefone={phone} erro={e}")
+            try:
                 result = handle_fora_do_horario(phone, lead_state)
                 print(f"[FORA_HORARIO_HANDLE_RESULT] telefone={phone} result={result}")
             except Exception as e:
