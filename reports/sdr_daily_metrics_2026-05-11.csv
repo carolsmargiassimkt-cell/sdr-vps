@@ -1,0 +1,6 @@
+metric,value
+DELIVERED,6
+PENDING,17
+SERVER_ACK,1
+emails_enviados,95
+warm_enviados,23

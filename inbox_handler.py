@@ -3950,6 +3950,26 @@ def inbox():
 
         if not is_brazil_business_hours():
             print(f"[INBOUND_FORA_HORARIO_BR] telefone={phone}")
+            try:
+                result = handle_fora_do_horario(phone, lead_state)
+                print(f"[FORA_HORARIO_HANDLE_RESULT] telefone={phone} result={result}")
+            except Exception as e:
+                print(f"[FORA_HORARIO_HANDLER_ERROR] telefone={phone} erro={e}")
+                result = None
+
+            if not result or not result.get("notice_sent"):
+                try:
+                    import requests
+                    msg = FORA_HORARIO_MENSAGEM
+                    rr = requests.post(
+                        "http://127.0.0.1:3000/send",
+                        json={"number": phone, "text": msg},
+                        timeout=90,
+                    )
+                    body = rr.json() if rr.text else {}
+                    print(f"[FORA_HORARIO_DIRECT_SEND] telefone={phone} code={rr.status_code} body={body}")
+                except Exception as e:
+                    print(f"[FORA_HORARIO_DIRECT_SEND_ERROR] telefone={phone} erro={e}")
 
         if not is_phone_allowed_for_auto_reply(phone) and not is_test_whitelist_phone(phone):
             print(f"[INBOX_SEND_BLOCKED_NON_WHITELIST] telefone={phone} reason=not_active_lead")
