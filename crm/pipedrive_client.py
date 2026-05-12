@@ -172,11 +172,13 @@ class PipedriveClient:
         params: Dict[str, Any],
         json: Optional[Dict[str, Any]],
     ):
+        method_upper = method.upper()
+        is_post = method_upper == "POST"
         for attempt in range(1, self.REQUEST_RETRIES + 1):
             response = None
             try:
                 response = requests.request(
-                    method.upper(),
+                    method_upper,
                     url,
                     params=params,
                     json=json,
@@ -186,23 +188,43 @@ class PipedriveClient:
                 self.last_http_status = 0
                 self.last_http_body = str(exc)
                 self.logger.warning(
-                    f"[PIPEDRIVE_RETRY] metodo={method.upper()} endpoint={endpoint} "
+                    f"[PIPEDRIVE_RETRY] metodo={method_upper} endpoint={endpoint} "
                     f"status=0 tentativa={attempt}/{self.REQUEST_RETRIES} motivo={exc.__class__.__name__} "
                     f"timeout={float(self.REQUEST_TIMEOUT_SEC or 10):.0f}s"
                 )
+                if is_post:
+                    self.logger.warning(
+                        f"[PIPEDRIVE_POST_NO_RETRY] metodo={method_upper} endpoint={endpoint} status=0 motivo={exc.__class__.__name__}"
+                    )
+                    return None
                 if attempt >= self.REQUEST_RETRIES:
+                    self.logger.warning(
+                        f"[PIPEDRIVE_RETRY_EXHAUSTED] metodo={method_upper} endpoint={endpoint} status=0"
+                    )
                     return None
                 delay = self.REQUEST_RETRY_DELAYS_SEC[min(attempt - 1, len(self.REQUEST_RETRY_DELAYS_SEC) - 1)]
+                self.logger.warning(f"[PIPEDRIVE_SAFE_RETRY] metodo={method_upper} endpoint={endpoint} status=0")
+                self.logger.warning(f"[PIPEDRIVE_BACKOFF] metodo={method_upper} endpoint={endpoint} seconds={delay}")
                 time.sleep(delay)
                 continue
             except Exception as exc:
+                if is_post:
+                    self.logger.warning(
+                        f"[PIPEDRIVE_POST_NO_RETRY] metodo={method_upper} endpoint={endpoint} status=0 motivo={exc.__class__.__name__}"
+                    )
+                    raise
                 if attempt >= self.REQUEST_RETRIES:
+                    self.logger.warning(
+                        f"[PIPEDRIVE_RETRY_EXHAUSTED] metodo={method_upper} endpoint={endpoint} status=0"
+                    )
                     raise
                 self.logger.warning(
-                    f"[PIPEDRIVE_RETRY] metodo={method.upper()} endpoint={endpoint} "
+                    f"[PIPEDRIVE_RETRY] metodo={method_upper} endpoint={endpoint} "
                     f"status=0 tentativa={attempt}/{self.REQUEST_RETRIES} motivo={exc.__class__.__name__}"
                 )
                 delay = self.REQUEST_RETRY_DELAYS_SEC[min(attempt - 1, len(self.REQUEST_RETRY_DELAYS_SEC) - 1)]
+                self.logger.warning(f"[PIPEDRIVE_SAFE_RETRY] metodo={method_upper} endpoint={endpoint} status=0")
+                self.logger.warning(f"[PIPEDRIVE_BACKOFF] metodo={method_upper} endpoint={endpoint} seconds={delay}")
                 time.sleep(delay)
                 continue
             response_status = int(getattr(response, "status_code", 0) or 0)
@@ -211,27 +233,47 @@ class PipedriveClient:
             self.last_http_body = response_body
             if self._is_transient_http_status(response_status):
                 self.logger.warning(
-                    f"[PIPEDRIVE_RETRY] metodo={method.upper()} endpoint={endpoint} "
+                    f"[PIPEDRIVE_RETRY] metodo={method_upper} endpoint={endpoint} "
                     f"status={response_status} tentativa={attempt}/{self.REQUEST_RETRIES} motivo=http_{response_status}"
                 )
+                retry_after = self._header_int(getattr(response, "headers", {}) or {}, "retry-after")
+                if is_post and not (response_status == 429 and retry_after > 0):
+                    self.logger.warning(
+                        f"[PIPEDRIVE_POST_NO_RETRY] metodo={method_upper} endpoint={endpoint} status={response_status}"
+                    )
+                    return response
                 if attempt >= self.REQUEST_RETRIES:
+                    self.logger.warning(
+                        f"[PIPEDRIVE_RETRY_EXHAUSTED] metodo={method_upper} endpoint={endpoint} status={response_status}"
+                    )
                     return response
                 
                 delay = self.REQUEST_RETRY_DELAYS_SEC[min(attempt - 1, len(self.REQUEST_RETRY_DELAYS_SEC) - 1)]
                 if response_status == 429:
                     cooldown = self._rate_limit_cooldown_for_response(response)
                     delay = max(delay, cooldown)
-                
+                self.logger.warning(f"[PIPEDRIVE_SAFE_RETRY] metodo={method_upper} endpoint={endpoint} status={response_status}")
+                self.logger.warning(f"[PIPEDRIVE_BACKOFF] metodo={method_upper} endpoint={endpoint} seconds={delay}")
                 time.sleep(delay)
                 continue
             if self._response_looks_like_html(response):
                 self.logger.warning(
-                    f"[PIPEDRIVE_RETRY] metodo={method.upper()} endpoint={endpoint} "
+                    f"[PIPEDRIVE_RETRY] metodo={method_upper} endpoint={endpoint} "
                     f"status={response_status} tentativa={attempt}/{self.REQUEST_RETRIES} motivo=html_unexpected"
                 )
+                if is_post:
+                    self.logger.warning(
+                        f"[PIPEDRIVE_POST_NO_RETRY] metodo={method_upper} endpoint={endpoint} status={response_status} motivo=html_unexpected"
+                    )
+                    return response
                 if attempt >= self.REQUEST_RETRIES:
+                    self.logger.warning(
+                        f"[PIPEDRIVE_RETRY_EXHAUSTED] metodo={method_upper} endpoint={endpoint} status={response_status}"
+                    )
                     return response
                 delay = self.REQUEST_RETRY_DELAYS_SEC[min(attempt - 1, len(self.REQUEST_RETRY_DELAYS_SEC) - 1)]
+                self.logger.warning(f"[PIPEDRIVE_SAFE_RETRY] metodo={method_upper} endpoint={endpoint} status={response_status}")
+                self.logger.warning(f"[PIPEDRIVE_BACKOFF] metodo={method_upper} endpoint={endpoint} seconds={delay}")
                 time.sleep(delay)
                 continue
             return response

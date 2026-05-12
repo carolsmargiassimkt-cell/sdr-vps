@@ -1,9 +1,10 @@
 from core.stage_router import resolve_pipeline_stage
-import os, re, json, time, requests
+import os, re, json, time, hashlib, tempfile, requests
 from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from core.sdr_state import STAGE_TENTATIVA_CONTATO, log_event, update_deal_state
+from core.wa_strategy_state import load_strategy_state, mark_warm, save_strategy_state
 
 load_dotenv("/root/sdr-vps/.env")
 
@@ -19,6 +20,10 @@ LABEL_WARM_WHATSAPP="226"
 LABEL_RESPONDIDO="196"
 
 STATE_FILE=Path("/root/sdr-vps/data/whatsapp_warm_cadence.json")
+RUNTIME_DIR=Path("/root/sdr-vps/runtime")
+LOCK_FILE=RUNTIME_DIR / "whatsapp_warm_cadence.lock"
+LOCK_TIMEOUT_SECONDS=int(os.getenv("WA_WARM_LOCK_TIMEOUT_SECONDS","1800") or "1800")
+PENDING_RECONCILE_MINUTES=int(os.getenv("WA_PENDING_RECONCILE_MINUTES","15") or "15")
 BLOCKLIST_FILES=[
     Path("/root/sdr-vps/data/whatsapp_manual_blocklist.json"),
     Path("/root/sdr-vps/data/whatsapp_blocklist.json"),
@@ -119,19 +124,101 @@ def is_brazil_business_hours():
 def now():
     return datetime.now()
 
+def parse_datetime(value):
+    raw=str(value or "").strip()
+    if not raw:
+        return None
+    normalized=raw.replace("T"," ")
+    for candidate in (raw, normalized):
+        try:
+            return datetime.fromisoformat(candidate)
+        except Exception:
+            pass
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f","%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(normalized,fmt)
+        except Exception:
+            pass
+    return None
+
+def acquire_warm_lock():
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        import fcntl
+    except Exception as exc:
+        print("[WA_WARM_LOCK_BUSY]", "flock_unavailable", str(exc))
+        return None
+    fd=os.open(str(LOCK_FILE), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        try:
+            existing=os.read(fd, 4096).decode("utf-8", errors="ignore")
+            payload=json.loads(existing) if existing.strip() else {}
+        except Exception:
+            payload={}
+        ts=parse_datetime(payload.get("timestamp")) if isinstance(payload, dict) else None
+        if ts and (now() - ts).total_seconds() > LOCK_TIMEOUT_SECONDS:
+            print("[WA_WARM_LOCK_STALE]", "pid", payload.get("pid"), "timestamp", payload.get("timestamp"))
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, json.dumps({"pid": os.getpid(), "timestamp": now().isoformat(timespec="seconds")}).encode("utf-8"))
+        os.fsync(fd)
+        print("[WA_WARM_LOCK_ACQUIRE]", str(LOCK_FILE), "pid", os.getpid())
+        return fd
+    except BlockingIOError:
+        print("[WA_WARM_LOCK_BUSY]", str(LOCK_FILE))
+        os.close(fd)
+        return None
+    except Exception:
+        os.close(fd)
+        raise
+
+def release_warm_lock(fd):
+    if fd is None:
+        return
+    try:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+    print("[WA_WARM_LOCK_RELEASE]", str(LOCK_FILE), "pid", os.getpid())
+
 def load_state():
     if STATE_FILE.exists():
         return json.loads(STATE_FILE.read_text())
     return {}
 
 def save_state(state):
-    STATE_FILE.parent.mkdir(exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd,tmp=tempfile.mkstemp(prefix=STATE_FILE.name + ".", suffix=".tmp", dir=str(STATE_FILE.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, ensure_ascii=False, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, STATE_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 def pd(method,path,json_body=None,params=None):
     params=params or {}
     params["api_token"]=TOKEN
-    r=requests.request(method, API+path, params=params, json=json_body, timeout=30)
+    for attempt in range(4):
+        r=requests.request(method, API+path, params=params, json=json_body, timeout=30)
+        if r.status_code not in {429,500,502,503,504}:
+            r.raise_for_status()
+            return r.json()
+        wait_header=r.headers.get("Retry-After")
+        try:
+            wait=float(wait_header) if wait_header else min(8, 2 ** attempt)
+        except Exception:
+            wait=min(8, 2 ** attempt)
+        wait += min(0.5, 0.1 * attempt)
+        print("[PIPEDRIVE_RETRY]", method, path, "status", r.status_code, "attempt", attempt + 1)
+        print("[PIPEDRIVE_BACKOFF]", "seconds", wait)
+        time.sleep(wait)
+    print("[PIPEDRIVE_RETRY_EXHAUSTED]", method, path, "status", r.status_code)
     r.raise_for_status()
     return r.json()
 
@@ -274,20 +361,42 @@ def due_for_step(record, next_step):
     last=record.get("last_sent_at")
     if not last:
         return True
-    last_dt=datetime.strptime(last,"%Y-%m-%d %H:%M:%S")
+    last_dt=parse_datetime(last)
+    if not last_dt:
+        return False
     return now() >= last_dt + timedelta(days=INTERVALS_DAYS.get(next_step, 99))
 
 def send_wa(phone,text):
     r=requests.post("http://127.0.0.1:3000/send",json={"number":phone,"text":text},timeout=60)
     print(LOG_PREFIX,"WA",phone,r.status_code,r.text[:160])
-    return r.ok and '"sent"' in r.text
+    try:
+        payload=r.json()
+    except Exception:
+        payload={}
+    return {
+        "ok": bool(r.ok and payload.get("status") == "sent"),
+        "message_id": str(payload.get("message_id") or payload.get("id") or ""),
+        "provider_status": str(payload.get("provider_status") or payload.get("status") or ""),
+        "payload": payload,
+    }
 
 def main(apply=False, send=False, limit=10):
+    lock_fd=acquire_warm_lock()
+    if lock_fd is None:
+        return
+    try:
+        _main_locked(apply=apply, send=send, limit=limit)
+    finally:
+        release_warm_lock(lock_fd)
+
+def _main_locked(apply=False, send=False, limit=10):
     if not is_brazil_business_hours():
         print(LOG_PREFIX, "FORA_HORARIO_COMERCIAL_BR")
         return
 
+    dry_run=not (apply and send)
     state=load_state()
+    strategy_state=load_strategy_state()
     deals=get_open_deals()
     blocked=load_blocklist()
     stopped_index=state.get("stopped") if isinstance(state.get("stopped"), dict) else {}
@@ -302,11 +411,13 @@ def main(apply=False, send=False, limit=10):
 
         if d.get("_skip_reason")=="blocklist":
             print(LOG_PREFIX,"SKIP_BLOCKLIST",deal_id,phone)
-            log_event("WA_SKIP_BLOCKLIST", deal_id=deal_id, phone=phone)
+            if not dry_run:
+                log_event("WA_SKIP_BLOCKLIST", deal_id=deal_id, phone=phone)
             continue
         if d.get("_skip_reason")=="dup_batch":
             print(LOG_PREFIX,"SKIP_PHONE_DUP_BATCH",deal_id,phone)
-            log_event("WA_SKIP_DUP", deal_id=deal_id, phone=phone, reason="phone_dup_batch")
+            if not dry_run:
+                log_event("WA_SKIP_DUP", deal_id=deal_id, phone=phone, reason="phone_dup_batch")
             continue
 
         if not phone:
@@ -317,11 +428,21 @@ def main(apply=False, send=False, limit=10):
         if deal_id in stopped_index or f"phone:{phone}" in stopped_index:
             reason=(stopped_index.get(deal_id) or stopped_index.get(f"phone:{phone}") or {}).get("reason")
             print(LOG_PREFIX,"WA_STOPPED",deal_id,phone,reason or "stopped_index")
-            log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason=reason or "stopped_index")
+            if not dry_run:
+                log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason=reason or "stopped_index")
             continue
         if rec.get("stopped"):
             print(LOG_PREFIX,"WA_STOPPED",deal_id,phone)
-            log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason="state_stopped")
+            if not dry_run:
+                log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason="state_stopped")
+            continue
+        if rec.get("status") == "pending_send":
+            pending_dt=parse_datetime(rec.get("pending_send_at"))
+            age_minutes=((now() - pending_dt).total_seconds() / 60) if pending_dt else 999999
+            if age_minutes >= PENDING_RECONCILE_MINUTES:
+                print("[WA_PENDING_RECONCILE_REQUIRED]", deal_id, phone, "age_minutes", int(age_minutes))
+            else:
+                print(LOG_PREFIX,"SKIP_PENDING_SEND_RECENT",deal_id,phone,"age_minutes",int(age_minutes))
             continue
         current_step=int(rec.get("step") or 0)
         next_step=current_step+1
@@ -329,6 +450,9 @@ def main(apply=False, send=False, limit=10):
         labs=labels_of(d)
         origin="trafego" if LABEL_LEAD_TRAFEGO in labs else "warm"
         msgs=MSG_TRAFEGO if origin=="trafego" else MSG_WARM
+        if not dry_run:
+            mark_warm(strategy_state, deal_id, phone, reason=f"{origin}_target")
+            log_event("WA_WARM_TRIGGER", deal_id=deal_id, phone=phone, origin=origin)
 
         if next_step > 6:
             print(LOG_PREFIX,"SKIP_FINALIZADO",deal_id,title)
@@ -339,17 +463,31 @@ def main(apply=False, send=False, limit=10):
             continue
 
         print(LOG_PREFIX,"ALVO",deal_id,"origem",origin,"step",next_step,title,"phone",phone)
-        log_event("WA_TARGET", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
+        if not dry_run:
+            log_event("WA_TARGET", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
 
-        if not apply:
+        if dry_run:
+            print("[DRY_RUN_SKIP_WRITE]", deal_id, phone, "step", next_step)
             continue
 
-        if not send:
-            print(LOG_PREFIX,"DRY_RUN_NO_MUTATION",deal_id,phone,"step",next_step)
-            continue
+        message_text=msgs[next_step]
+        message_hash=hashlib.sha1(message_text.encode("utf-8")).hexdigest()
+        state[deal_id]={
+            "origin":origin,
+            "phone":phone,
+            "step":current_step,
+            "status":"pending_send",
+            "pending_send_at":now().strftime("%Y-%m-%d %H:%M:%S"),
+            "pending_message_hash":message_hash,
+            "pending_phone":phone,
+            "pending_step":next_step,
+            "title":title,
+        }
+        save_state(state)
+        print("[WA_PENDING_SEND_SET]", deal_id, phone, "step", next_step)
 
-        ok=send_wa(phone,msgs[next_step])
-        if not ok:
+        result=send_wa(phone,message_text)
+        if not result.get("ok"):
             print(LOG_PREFIX,"FALHA_ENVIO",deal_id,phone)
             continue
 
@@ -357,11 +495,17 @@ def main(apply=False, send=False, limit=10):
             "origin":origin,
             "phone":phone,
             "step":next_step,
+            "status":"sent",
             "wa1_sent": bool(next_step == 1 or rec.get("wa1_sent")),
             "last_sent_step_whatsapp": next_step,
             "last_sent_at":now().strftime("%Y-%m-%d %H:%M:%S"),
+            "sent_at":now().strftime("%Y-%m-%d %H:%M:%S"),
+            "message_id":result.get("message_id") or "",
+            "provider_status":result.get("provider_status") or "",
             "title":title,
         }
+        save_state(state)
+        print("[WA_PENDING_SEND_CONFIRMED]", deal_id, phone, "step", next_step)
         update_deal_state(
             deal_id,
             phone=phone,
@@ -377,11 +521,13 @@ def main(apply=False, send=False, limit=10):
             "content":f"[WA_CADENCE_{origin.upper()}_STEP_{next_step}] WhatsApp etapa {next_step}/6 enviada."
         })
         log_event("WA_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
+        mark_warm(strategy_state, deal_id, phone, reason=f"{origin}_sent_step_{next_step}")
+        log_event("WA_WARM_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
 
         if int(d.get("stage_id") or 0)==STAGE_PRONTO:
             pd("PUT",f"/deals/{deal_id}",{"stage_id":STAGE_TENTATIVA})
 
-        save_state(state)
+        save_strategy_state(strategy_state)
         sent_count += 1
         time.sleep(8)
 
@@ -389,7 +535,11 @@ def main(apply=False, send=False, limit=10):
             print(LOG_PREFIX,"LIMIT_ATINGIDO",limit)
             break
 
+    if dry_run:
+        print("[DRY_RUN_SKIP_WRITE]", "final_state")
+        return
     save_state(state)
+    save_strategy_state(strategy_state)
 
 if __name__=="__main__":
     import sys

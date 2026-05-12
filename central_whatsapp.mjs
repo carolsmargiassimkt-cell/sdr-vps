@@ -1896,22 +1896,61 @@ app.post('/send', async (req, res) => {
             } catch (_presenceError) {
             }
             const sent = await sock.sendMessage(jid, { text })
-console.log('[ENVIO_RESULT_RAW]', jid, JSON.stringify(sent || {}))
-            if (sent?.key?.id && sent?.status && sent.status !== "PENDING") {
+            console.log('[ENVIO_RESULT_RAW]', jid, JSON.stringify(sent || {}))
+            const providerStatus = String(sent?.status || '').toUpperCase()
+            const explicitError = String(sent?.error || sent?.messageStubType || '').trim()
+            const ack = sent?.ack ?? sent?.status ?? ''
+            const failedStatuses = new Set(['FAILED', 'ERROR', 'UNDELIVERED', 'REJECTED'])
+            const isExplicitPending = providerStatus === 'PENDING'
+            const isExplicitFailure = failedStatuses.has(providerStatus) || Boolean(explicitError)
+            if (sent?.key?.id && !isExplicitPending && !isExplicitFailure) {
                 if (countTowardsDailyLimit) {
                     resetDailyCountersIfNeeded()
                     dailySentCount += 1
                 }
                 watchOutboundChat(jid)
             }
-            return { sent, delayMs }
+            return { sent, delayMs, providerStatus, ack, explicitError, isExplicitPending, isExplicitFailure }
         })
         if (!result?.sent || !result.sent.key || !result.sent.key.id) {
+            console.log('[WA_SEND_FAILED]', jid, 'missing_message_id')
             throw new Error('ENVIO_FALHOU')
         }
+        const messageState = String(result.providerStatus || '').toUpperCase()
+        if (result.isExplicitFailure) {
+            console.log('[WA_SEND_FAILED]', jid, `msg_id=${result.sent.key.id}`, `provider_status=${messageState || '-'}`, `error=${result.explicitError || '-'}`)
+            return res.status(500).json({
+                status: 'failed',
+                message_state: 'failed',
+                ack: result.ack || '',
+                provider_status: messageState || 'FAILED',
+                error: result.explicitError || 'provider_failed',
+                message_id: result.sent.key.id,
+            })
+        }
+        if (result.isExplicitPending) {
+            console.log('[WA_SEND_PENDING]', jid, `msg_id=${result.sent.key.id}`, `provider_status=${messageState || '-'}`)
+            return res.status(202).json({
+                status: 'pending_confirmation',
+                message_state: 'pending_confirmation',
+                ack: result.ack || '',
+                provider_status: messageState || 'PENDING',
+                delay_ms: result.delayMs,
+                message_id: result.sent.key.id,
+            })
+        }
+        console.log('[WA_SEND_CONFIRMED]', jid, `msg_id=${result.sent.key.id}`, `provider_status=${messageState || 'KEY_ID'}`, `delay=${result.delayMs}ms`)
         console.log('[ENVIO_OK_REAL]', jid, `msg_id=${result.sent.key.id}`, `delay=${result.delayMs}ms`)
-        return res.json({ status: 'sent', delay_ms: result.delayMs, message_id: result.sent.key.id })
+        return res.json({
+            status: 'sent',
+            message_state: 'sent',
+            ack: result.ack || '',
+            provider_status: messageState || 'KEY_ID',
+            delay_ms: result.delayMs,
+            message_id: result.sent.key.id,
+        })
     } catch (e) {
+        console.log('[WA_SEND_FAILED]', req.body?.number || '', e.message)
         console.log('[ENVIO_FALHOU]', req.body?.number || '', e.message)
         return res.status(500).json({ status: 'failed', error: e.message })
     }

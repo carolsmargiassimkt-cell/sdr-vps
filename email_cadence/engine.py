@@ -51,7 +51,10 @@ def load_json(path: Path, default):
 def save_json(path: Path, payload) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+        fh.flush()
+        os.fsync(fh.fileno())
     os.replace(tmp, path)
 
 
@@ -250,10 +253,11 @@ def template(step, row):
     return textos.get(int(step), textos[1])
 
 
-def send_smtp(to, subject, body):
+def send_smtp(row, subject, body):
+    to = row_email(row)
     if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, FROM]):
-        print("[DRY_RUN] SMTP env ausente:", to, subject)
-        return {"ok": True, "dry_run": True}
+        print("[SMTP_NOT_CONFIGURED]", to, subject)
+        return {"ok": False, "error": "smtp_not_configured"}
     msg = EmailMessage()
     msg["From"] = FROM
     msg["To"] = to
@@ -261,24 +265,29 @@ def send_smtp(to, subject, body):
     msg.set_content(body.replace("<br>", "\n"))
     msg.add_alternative(body, subtype="html")
     ctx = ssl.create_default_context()
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx, timeout=30) as server:
-        server.login(SMTP_USER, SMTP_PASS)
-        server.send_message(msg)
+    try:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx, timeout=30) as server:
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
+    except Exception as exc:
+        print("[SMTP_SEND_FAIL]", to, type(exc).__name__, str(exc)[:200])
+        return {"ok": False, "error": "smtp_send_failed"}
 
-        try:
-            update_sdr_fields(item.get("deal_id"), {
-                "event_id": f"email_sent:{item.get('deal_id')}:{item.get('step')}",
-                "type": "email_sent",
-                "channel": "email",
-                "source": "email_cadence",
-                "step": item.get("step"),
-                "cadence_step": item.get("step"),
-                "automation_status": "email_sent",
-                "status_sdr": "em_cadencia_email",
-                "increment_attempt": True,
-            })
-        except Exception as exc:
-            print("[SDR_FIELDS_EMAIL_SENT_FAIL]", item.get("deal_id"), exc)
+    print("[SMTP_SEND_CONFIRMED]", to, row.get("deal_id"), row.get("step"))
+    try:
+        update_sdr_fields(row.get("deal_id"), {
+            "event_id": f"email_sent:{row.get('deal_id')}:{row.get('step')}",
+            "type": "email_sent",
+            "channel": "email",
+            "source": "email_cadence",
+            "step": row.get("step"),
+            "cadence_step": row.get("step"),
+            "automation_status": "email_sent",
+            "status_sdr": "em_cadencia_email",
+            "increment_attempt": True,
+        })
+    except Exception as exc:
+        print("[SDR_FIELDS_EMAIL_SENT_FAIL]", row.get("deal_id"), exc)
     return {"ok": True, "dry_run": False}
 
 
@@ -323,7 +332,7 @@ def tick():
             changed = True
             continue
         subject, body = template(step, row)
-        result = send_smtp(row["email"], subject, body)
+        result = send_smtp(row, subject, body)
         if not (isinstance(result, dict) and result.get("ok")):
             continue
         sent_at = now()
