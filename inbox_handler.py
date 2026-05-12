@@ -62,17 +62,7 @@ import os
 import random
 import re
 from core.stage_router import resolve_pipeline_stage
-from core.auto_reply_guard import add_auto_reply_block, detect_auto_reply
-from core.human_handoff import is_human_handoff
-from core.locked_json_state import locked_load_json, locked_save_json
-from core.pipedrive_safe import merge_deal_labels
-from core.sdr_orchestrator import (
-    load_email_state as orch_load_email_state,
-    load_wa_state as orch_load_wa_state,
-    save_email_state as orch_save_email_state,
-    save_wa_state as orch_save_wa_state,
-    stop_cold_states_for_warm,
-)
+from core.wa_strategy_state import locked_json_file, load_strategy_state as load_wa_strategy_state, mark_warm as mark_wa_strategy_warm, save_strategy_state as save_wa_strategy_state
 import sys
 import time
 import unicodedata
@@ -395,9 +385,6 @@ def _send_whitelist_reply_via_gateway(phone, text):
 
 def send_reply(phone, text):
     text = prepare_whatsapp_reply_text(text)
-    if is_human_handoff(phone):
-        print(f"[AUTO_REPLY_BLOCKED_HUMAN_HANDOFF] telefone={phone} reason=send_reply")
-        return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "human_handoff"})
     if is_test_whitelist_phone(phone):
         ok = _send_whitelist_reply_via_gateway(phone, text)
         return jsonify({"ok": bool(ok), "confirmed": bool(ok), "whitelist_test": True})
@@ -407,9 +394,6 @@ def send_reply(phone, text):
 
 def blocked_whatsapp_send(phone, text, *args, **kwargs):
     text = prepare_whatsapp_reply_text(text)
-    if is_human_handoff(phone):
-        print(f"[AUTO_REPLY_BLOCKED_HUMAN_HANDOFF] telefone={phone} reason=blocked_whatsapp_send")
-        return False
     if is_test_whitelist_phone(phone):
         return _send_whitelist_reply_via_gateway(phone, text)
     print(f"[INBOX_SEND_BLOCKED_NON_WHITELIST] telefone={phone} reason=send_guard texto={str(text or '')[:120]}")
@@ -548,75 +532,33 @@ def _blocklist_entry_phone(item):
 def append_to_blocklist(phone, reason):
     try:
         os.makedirs(LOGS_DIR, exist_ok=True)
-        data = []
-        if os.path.exists(BLOCKLIST_FILE):
-            loaded = locked_load_json(BLOCKLIST_FILE, [])
-            if isinstance(loaded, list):
-                data = loaded
-        normalized_phone = whatsapp.normalize_phone(phone)
-        if not normalized_phone:
-            return False
-        if not any(_blocklist_entry_phone(item) == normalized_phone for item in data if isinstance(item, dict)):
-            data.append({
-                "telefone": normalized_phone,
-                "reason": reason,
-                "tag": "blocked_automatic",
-                "created_at": datetime.now().isoformat(),
-            })
-            locked_save_json(BLOCKLIST_FILE, data)
-            print(f"[BLOCKLIST_ADICIONADO] telefone={normalized_phone} motivo={reason}")
-            return True
+        with locked_json_file(BLOCKLIST_FILE):
+            data = []
+            if os.path.exists(BLOCKLIST_FILE):
+                with open(BLOCKLIST_FILE, "r", encoding="utf-8-sig") as f:
+                    loaded = json.load(f)
+                    if isinstance(loaded, list):
+                        data = loaded
+            normalized_phone = whatsapp.normalize_phone(phone)
+            if not normalized_phone:
+                return False
+            if not any(_blocklist_entry_phone(item) == normalized_phone for item in data if isinstance(item, dict)):
+                data.append({
+                    "telefone": normalized_phone,
+                    "reason": reason,
+                    "tag": "blocked_automatic",
+                    "created_at": datetime.now().isoformat(),
+                })
+                tmp = BLOCKLIST_FILE + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                os.replace(tmp, BLOCKLIST_FILE)
+                print(f"[BLOCKLIST_ADICIONADO] telefone={normalized_phone} motivo={reason}")
+                print(f"[WA_BLOCKLIST_ADD] phone={normalized_phone} reason={reason}")
+                return True
     except Exception as e:
         print(f"[ERRO_BLOCKLIST] {e}")
     return False
-
-
-def stop_cold_orchestration_for_lead(lead_state, phone="", reason="inbound_reply"):
-    deals = list((lead_state or {}).get("deals") or [])
-    if not deals:
-        return
-    email_rows = orch_load_email_state()
-    wa_state = orch_load_wa_state()
-    changed_email = False
-    changed_wa = False
-    for deal in deals:
-        deal_id = int((deal or {}).get("id") or 0)
-        if deal_id <= 0:
-            continue
-        local_phone = phone or ""
-        if not local_phone:
-            person = (deal or {}).get("person_id") or {}
-            if isinstance(person, dict):
-                for item in list(person.get("phone") or []):
-                    local_phone = item.get("value") if isinstance(item, dict) else item
-                    if local_phone:
-                        break
-        email_changed, wa_changed = stop_cold_states_for_warm(deal_id, local_phone, email_rows, wa_state, reason=reason)
-        changed_email = changed_email or email_changed
-        changed_wa = changed_wa or wa_changed
-    if changed_email:
-        orch_save_email_state(email_rows)
-    if changed_wa:
-        orch_save_wa_state(wa_state)
-
-
-def handle_auto_reply_block(phone, message, lead_state=None):
-    add_auto_reply_block(phone, message, reason="auto_reply_detected")
-    append_to_blocklist(phone, "auto_reply_detected")
-    try:
-        stop_cold_orchestration_for_lead(lead_state or {}, phone=phone, reason="auto_reply_detected")
-    except Exception as exc:
-        print(f"[AUTO_REPLY_BLOCK_STOP_FAIL] phone={phone} error={exc}")
-    try:
-        pause_whatsapp_warm_cadence_for_lead(lead_state or {}, phone=phone)
-    except Exception:
-        pass
-    try:
-        append_crm_note_for_lead(lead_state or {}, f"[AUTO_REPLY_BLOCK] Auto-resposta institucional detectada. Sem resposta automatica. Texto: {message}")
-    except Exception:
-        pass
-    print(f"[AUTO_REPLY_BLOCK] phone={phone} reason=auto_reply_detected")
-    print(f"[AUTO_REPLY_SKIP_SEND] phone={phone} reason=auto_reply_detected")
 
 
 def acquire_lock(lock_file, timeout=10):
@@ -725,8 +667,11 @@ def load_json_file(path, fallback):
 
 def save_json_file(path, payload):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    with locked_json_file(path):
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
 
 
 def load_email_pending_confirmations():
@@ -851,6 +796,19 @@ def update_whatsapp_conversation_state_for_lead(lead_state, phone, message="", i
             central_log_event("STATE_TRANSITION", deal_id=deal_id, phone=normalized_phone, error=f"central_state_fail:{exc}")
     save_whatsapp_conversation_state(state)
     return updated
+
+
+def mark_warm_strategy_for_lead(lead_state, phone, reason="wa_positive"):
+    try:
+        strategy_state = load_wa_strategy_state()
+        for deal in related_deals_from_state(lead_state):
+            deal_id = extract_entity_id((deal or {}).get("id"))
+            if deal_id > 0:
+                mark_wa_strategy_warm(strategy_state, deal_id, phone, reason=reason)
+                print(f"[WA_WARM_TRIGGER] deal_id={deal_id} phone={whatsapp.normalize_phone(phone)} reason={reason}")
+        save_wa_strategy_state(strategy_state)
+    except Exception as exc:
+        print(f"[WA_WARM_TRIGGER_FAIL] phone={phone} reason={reason} erro={exc}")
 
 
 def detect_pause_not_now_intent(message):
@@ -997,12 +955,17 @@ def can_emit_reply(phone, message, within_seconds=1800):
         return True
 
 
-def release_reply_guard(phone):
+def release_reply_guard(phone, message=""):
     normalized_phone = whatsapp.normalize_phone(phone)
     if not normalized_phone:
         return
     with reply_guard_lock:
-        reply_guard.pop(normalized_phone, None)
+        normalized_message = str(message or "").strip()
+        if normalized_message:
+            reply_guard.pop(f"{normalized_phone}:{normalized_message}", None)
+        else:
+            for key in [k for k in reply_guard if str(k).startswith(f"{normalized_phone}:")]:
+                reply_guard.pop(key, None)
 
 
 def infer_step_from_history(history):
@@ -1368,7 +1331,7 @@ def handle_bot_menu_navigation(phone, message, lead_state=None):
         print(f"[BOT_MENU_RESPOSTA_ENVIADA] {phone} resposta={reply}")
         return True
     else:
-        release_reply_guard(phone)
+        release_reply_guard(phone, reply)
         print(f"[BOT_MENU_FALHA_ENVIO] {phone} resposta={reply}")
         return False
 
@@ -2148,17 +2111,6 @@ def build_local_agent_decision(data):
                 should_pause_automation = False
                 should_send = False
 
-    if str(reason or "").startswith("gemini:"):
-        print(f"[GEMINI_WEAK_SIGNAL] intent={intent} action={action} reason={reason}")
-        intent = "neutro"
-        action = "hold"
-        reply = ""
-        should_send = False
-        should_blocklist = False
-        should_pause_automation = False
-        should_move_stage = False
-        should_create_activity = False
-
     return {
         "intent": intent,
         "confidence": float(confidence),
@@ -2381,6 +2333,7 @@ def move_related_deals_to_terminal_stage(lead_state, reason=""):
         if ok:
             moved = True
             print(f"[STAGE_PERDIDO_OK] deal={deal_id} stage={stage_id} reason={reason or '-'}")
+            print(f"[PIPE_STAGE_MOVE] deal_id={deal_id} stage_id={stage_id} reason={reason or '-'}")
     return moved
 
 
@@ -2402,6 +2355,8 @@ def move_related_deals_to_scheduled(lead_state):
         if ok:
             moved = True
             print(f"[STAGE_AGENDADO_OK] deal={deal_id} stage={stage_id}")
+            print(f"[PIPE_STAGE_MOVE] deal_id={deal_id} stage_id={stage_id} reason=meeting_scheduled")
+            print(f"[MEETING_CONFIRMED] deal_id={deal_id} stage_id={stage_id}")
     return moved
 
 
@@ -2541,29 +2496,30 @@ def stop_whatsapp_warm_cadence_state(deal_ids=None, phone="", email="", reason="
     normalized_phone = whatsapp.normalize_phone(phone)
     target_email = str(email or "").strip().lower()
     try:
-        if os.path.exists(state_file):
-            with open(state_file, "r", encoding="utf-8") as fh:
-                state = json.load(fh) or {}
-        else:
-            state = {}
-        stopped = state.setdefault("stopped", {})
-        now = datetime.now().isoformat(timespec="seconds")
-        payload = {"reason": str(reason or "inbound_replied"), "stopped_at": now}
-        if paused_until:
-            payload["paused_until"] = str(paused_until)
-        for deal_id in sorted(deal_ids):
-            stopped[str(deal_id)] = dict(payload)
-        if normalized_phone:
-            stopped[f"phone:{normalized_phone}"] = dict(payload)
-        if target_email:
-            stopped[f"email:{target_email}"] = dict(payload)
-        if deal_ids or normalized_phone or target_email:
-            os.makedirs(os.path.dirname(state_file), exist_ok=True)
-            tmp = state_file + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(state, fh, ensure_ascii=False, indent=2)
-            os.replace(tmp, state_file)
-            print(f"[WARM_WA_CADENCE_STOPPED] deals={sorted(deal_ids)} phone={normalized_phone or '-'} email={target_email or '-'}")
+        with locked_json_file(state_file):
+            if os.path.exists(state_file):
+                with open(state_file, "r", encoding="utf-8") as fh:
+                    state = json.load(fh) or {}
+            else:
+                state = {}
+            stopped = state.setdefault("stopped", {})
+            now = datetime.now().isoformat(timespec="seconds")
+            payload = {"reason": str(reason or "inbound_replied"), "stopped_at": now}
+            if paused_until:
+                payload["paused_until"] = str(paused_until)
+            for deal_id in sorted(deal_ids):
+                stopped[str(deal_id)] = dict(payload)
+            if normalized_phone:
+                stopped[f"phone:{normalized_phone}"] = dict(payload)
+            if target_email:
+                stopped[f"email:{target_email}"] = dict(payload)
+            if deal_ids or normalized_phone or target_email:
+                os.makedirs(os.path.dirname(state_file), exist_ok=True)
+                tmp = state_file + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump(state, fh, ensure_ascii=False, indent=2)
+                os.replace(tmp, state_file)
+                print(f"[WARM_WA_CADENCE_STOPPED] deals={sorted(deal_ids)} phone={normalized_phone or '-'} email={target_email or '-'}")
         return True
     except Exception as exc:
         print(f"[WARM_WA_CADENCE_STOP_FAIL] erro={exc}")
@@ -2628,6 +2584,7 @@ def append_crm_note_for_lead(lead_state, note_text):
             noted = True
     if noted:
         print("[NOTA_CRM]")
+        print("[PIPEDRIVE_NOTE_ADD]")
     return noted
 
 
@@ -2641,10 +2598,33 @@ def add_deal_label_id_for_lead(lead_state, label_id):
         if deal_id <= 0:
             continue
         try:
-            ok = merge_deal_labels(deal_id, [int(label_id)])
+            current_deal = crm.get_deal_details(deal_id) or deal
+            current_labels = current_deal.get("label") or []
+            if isinstance(current_labels, str):
+                merged = [item.strip() for item in current_labels.split(",") if item.strip()]
+            elif isinstance(current_labels, list):
+                merged = list(current_labels)
+            else:
+                merged = [current_labels]
+            keys = set()
+            normalized = []
+            for item in merged:
+                if isinstance(item, dict):
+                    key = str(item.get("id") or item.get("label") or item.get("name") or item.get("value") or "").strip()
+                else:
+                    key = str(item or "").strip()
+                if not key or key in keys:
+                    continue
+                keys.add(key)
+                normalized.append(item)
+            if str(label_id) not in keys:
+                normalized.append(int(label_id))
+            ok = crm.update_deal(deal_id, {"label": normalized})
         except Exception:
             ok = False
         tagged = tagged or bool(ok)
+        if ok:
+            print(f"[PIPEDRIVE_TAG_ADD] deal_id={deal_id} label_id={label_id}")
     return tagged
 
 
@@ -2943,12 +2923,16 @@ def handle_fora_do_horario(phone, message, msg_id="", timestamp="", source="", l
         whatsapp.mark_after_hours_notice_sent(phone)
         print(f"[FORA_HORARIO_RESPOSTA] telefone={phone} status={FORA_HORARIO_STATUS}")
         return {"ok": True, "confirmed": True, "after_hours": True, "notice_sent": True}
-    release_reply_guard(phone)
+    release_reply_guard(phone, FORA_HORARIO_MENSAGEM)
     print(f"[FORA_HORARIO_BLOQUEADO] telefone={phone} status={FORA_HORARIO_STATUS} motivo=falha_envio")
     return {"ok": False, "confirmed": False, "after_hours": True, "notice_sent": False}
 
 
 def handle_closing_intent(phone, message, closing_key, lead_state=None):
+    if closing_key in {"wrong_number", "unknown_person"}:
+        print(f"[WA_INTENT_WRONG_CONTACT] telefone={phone} texto={message}")
+    else:
+        print(f"[WA_INTENT_NEGATIVE_STOP] telefone={phone} texto={message}")
     closing_message = pitch.get_closing_message(closing_key)
     if not closing_message:
         return False
@@ -2999,12 +2983,22 @@ def is_system_jid(raw_phone):
     )
 
 
-def processed_key(phone, msg_id, message):
+def processed_key(phone, msg_id, message, source="", timestamp=None):
+    normalized_phone = whatsapp.normalize_phone(phone) or re.sub(r"\s+", "", str(phone or "").strip().lower())
     if msg_id:
-        return f"{phone}:{msg_id}"
-    # Se nao tem msg_id, gera um unico baseado em tempo para permitir mensagens iguais ("ok", "sim")
-    unique_suffix = f"{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
-    return f"{phone}:auto_{unique_suffix}"
+        return f"{normalized_phone}:{msg_id}"
+    text = normalize_intent_text(message)
+    text = re.sub(r"\s+", " ", text).strip()
+    source_value = str(source or "realtime").strip().lower()
+    try:
+        ts = float(timestamp)
+        if ts > 1000000000000:
+            ts = ts / 1000
+    except Exception:
+        ts = time.time()
+    bucket = int(ts // 600)
+    digest = hashlib.sha256(f"{normalized_phone}|{text}|{source_value}|{bucket}".encode("utf-8")).hexdigest()[:24]
+    return f"{normalized_phone}:auto_{digest}"
 
 
 def extract_entity_id(field):
@@ -3196,7 +3190,7 @@ def maybe_handle_inbound_agent_decision(*, phone, message, source, lead_state, l
         print("[AVISO] API pode estar offline, mas tentando enviar mesmo assim...")
     ok = blocked_whatsapp_send(phone, reply)
     if not ok:
-        release_reply_guard(phone)
+        release_reply_guard(phone, reply)
         print(f"[FALHA_ENVIO] {phone}")
         return {"ok": False, "confirmed": False, **decision}
 
@@ -3373,6 +3367,7 @@ def find_or_create_referral_person(target_phones, target_emails, current_person,
 
 
 def handle_referral_redirect(phone, message, lead_state):
+    print(f"[WA_INTENT_REFERRAL] telefone={phone} texto={message}")
     referral_numbers = extract_phone_candidates(message, current_phone=phone)
     referral_emails = extract_email_candidates(message)
     if not referral_numbers and not referral_emails:
@@ -3793,13 +3788,14 @@ def email_inbound():
         phone = whatsapp.normalize_phone(data.get("phone") or data.get("telefone") or "")
         source_id = str(data.get("message_id") or data.get("event_id") or data.get("id") or "").strip()
         identity = email or phone or f"deal:{deal_id or person_id or 0}"
-        key = processed_key(identity, source_id, text)
+        key = processed_key(identity, source_id, text, source="email_inbound", timestamp=data.get("timestamp"))
 
         fd = None
         try:
             fd = acquire_lock(PROCESSED_LOCK_FILE)
             refreshed = load_processed()
             if key in refreshed:
+                is_duplicated = True
                 print(f"[DUPLICADO_EMAIL_INBOUND] key={key}")
                 return jsonify({"ok": True, "confirmed": True, "duplicated": True})
         finally:
@@ -3950,41 +3946,6 @@ def inbox():
 
         if not is_brazil_business_hours():
             print(f"[INBOUND_FORA_HORARIO_BR] telefone={phone}")
-            try:
-                import requests
-                msg = FORA_HORARIO_MENSAGEM
-                rr = requests.post(
-                    "http://127.0.0.1:3000/send",
-                    json={"number": phone, "text": msg},
-                    timeout=90,
-                )
-                try:
-                    body = rr.json()
-                except Exception:
-                    body = {"raw": rr.text}
-                print(f"[FORA_HORARIO_FORCE_SEND] telefone={phone} code={rr.status_code} body={body}")
-            except Exception as e:
-                print(f"[FORA_HORARIO_FORCE_SEND_ERROR] telefone={phone} erro={e}")
-            try:
-                result = handle_fora_do_horario(phone, lead_state)
-                print(f"[FORA_HORARIO_HANDLE_RESULT] telefone={phone} result={result}")
-            except Exception as e:
-                print(f"[FORA_HORARIO_HANDLER_ERROR] telefone={phone} erro={e}")
-                result = None
-
-            if not result or not result.get("notice_sent"):
-                try:
-                    import requests
-                    msg = FORA_HORARIO_MENSAGEM
-                    rr = requests.post(
-                        "http://127.0.0.1:3000/send",
-                        json={"number": phone, "text": msg},
-                        timeout=90,
-                    )
-                    body = rr.json() if rr.text else {}
-                    print(f"[FORA_HORARIO_DIRECT_SEND] telefone={phone} code={rr.status_code} body={body}")
-                except Exception as e:
-                    print(f"[FORA_HORARIO_DIRECT_SEND_ERROR] telefone={phone} erro={e}")
 
         if not is_phone_allowed_for_auto_reply(phone) and not is_test_whitelist_phone(phone):
             print(f"[INBOX_SEND_BLOCKED_NON_WHITELIST] telefone={phone} reason=not_active_lead")
@@ -4026,7 +3987,7 @@ def inbox():
 
         if phone in load_manual_blocklist() and not is_test_whitelist_phone(phone):
             print(f"[BLOQUEADO_MANUAL] {phone} ignorado")
-            commit_processed_key(processed_key(phone, msg_id, message))
+            commit_processed_key(processed_key(phone, msg_id, message, source=source, timestamp=data.get("timestamp")))
             return jsonify({"ok": True})
 
         # --- NOVA LOGICA DE ANALISE ANTES DE DEDUPLICACAO ---
@@ -4090,7 +4051,7 @@ def inbox():
             print(f"[AGENT_ROUTE_ERROR] telefone={phone} erro={_e}")
 
         
-        key = processed_key(phone, msg_id, message)
+        key = processed_key(phone, msg_id, message, source=source, timestamp=data.get("timestamp"))
         is_duplicated = False
         fd = None
         try:
@@ -4106,11 +4067,11 @@ def inbox():
                     print(f"[DUPLICADO_STRICT_IGNORADO] Mensagem {key} já processada. Ignorando execução.")
                     return jsonify({"confirmed": True, "duplicated": True, "ok": True})
 
-                print(f"[DUPLICADO_REPROCESSAR_CRITICO] telefone={phone} intent={intent_safe} texto={text}")
+                print(f"[DUPLICADO_REPROCESSAR_CRITICO] telefone={phone} intent={intent_safe} texto={message}")
 
             else:
-                refreshed.add(key)
-                save_processed(refreshed)
+                processed.clear()
+                processed.update(refreshed)
 
         finally:
             if fd is not None:
@@ -4138,6 +4099,7 @@ def inbox():
                 whatsapp.blocklist_add(phone, reason="sem_interesse")
             except Exception:
                 pass
+            print(f"[WA_INTENT_NEGATIVE_STOP] telefone={phone} texto={message}")
             append_to_blocklist(phone, "sem_interesse")
             whatsapp.clear_after_hours_pending(phone)
             print(f"[BLOCKLIST_ADICIONADO] telefone={phone} motivo=sem_interesse_hard_rule")
@@ -4163,24 +4125,6 @@ def inbox():
             commit_processed_key(key)
             return jsonify({"ok": True, "status": "sem_interesse_hard_rule", "confirmed": bool(ok)})
 
-
-        early_auto_reply, early_auto_reply_reason = detect_auto_reply(message)
-        if early_auto_reply:
-            try:
-                early_lead_state = validate_lead_with_cache(phone)
-            except Exception:
-                early_lead_state = {}
-            handle_auto_reply_block(phone, message, early_lead_state)
-            history = append_history(phone, "in", message, step=0)
-            commit_processed_key(key)
-            return jsonify({
-                "ok": True,
-                "confirmed": True,
-                "auto_reply_blocked": True,
-                "reason": "auto_reply_detected",
-                "rule": early_auto_reply_reason,
-                "history_items": len(history),
-            })
 
         if not dentro_do_horario() and not is_test_whitelist_phone(phone):
             lead_state = None
@@ -4219,7 +4163,7 @@ def inbox():
         if False and has_recent_history_entry(phone, "in", message, within_seconds=900) and not is_test_whitelist_phone(phone):
             print(f"[DUPLICADO_HISTORY_INBOUND] {phone} ignorado")
             if (locals().get("intent_name") or locals().get("intent") or "") in ("interesse", "positive_interest", "fechamento_wrong_number", "wrong_contact", "fechamento_sem_interesse", "optout"):
-                print(f"[HISTORY_REPROCESSAR_CRITICO] telefone={phone} texto={text}")
+                print(f"[HISTORY_REPROCESSAR_CRITICO] telefone={phone} texto={message}")
             else:
                 return jsonify({"confirmed": True, "duplicated": True, "ok": True})
 
@@ -4243,13 +4187,18 @@ def inbox():
         is_bot_menu, bot_reason = should_ignore_bot_menu(message)
         if is_bot_menu:
             print(f"[BOT_MENU_DETECTADO] {phone} motivo={bot_reason}")
-            if not can_auto_reply_inbound(phone, source=source, lead_state=None):
-                commit_processed_key(key)
-                return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "bot_menu_no_router"})
-            if handle_bot_menu_navigation(phone, message):
-                commit_processed_key(key)
-                return jsonify({"ok": True, "confirmed": True})
-            return jsonify({"ok": False, "confirmed": False})
+            print(f"[WA_INTENT_MENU_BOT] telefone={phone} reason={bot_reason}")
+            try:
+                bot_lead_state = validate_lead_with_cache(phone)
+                for bot_deal in related_deals_from_state(bot_lead_state):
+                    bot_deal_id = extract_entity_id((bot_deal or {}).get("id"))
+                    if bot_deal_id > 0 and crm.add_tag("deal", bot_deal_id, "WHATSAPP_BOT"):
+                        print(f"[PIPEDRIVE_TAG_ADD] deal_id={bot_deal_id} tag=WHATSAPP_BOT")
+            except Exception as exc:
+                print(f"[WA_INTENT_MENU_BOT_TAG_FAIL] telefone={phone} erro={exc}")
+            append_to_blocklist(phone, "menu_bot")
+            commit_processed_key(key)
+            return jsonify({"ok": True, "confirmed": True, "conversation_stopped": True, "reason": "menu_bot"})
 
         bot_keywords = [
             "digite", "opção", "escolha", "atendimento", "automático",
@@ -4262,13 +4211,18 @@ def inbox():
             is_bot = True
         if is_bot:
             print(f"[BOT_MENU_DETECTADO] {phone} motivo=rule_fallback")
-            if not can_auto_reply_inbound(phone, source=source, lead_state=None):
-                commit_processed_key(key)
-                return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "bot_menu_no_router"})
-            if handle_bot_menu_navigation(phone, message):
-                commit_processed_key(key)
-                return jsonify({"ok": True, "confirmed": True})
-            return jsonify({"ok": False, "confirmed": False})
+            print(f"[WA_INTENT_MENU_BOT] telefone={phone} reason=rule_fallback")
+            try:
+                bot_lead_state = validate_lead_with_cache(phone)
+                for bot_deal in related_deals_from_state(bot_lead_state):
+                    bot_deal_id = extract_entity_id((bot_deal or {}).get("id"))
+                    if bot_deal_id > 0 and crm.add_tag("deal", bot_deal_id, "WHATSAPP_BOT"):
+                        print(f"[PIPEDRIVE_TAG_ADD] deal_id={bot_deal_id} tag=WHATSAPP_BOT")
+            except Exception as exc:
+                print(f"[WA_INTENT_MENU_BOT_TAG_FAIL] telefone={phone} erro={exc}")
+            append_to_blocklist(phone, "menu_bot")
+            commit_processed_key(key)
+            return jsonify({"ok": True, "confirmed": True, "conversation_stopped": True, "reason": "menu_bot"})
 
         try:
             lead_state = validate_lead_with_cache(phone)
@@ -4316,20 +4270,6 @@ def inbox():
                 commit_processed_key(key)
                 return jsonify({"ok": True, "confirmed": True, "auto_reply_blocked": True, "reason": "no_person"})
 
-        auto_reply, auto_reply_reason = detect_auto_reply(message)
-        if auto_reply:
-            handle_auto_reply_block(phone, message, lead_state)
-            history = append_history(phone, "in", message, step=0)
-            commit_processed_key(key)
-            return jsonify({
-                "ok": True,
-                "confirmed": True,
-                "auto_reply_blocked": True,
-                "reason": "auto_reply_detected",
-                "rule": auto_reply_reason,
-                "history_items": len(history),
-            })
-
         lead = build_lead_payload_from_state(phone, lead_state)
         clear_email_runtime_state_for_lead(lead_state, phone=phone)
         if has_stopped_whatsapp_conversation(lead_state, phone):
@@ -4346,13 +4286,11 @@ def inbox():
             create_soft_negative_followup_for_lead(lead_state, f"Follow-up leve apos pausa solicitada pelo lead. Texto: {message}")
             history = append_history(phone, "in", message, step=0)
             update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="pause_not_now")
-            stop_cold_orchestration_for_lead(lead_state, phone=phone, reason="pause_not_now")
             whatsapp.clear_after_hours_pending(phone)
             print(f"[PAUSE_NOT_NOW] telefone={phone} action=pause_automation send=0 texto={message}")
             commit_processed_key(key)
             return jsonify({"ok": True, "confirmed": True, "intent": "pause_not_now", "action": "pause_automation", "should_send": False, "history_items": len(history)})
         update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="replied")
-        stop_cold_orchestration_for_lead(lead_state, phone=phone, reason="wa_inbound_reply")
         lead = enrich_lead_with_whatsapp_state(lead, lead_state, phone)
 
         if not can_auto_reply_inbound(phone, source=source, lead_state=lead_state):
@@ -4375,7 +4313,6 @@ def inbox():
             append_crm_note_for_lead(lead_state, f"Lead informou nao ter interesse. Texto: {message}")
             history = append_history(phone, "in", message, step=0)
             update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="opt_out")
-            stop_cold_orchestration_for_lead(lead_state, phone=phone, reason="opt_out")
             print(f"[CONVERSATION_STOPPED_NO_REPLY] telefone={phone} motivo=opt_out")
             commit_processed_key(key)
             return jsonify({"ok": True, "conversation_stopped": True, "history_items": len(history)})
@@ -4400,6 +4337,7 @@ def inbox():
             if detect_positive_intent(message):
                 print(f"[INTENT_POSITIVO] telefone={phone}")
                 add_respondido_tag_for_lead(lead_state)
+                mark_warm_strategy_for_lead(lead_state, phone, reason="wa_positive_intent")
                 update_whatsapp_conversation_state_for_lead(lead_state, phone, message, intent="interested")
                 if detect_scheduling_intent(message):
                     move_related_deals_to_scheduled(lead_state)
@@ -4443,7 +4381,7 @@ def inbox():
                 print(f"[RESPOSTA_ENVIADA] {phone}")
                 commit_processed_key(key)
                 return jsonify({"ok": True, "confirmed": True, "intent": "scheduling_time_provided", "action": "confirm_schedule"})
-            release_reply_guard(phone)
+            release_reply_guard(phone, reply)
             print(f"[FALHA_ENVIO] {phone}")
             return jsonify({"ok": False, "confirmed": False, "intent": "scheduling_time_provided", "action": "confirm_schedule"})
 
@@ -4462,7 +4400,7 @@ def inbox():
                 print(f"[RESPOSTA_ENVIADA] {phone}")
                 commit_processed_key(key)
                 return jsonify({"ok": True, "confirmed": True, "intent": "scheduling_ack", "action": "confirm_schedule"})
-            release_reply_guard(phone)
+            release_reply_guard(phone, reply)
             print(f"[FALHA_ENVIO] {phone}")
             return jsonify({"ok": False, "confirmed": False, "intent": "scheduling_ack", "action": "confirm_schedule"})
 
@@ -4528,7 +4466,7 @@ def inbox():
                 print(f"[MSG_RESPONDIDA_BACKLOG] {phone}")
             commit_processed_key(key)
         else:
-            release_reply_guard(phone)
+            release_reply_guard(phone, reply)
             print(f"[FALHA_ENVIO] {phone}")
             return jsonify({"ok": False, "confirmed": False})
 
