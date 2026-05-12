@@ -1,29 +1,10 @@
-from pathlib import Path
-import sys
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 from core.stage_router import resolve_pipeline_stage
 import os, re, json, time, requests
+from pathlib import Path
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-from datetime import timezone
-import hashlib, random
-try:
-    from dotenv import load_dotenv
-except Exception:
-    def load_dotenv(*args, **kwargs):
-        return False
-from core.sdr_orchestrator import ACTION_WA_WARM_SEND, load_email_state, resolve_next_action
+from dotenv import load_dotenv
 from core.sdr_state import STAGE_TENTATIVA_CONTATO, log_event, update_deal_state
-from core.wa_strategy_state import load_strategy_state, mark_warm, save_strategy_state
-from core.auto_reply_guard import is_auto_reply_blocked
-from core.human_handoff import is_human_handoff
-from core.locked_json_state import locked_load_json, locked_save_json
-from core.inflight_actions import acquire_inflight, release_inflight
-from core.pipedrive_safe import safe_pd_request
+from core.wa_strategy_state import load_strategy_state, locked_json_file, mark_warm, save_strategy_state
 
 load_dotenv("/root/sdr-vps/.env")
 
@@ -31,7 +12,7 @@ TOKEN=os.getenv("PIPEDRIVE_API_TOKEN")
 API="https://api.pipedrive.com/v1"
 
 PIPELINE_ID=7
-STAGE_PRONTO=52
+STAGE_PRONTO=63
 STAGE_TENTATIVA=STAGE_TENTATIVA_CONTATO
 
 LABEL_LEAD_TRAFEGO="193"
@@ -39,10 +20,6 @@ LABEL_WARM_WHATSAPP="226"
 LABEL_RESPONDIDO="196"
 
 STATE_FILE=Path("/root/sdr-vps/data/whatsapp_warm_cadence.json")
-MEETING_STATE_FILE=Path("/root/sdr-vps/data/sdr_meeting_reminders.json")
-CONVERSATION_STATE_FILE=Path("/root/sdr-vps/data/whatsapp_conversation_state.json")
-SDR_STATE_FILE=Path("/root/sdr-vps/data/sdr_state.json")
-LEGACY_LEAD_TRAFEGO_SENT_FILE=Path("/root/sdr-vps/data/lead_trafego_wa_sent.json")
 BLOCKLIST_FILES=[
     Path("/root/sdr-vps/data/whatsapp_manual_blocklist.json"),
     Path("/root/sdr-vps/data/whatsapp_blocklist.json"),
@@ -51,19 +28,13 @@ BLOCKLIST_FILES=[
 ]
 LOG_PREFIX="[WA_WARM_CADENCE]"
 
-MAX_WARM_STEP=3
-
-def br_tz():
-    try:
-        return ZoneInfo("America/Sao_Paulo")
-    except Exception:
-        return timezone(timedelta(hours=-3))
-
 INTERVALS_DAYS={
     1:0,
     2:1,
     3:2,
     4:3,
+    5:5,
+    6:7,
 }
 
 MSG_TRAFEGO={
@@ -128,66 +99,6 @@ Por exemplo: campanha de compra + participação pelo WhatsApp + premiação ins
 Se quiser retomar a ideia de campanha promocional interativa, fico à disposição."""
 }
 
-WARM_TEMPLATES={
-    "trafego":{
-        1:[
-            "{Oi|Olá}, tudo bem? Aqui é a Carol, da Mand Digital.\n\nVi seu cadastro pelo {formulário|site|Leadster} e imaginei que vocês estejam olhando alguma ação promocional.\n\nA Mand cria campanhas interativas com QR Code, roleta, raspadinha e captura de dados próprios. {Posso te mandar um exemplo curto?|Te mando uma ideia rápida aplicada à Copa?}",
-            "{Oi|Olá}! Carol da Mand Digital por aqui.\n\nRecebi seu interesse pelo formulário e queria ir direto ao ponto: ajudamos marcas a transformar campanha de Copa/PDV em participação, lead e remarketing.\n\n{Posso te mostrar um exemplo?|Quer ver uma ideia prática?}",
-            "Oi, tudo bem? Sou a Carol, da Mand Digital.\n\nVi seu contato chegando por aqui. Para {varejo|shopping|supermercado}, a gente costuma usar QR Code + mecânica interativa para gerar dados first-party e conversão.\n\n{Posso te mandar um exemplo rápido?|Te envio uma ideia simples?}",
-        ],
-        2:[
-            "Passando com um exemplo direto: campanha de Copa no PDV com QR Code, roleta digital e prêmio simples. O cliente participa, deixa nome/WhatsApp e vocês conseguem medir loja, canal e recompra.\n\n{Esse tipo de ação conversa com o que vocês buscam?|Faz sentido para o momento de vocês?}",
-            "Uma aplicação bem prática: raspadinha digital ou vale-brinde para quem compra, com captura de dados e régua de WhatsApp depois. Não é só promoção; vira base própria para novas campanhas.\n\n{Quer que eu adapte um exemplo para vocês?|Posso montar uma ideia enxuta?}",
-            "Para campanhas de Copa, o que mais funciona é deixar a mecânica fácil: viu o QR Code, participou, ganhou chance/prêmio e entrou na base. Depois dá para segmentar e fazer remarketing.\n\n{Quer ver como ficaria no seu contexto?|Te mando um modelo curto?}",
-        ],
-        3:[
-            "Para eu não te mandar algo genérico: vocês querem mais {captar contatos|aumentar fluxo no PDV|vender mais em uma data específica|medir resultado da campanha}?",
-            "Me diz só uma coisa: a prioridade hoje é {trazer mais gente para loja|ativar clientes antigos|capturar dados próprios|criar uma ação de Copa}?",
-            "Se fizer sentido avançar, eu te mando uma ideia já no formato de campanha. O foco seria {Copa|PDV|varejo|captação de dados|conversão}?",
-        ],
-        4:[
-            "Tudo bem, vou encerrar por aqui para não insistir.\n\nSe quiser retomar uma campanha interativa de Copa, QR Code, roleta ou captura de dados, é só me chamar.",
-            "Sem problema. Vou parar por aqui.\n\nQuando fizer sentido olhar campanha promocional com dados próprios e mensuração, fico à disposição.",
-            "Combinado, não vou insistir.\n\nSe em algum momento vocês quiserem transformar campanha de PDV/Copa em participação e base própria, pode me chamar por aqui.",
-        ],
-    },
-    "warm":{
-        1:[
-            "{Oi|Olá}, tudo bem? Aqui é a Carol, da Mand Digital.\n\nVi sua interação com nosso material e achei que valia te chamar por aqui. A gente cria campanhas interativas para varejo, shopping e supermercado com QR Code, roleta/raspadinha e captura de dados.\n\n{Quer que eu te mande um exemplo rápido?|Te mando uma ideia curta de campanha?}",
-            "Oi! Carol da Mand Digital por aqui.\n\nComo você clicou/interagiu com nosso conteúdo, vou ser objetiva: a Mand ajuda campanhas promocionais a virarem participação, dados first-party e remarketing.\n\n{Quer ver um exemplo prático?|Posso te mandar uma ideia de Copa?}",
-            "{Olá|Oi}, tudo certo? Sou a Carol, da Mand.\n\nVi seu interesse e pensei em uma aplicação simples: campanha de Copa ou PDV com QR Code, benefício instantâneo e mensuração de conversão.\n\n{Te mando um exemplo curto?|Quer ver como funciona na prática?}",
-        ],
-        2:[
-            "Exemplo rápido: no supermercado ou shopping, o cliente acessa um QR Code, participa de uma roleta/raspadinha, deixa contato e recebe uma oferta. A empresa ganha engajamento e base própria para próximas ações.\n\n{Faz sentido para vocês?|Quer que eu adapte para o seu segmento?}",
-            "O ponto forte não é só a mecânica bonita. É conseguir saber quem participou, de onde veio e como acionar depois por WhatsApp ou mídia própria.\n\n{Quer que eu te mostre um modelo simples?|Posso te mandar uma ideia aplicada?}",
-            "Para Copa, uma ação enxuta pode juntar PDV + QR Code + premiação instantânea + dados first-party. Isso ajuda a vender no período e ainda deixa uma base para depois.\n\n{Quer que eu desenhe um exemplo rápido?|Isso conversa com o que vocês estão buscando?}",
-        ],
-        3:[
-            "Se fizer sentido, o próximo passo pode ser simples: eu entendo o segmento e te mando uma ideia de campanha já adaptada.\n\n{Você prefere exemplo por aqui ou uma conversa rápida?|Quer que eu adapte para vocês?}",
-            "Para avançar sem enrolar: vocês estão pensando em algo para {Copa|Dia dos Namorados|férias|PDV|captação de leads} ou é mais benchmarking agora?",
-            "Me fala só o melhor caminho: {te mando um exemplo objetivo por aqui|marcamos 15 min para eu entender o cenário|deixo para outro momento}?",
-        ],
-        4:[
-            "Vou encerrar por aqui para não ficar repetindo mensagem.\n\nSe quiser retomar a ideia de campanha interativa com QR Code, Copa, roleta ou captura de dados, fico à disposição.",
-            "Sem problema, paro por aqui.\n\nQuando fizer sentido olhar uma ação promocional mais mensurável e com dados próprios, pode me chamar.",
-            "Combinado. Não vou insistir.\n\nSe a pauta de campanha interativa voltar, me chama que eu te mando um exemplo direto.",
-        ],
-    },
-}
-
-MEETING_REMINDER_TEMPLATES={
-    "d_minus_1":[
-        "Oi, tudo bem? Passando só para confirmar nossa reunião de amanhã às {time}.",
-        "Olá! Tudo certo para nossa conversa amanhã às {time}?",
-        "Oi! Só confirmando nossa reunião de amanhã às {time}. Te espero por lá.",
-    ],
-    "d0":[
-        "Oi, tudo bem? Confirmando nossa reunião de hoje às {time}.",
-        "Olá! Passando para lembrar da nossa conversa hoje às {time}.",
-        "Oi! Nossa reunião é hoje às {time}. Tudo certo por aí?",
-    ],
-}
-
 
 def is_brazil_business_hours():
     from datetime import datetime
@@ -198,7 +109,7 @@ def is_brazil_business_hours():
     except Exception:
         br_holidays = set()
 
-    now = datetime.now(br_tz())
+    now = datetime.now(ZoneInfo("America/Sao_Paulo"))
     if now.weekday() >= 5:
         return False
     if now.date() in br_holidays:
@@ -207,55 +118,50 @@ def is_brazil_business_hours():
 
 
 def now():
-    return datetime.now(br_tz()).replace(tzinfo=None)
-
-def today_key():
-    return datetime.now(br_tz()).date().isoformat()
+    return datetime.now()
 
 def load_state():
-    payload = locked_load_json(STATE_FILE, {})
-    return payload if isinstance(payload, dict) else {}
+    with locked_json_file(STATE_FILE):
+        if STATE_FILE.exists():
+            return json.loads(STATE_FILE.read_text())
+        return {}
 
 def save_state(state):
-    locked_save_json(STATE_FILE, state if isinstance(state, dict) else {})
-
-def load_meeting_state():
-    payload = locked_load_json(MEETING_STATE_FILE, {})
-    return payload if isinstance(payload, dict) else {}
-
-def load_conversation_state():
-    payload = locked_load_json(CONVERSATION_STATE_FILE, {})
-    return payload if isinstance(payload, dict) else {}
-
-def load_sdr_state():
-    payload = locked_load_json(SDR_STATE_FILE, {})
-    return payload if isinstance(payload, dict) else {}
-
-def load_legacy_lead_trafego_sent():
-    payload = locked_load_json(LEGACY_LEAD_TRAFEGO_SENT_FILE, {})
-    return payload if isinstance(payload, (dict, list)) else {}
+    with locked_json_file(STATE_FILE):
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(STATE_FILE)
 
 def pd(method,path,json_body=None,params=None):
-    return safe_pd_request(method, path, json_body, params) or {}
+    params=params or {}
+    params["api_token"]=TOKEN
+    last_exc = None
+    for attempt in range(3):
+        try:
+            r=requests.request(method, API+path, params=params, json=json_body, timeout=30)
+            if r.status_code == 429 or 500 <= r.status_code < 600:
+                if attempt < 2:
+                    wait = min(int(r.headers.get("Retry-After", "5") or 5), 60)
+                    print(LOG_PREFIX,"PIPEDRIVE_RETRY",r.status_code,"wait",wait,"path",path)
+                    time.sleep(wait)
+                    continue
+            r.raise_for_status()
+            return r.json()
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt >= 2:
+                break
+            wait = 2 * (attempt + 1)
+            print(LOG_PREFIX,"PIPEDRIVE_RETRY","request_error","wait",wait,"path",path)
+            time.sleep(wait)
+    raise last_exc
 
 def phone_clean(v):
     nums=re.sub(r"\D","",v or "")
     if len(nums) in (10,11):
         nums="55"+nums
     return nums
-
-def is_valid_warm_phone(v):
-    nums=phone_clean(v)
-    if not nums or nums.startswith("0800") or len(nums) > 13:
-        return False
-    if not nums.startswith("55"):
-        return False
-    national=nums[2:]
-    if len(national) not in (10,11):
-        return False
-    if national.startswith("00") or len(set(national)) <= 2:
-        return False
-    return True
 
 def phone_variants(v):
     num=phone_clean(v)
@@ -327,11 +233,7 @@ def get_open_deals():
     out=[]
     start=0
     while True:
-        try:
-            r=pd("GET","/deals",params={"status":"open","start":start,"limit":100,"sort":"add_time DESC"})
-        except Exception as exc:
-            print(LOG_PREFIX,"PIPEDRIVE_READ_FAIL",str(exc).split(" for url: ")[0])
-            return out
+        r=pd("GET","/deals",params={"status":"open","start":start,"limit":100})
         data=r.get("data") or []
         for d in data:
             if int(d.get("pipeline_id") or 0)!=PIPELINE_ID:
@@ -394,266 +296,73 @@ def due_for_step(record, next_step):
     last=record.get("last_sent_at")
     if not last:
         return True
-    last_norm = str(last).replace("T", " ").split(".")[0].strip()
-    last_dt=datetime.strptime(last_norm,"%Y-%m-%d %H:%M:%S")
+    last_dt=parse_state_datetime(last)
     return now() >= last_dt + timedelta(days=INTERVALS_DAYS.get(next_step, 99))
-
-def sent_today(record):
-    raw=str((record or {}).get("last_sent_at") or "").strip()
-    return bool(raw and raw[:10] == today_key())
-
-def attempted_today(record):
-    raw=str((record or {}).get("last_attempt_at") or "").strip()
-    return bool(raw and raw[:10] == today_key())
-
-def already_sent_today(state, deal_id, phone):
-    rec=state.get(str(deal_id), {}) if isinstance(state, dict) else {}
-    if sent_today(rec):
-        return True, rec.get("last_sent_at") or "", "deal_sent_today"
-    clean=phone_clean(phone)
-    for key, item in (state or {}).items():
-        if not isinstance(item, dict):
-            continue
-        if phone_clean(item.get("phone")) == clean and sent_today(item):
-            return True, item.get("last_sent_at") or "", f"phone_sent_today:{key}"
-    return False, "", ""
-
-def legacy_opening_sent(legacy_state, deal_id, phone):
-    variants=phone_variants(phone)
-    if isinstance(legacy_state, dict):
-        for key, item in legacy_state.items():
-            if str(key) == str(deal_id):
-                return True, f"legacy_deal:{key}"
-            if phone_clean(key) in variants:
-                return True, f"legacy_phone_key:{key}"
-            if isinstance(item, dict):
-                item_deal=str(item.get("deal_id") or "").strip()
-                item_phone=phone_clean(item.get("phone") or item.get("telefone") or item.get("number"))
-                if item_deal == str(deal_id) or item_phone in variants:
-                    return True, f"legacy_record:{key}"
-            elif isinstance(item, (str, int)) and phone_clean(item) in variants:
-                return True, f"legacy_value:{key}"
-    if isinstance(legacy_state, list):
-        for index, item in enumerate(legacy_state):
-            if isinstance(item, dict):
-                item_deal=str(item.get("deal_id") or "").strip()
-                item_phone=phone_clean(item.get("phone") or item.get("telefone") or item.get("number"))
-                if item_deal == str(deal_id) or item_phone in variants:
-                    return True, f"legacy_list:{index}"
-            elif phone_clean(item) in variants:
-                return True, f"legacy_list:{index}"
-    return False, ""
 
 def parse_state_datetime(value):
     raw=str(value or "").strip()
     if not raw:
-        return None
+        raise ValueError("empty datetime")
     try:
-        return datetime.fromisoformat(raw.replace("Z","+00:00")).replace(tzinfo=None)
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
     except Exception:
         pass
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+    return datetime.strptime(raw.replace("T"," "),"%Y-%m-%d %H:%M:%S")
+
+class WarmCadenceLock:
+    def __init__(self):
+        self.path = STATE_FILE.with_suffix(".global.lock")
+        self.handle = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = open(self.path, "w", encoding="utf-8")
         try:
-            return datetime.strptime(raw[:19], fmt)
-        except Exception:
-            pass
-    return None
-
-def record_has_inbound_marker(record, wa1_sent_at=None):
-    if not isinstance(record, dict):
-        return False
-    if record.get("lead_replied") is True or record.get("replied") is True:
+            import fcntl
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("[WA_WARM_LOCK_BUSY]")
+            self.handle.close()
+            self.handle = None
+            return False
+        self.handle.write(str(os.getpid()))
+        self.handle.flush()
         return True
-    text=str(record.get("last_lead_reply") or record.get("last_inbound_text") or "").strip()
-    if text and text != "[MENSAGEM_SEM_TEXTO]":
-        return True
-    for field in ("last_inbound_at","last_reply_at","responded_at","inbound_at"):
-        inbound_dt=parse_state_datetime(record.get(field))
-        if not inbound_dt:
-            continue
-        if not wa1_sent_at or inbound_dt >= wa1_sent_at:
-            return True
-    return False
 
-def has_real_inbound_after_wa1(record, deal_id, phone, conversation_state=None, sdr_state=None):
-    sent_at=parse_state_datetime((record or {}).get("wa1_sent_at") or (record or {}).get("last_sent_at"))
-    if record_has_inbound_marker(record, sent_at):
-        return True
-    variants=phone_variants(phone)
-    possible_keys={f"{deal_id}:{phone}", str(deal_id)}
-    possible_keys.update({f"{deal_id}:{variant}" for variant in variants})
-    for key in possible_keys:
-        item=(conversation_state or {}).get(str(key))
-        if record_has_inbound_marker(item, sent_at):
-            return True
-    for key, item in (conversation_state or {}).items():
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("deal_id") or "").strip() not in {"", str(deal_id)}:
-            continue
-        item_phone=phone_clean(item.get("phone") or key)
-        if item_phone in variants and record_has_inbound_marker(item, sent_at):
-            return True
-    for key in [str(deal_id), *variants]:
-        item=(sdr_state or {}).get(str(key))
-        if record_has_inbound_marker(item, sent_at):
-            return True
-    return False
-
-def _rng_for(deal_id, phone, origin, step):
-    seed=f"{deal_id}:{phone_clean(phone)}:{origin}:{step}:{today_key()}"
-    digest=hashlib.sha256(seed.encode("utf-8")).hexdigest()
-    return random.Random(int(digest[:16], 16))
-
-def render_spintax(text, rng=None):
-    rng=rng or random.Random()
-    rendered=str(text or "")
-    pattern=re.compile(r"\{([^{}|]+(?:\|[^{}|]+)+)\}")
-    for _ in range(20):
-        match=pattern.search(rendered)
-        if not match:
-            break
-        options=[part.strip() for part in match.group(1).split("|") if part.strip()]
-        rendered=rendered[:match.start()] + (rng.choice(options) if options else "") + rendered[match.end():]
-    return rendered.replace("{","").replace("}","").replace("|","").strip()
-
-def render_warm_message(deal, origin, step, phone):
-    templates=WARM_TEMPLATES.get(origin) or WARM_TEMPLATES["warm"]
-    options=templates.get(int(step)) or []
-    rng=_rng_for((deal or {}).get("id") or 0, phone, origin, step)
-    raw=rng.choice(options) if options else ""
-    msg=render_spintax(raw, rng)
-    msg=re.sub(r"\n{3,}", "\n\n", msg).strip()
-    print("[WA_WARM_MSG_SELECT]", "deal_id=", (deal or {}).get("id"), "phone=", phone, "origin=", origin, "step=", step, "template_count=", len(options))
-    if any(token in msg for token in ("{","}","|")):
-        raise ValueError("spintax_not_rendered")
-    return msg
+    def __exit__(self, exc_type, exc, tb):
+        if not self.handle:
+            return
+        try:
+            import fcntl
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            self.handle.close()
+            self.handle = None
 
 def send_wa(phone,text):
-    if any(token in str(text or "") for token in ("{","}","|")):
-        print(LOG_PREFIX,"SPINTAX_NOT_RENDERED_BLOCK",phone)
-        return {"ok": False, "status": "spintax_not_rendered", "message_id": ""}
-    r=requests.post("http://127.0.0.1:3000/send",json={"number":phone,"text":text},timeout=90)
+    r=requests.post("http://127.0.0.1:3000/send",json={"number":phone,"text":text},timeout=60)
     print(LOG_PREFIX,"WA",phone,r.status_code,r.text[:160])
-    try:
-        payload=r.json()
-    except Exception:
-        payload={}
-    status=str(payload.get("status") or "").strip().lower()
-    message_id=str(payload.get("message_id") or payload.get("id") or "").strip()
-    if r.ok and status == "sent":
-        return {"ok": True, "status": "sent", "message_id": message_id, "payload": payload}
-    if status == "pending_unconfirmed":
-        print("[WA_PENDING_UNCONFIRMED]", "phone=", phone, "message_id=", message_id)
-        return {"ok": False, "status": "pending_unconfirmed", "message_id": message_id, "payload": payload}
-    return {"ok": False, "status": status or f"http_{r.status_code}", "message_id": message_id, "payload": payload}
-
-def deal_has_meeting_booked(deal_id, phone, meeting_state=None):
-    state=meeting_state if isinstance(meeting_state, dict) else load_meeting_state()
-    rec=state.get(str(deal_id)) if isinstance(state, dict) else {}
-    if isinstance(rec, dict) and str(rec.get("status") or "").lower() == "booked":
-        return True, "meeting_state"
-    try:
-        data=pd("GET","/activities",params={"deal_id":int(deal_id),"done":0,"limit":100}).get("data") or []
-    except Exception:
-        data=[]
-    today=today_key()
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("type") or "").strip().lower() != "meeting":
-            continue
-        due=str(item.get("due_date") or "").strip()
-        if due and due >= today:
-            return True, "future_meeting_activity"
-    return False, ""
-
-def render_meeting_reminder(record, reminder_key):
-    options=MEETING_REMINDER_TEMPLATES.get(str(reminder_key or "d0"), MEETING_REMINDER_TEMPLATES["d0"])
-    seed=f"meeting:{record.get('deal_id')}:{record.get('phone')}:{reminder_key}:{today_key()}"
-    rng=random.Random(int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16],16))
-    return rng.choice(options).replace("{time}", str(record.get("meeting_time") or "o horário combinado")).strip()
-
-def process_meeting_reminders(meeting_state, *, apply=False, send=False, limit=10):
-    sent=0
-    today=today_key()
-    for key, rec in list((meeting_state or {}).items()):
-        if not isinstance(rec, dict):
-            continue
-        deal_id=str(rec.get("deal_id") or key)
-        phone=phone_clean(rec.get("phone"))
-        status=str(rec.get("status") or "").strip().lower()
-        meeting_date=str(rec.get("meeting_date") or "").strip()
-        reminders=rec.get("reminders") if isinstance(rec.get("reminders"), dict) else {}
-        if status == "cancelled":
-            print("[MEETING_REMINDER_SKIP_CANCELLED]", "deal_id=", deal_id)
-            continue
-        if status == "confirmed":
-            print("[MEETING_REMINDER_SKIP_CONFIRMED]", "deal_id=", deal_id)
-            continue
-        if meeting_date and meeting_date < today:
-            print("[MEETING_REMINDER_SKIP_PAST]", "deal_id=", deal_id, "meeting_date=", meeting_date)
-            continue
-        if not phone:
-            continue
-        due_keys=[]
-        try:
-            meeting_dt=datetime.strptime(meeting_date,"%Y-%m-%d").date()
-            current_dt=datetime.strptime(today,"%Y-%m-%d").date()
-            if current_dt == meeting_dt - timedelta(days=1):
-                due_keys.append("d_minus_1")
-            if current_dt == meeting_dt:
-                due_keys.append("d0")
-        except Exception:
-            continue
-        for reminder_key in due_keys:
-            if reminders.get(reminder_key) in {"sent","confirmed","cancelled"}:
-                print("[MEETING_REMINDER_SKIP_CONFIRMED]", "deal_id=", deal_id, "reminder=", reminder_key)
-                continue
-            msg=render_meeting_reminder(rec, reminder_key)
-            print("[MEETING_REMINDER_QUEUE]", "deal_id=", deal_id, "phone=", phone, "reminder=", reminder_key)
-            if not apply:
-                continue
-            if not send:
-                print(LOG_PREFIX,"DRY_RUN_NO_MUTATION",deal_id,phone,"meeting_reminder",reminder_key)
-                continue
-            result=send_wa(phone,msg)
-            if not result.get("ok"):
-                continue
-            reminders[reminder_key]="sent"
-            rec["reminders"]=reminders
-            rec["last_reminder_sent_at"]=now().strftime("%Y-%m-%d %H:%M:%S")
-            meeting_state[str(key)]=rec
-            print("[MEETING_REMINDER_SENT]", "deal_id=", deal_id, "phone=", phone, "reminder=", reminder_key)
-            sent += 1
-            if sent >= limit:
-                return sent
-    return sent
+    return r.ok and '"sent"' in r.text
 
 def main(apply=False, send=False, limit=10):
+    with WarmCadenceLock() as locked:
+        if not locked:
+            return
+        return _main_locked(apply=apply, send=send, limit=limit)
+
+def _main_locked(apply=False, send=False, limit=10):
     if not is_brazil_business_hours():
         print(LOG_PREFIX, "FORA_HORARIO_COMERCIAL_BR")
         return
 
     state=load_state()
-    meeting_state=load_meeting_state()
-    conversation_state=load_conversation_state()
-    sdr_state=load_sdr_state()
-    legacy_lead_trafego_sent=load_legacy_lead_trafego_sent()
     strategy_state=load_strategy_state()
-    email_state=load_email_state()
-    strategy_changed=False
     deals=get_open_deals()
     blocked=load_blocklist()
     stopped_index=state.get("stopped") if isinstance(state.get("stopped"), dict) else {}
     print(LOG_PREFIX,"DEALS_ALVO",len(deals))
 
     sent_count=0
-    batch_sent_phones=set()
-    state_changed=False
-    meeting_sent=process_meeting_reminders(meeting_state, apply=apply, send=send, limit=limit)
-    if apply and send and meeting_sent:
-        locked_save_json(MEETING_STATE_FILE, meeting_state)
 
     for d in select_batch_deals(deals, blocked):
         deal_id=str(d["id"])
@@ -662,217 +371,133 @@ def main(apply=False, send=False, limit=10):
 
         if d.get("_skip_reason")=="blocklist":
             print(LOG_PREFIX,"SKIP_BLOCKLIST",deal_id,phone)
-            if apply:
+            if apply and send:
                 log_event("WA_SKIP_BLOCKLIST", deal_id=deal_id, phone=phone)
-            continue
-        if is_auto_reply_blocked(phone):
-            print("[AUTO_REPLY_SKIP_SEND]", "deal_id=", deal_id, "phone=", phone, "channel=wa_warm")
-            if apply:
-                log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason="auto_reply_detected")
             continue
         if d.get("_skip_reason")=="dup_batch":
             print(LOG_PREFIX,"SKIP_PHONE_DUP_BATCH",deal_id,phone)
-            print("[WA_DUPLICATE_BLOCKED]", "deal_id=", deal_id, "phone=", phone, "reason=phone_dup_batch")
-            if apply:
+            if apply and send:
                 log_event("WA_SKIP_DUP", deal_id=deal_id, phone=phone, reason="phone_dup_batch")
             continue
 
         if not phone:
             print(LOG_PREFIX,"SKIP_SEM_PHONE",deal_id,title)
-            print("[WA_INVALID_PHONE]", "deal_id=", deal_id, "phone=", phone, "reason=missing")
-            continue
-        if not is_valid_warm_phone(phone):
-            print("[WA_INVALID_PHONE]", "deal_id=", deal_id, "phone=", phone, "reason=invalid_format")
-            continue
-        if is_human_handoff(phone):
-            print("[WA_WARM_SKIP_HUMAN_HANDOFF]", "deal_id=", deal_id, "phone=", phone)
-            if apply:
-                log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason="human_handoff")
             continue
 
         rec=state.get(deal_id, {})
         if deal_id in stopped_index or f"phone:{phone}" in stopped_index:
             reason=(stopped_index.get(deal_id) or stopped_index.get(f"phone:{phone}") or {}).get("reason")
             print(LOG_PREFIX,"WA_STOPPED",deal_id,phone,reason or "stopped_index")
-            if apply:
+            if apply and send:
                 log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason=reason or "stopped_index")
             continue
         if rec.get("stopped"):
             print(LOG_PREFIX,"WA_STOPPED",deal_id,phone)
-            if apply:
+            if apply and send:
                 log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason="state_stopped")
+            continue
+        if rec.get("status") == "pending_send":
+            print(LOG_PREFIX,"WA_PENDING_RECONCILE_REQUIRED",deal_id,phone,"step",rec.get("step") or rec.get("pending_step"))
             continue
         current_step=int(rec.get("step") or 0)
         next_step=current_step+1
 
         labs=labels_of(d)
         origin="trafego" if LABEL_LEAD_TRAFEGO in labs else "warm"
+        msgs=MSG_TRAFEGO if origin=="trafego" else MSG_WARM
 
-        if next_step > MAX_WARM_STEP:
+        if next_step > 6:
             print(LOG_PREFIX,"SKIP_FINALIZADO",deal_id,title)
-            print("[WA_WARM_CADENCE_DONE]", "deal_id=", deal_id, "phone=", phone, "step=", current_step)
-            if apply and not rec.get("stopped"):
-                rec["stopped"]=True
-                rec["stop_reason"]="max_warm_step"
-                rec["stopped_at"]=now().strftime("%Y-%m-%d %H:%M:%S")
-                state[deal_id]=rec
-                state_changed=True
-                print("[WA_WARM_FORCE_STOP]", "deal_id=", deal_id, "phone=", phone, "step=", current_step)
-            continue
-
-        has_meeting, meeting_reason = deal_has_meeting_booked(deal_id, phone, meeting_state)
-        if has_meeting:
-            print("[WA_WARM_SKIP_MEETING_BOOKED]", "deal_id=", deal_id, "phone=", phone, "reason=", meeting_reason)
-            continue
-
-        blocked_today, last_sent_at, today_reason = already_sent_today(state, deal_id, phone)
-        if blocked_today:
-            print("[WA_WARM_SKIP_ALREADY_SENT_TODAY]", "deal_id=", deal_id, "phone=", phone, "last_sent_at=", last_sent_at, "reason=", today_reason)
-            print("[WA_SKIP_ALREADY_SENT]", "deal_id=", deal_id, "phone=", phone, "last_sent_at=", last_sent_at, "reason=", today_reason)
-            print("[WA_DUPLICATE_BLOCKED]", "deal_id=", deal_id, "phone=", phone, "reason=", today_reason)
-            continue
-
-        if attempted_today(rec):
-            print("[WA_SKIP_ALREADY_SENT]", "deal_id=", deal_id, "phone=", phone, "last_attempt_at=", rec.get("last_attempt_at"), "reason=attempted_today")
-            print("[WA_DUPLICATE_BLOCKED]", "deal_id=", deal_id, "phone=", phone, "reason=attempted_today")
-            continue
-
-        if next_step == 1:
-            legacy_sent, legacy_reason = legacy_opening_sent(legacy_lead_trafego_sent, deal_id, phone)
-            if legacy_sent:
-                print("[WA_SKIP_ALREADY_SENT]", "deal_id=", deal_id, "phone=", phone, "reason=", legacy_reason)
-                print("[WA_DUPLICATE_BLOCKED]", "deal_id=", deal_id, "phone=", phone, "reason=", legacy_reason)
-                continue
-
-        clean_batch_phone=phone_clean(phone)
-        if clean_batch_phone in batch_sent_phones:
-            print("[WA_DUPLICATE_BLOCKED]", "deal_id=", deal_id, "phone=", phone, "reason=batch_sent_this_run")
             continue
 
         if not due_for_step(rec,next_step):
             print(LOG_PREFIX,"SKIP_AGUARDANDO",deal_id,"step",next_step)
             continue
 
-        # Segurança: não avançar para step 2+ sem resposta real do lead.
-        # Lead frio/warm de LP recebe abertura e depois aguarda interação humana/inbound.
-        if next_step > 1 and not has_real_inbound_after_wa1(rec, deal_id, phone, conversation_state, sdr_state):
-            print("[WA_BLOCK_NO_REPLY]", "deal_id=", deal_id, "phone=", phone, "step=", next_step)
-            print(LOG_PREFIX, "SKIP_SEM_RESPOSTA_LEAD", deal_id, "step", next_step)
-            continue
-
-        msg=render_warm_message(d, origin, next_step, phone)
         print(LOG_PREFIX,"ALVO",deal_id,"origem",origin,"step",next_step,title,"phone",phone)
-        print("[WA_TARGET]", "deal_id=", deal_id, "phone=", phone, "origin=", origin, "step=", next_step, "dry_run=", not (apply and send))
-        if apply:
-            log_event("WA_TARGET", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
 
-        decision = resolve_next_action(
-            d,
-            email_state=email_state,
-            wa_state=strategy_state,
-            channel="wa_warm",
-            phone=phone,
-        )
-        if decision.get("action") != ACTION_WA_WARM_SEND:
-            print("[ORCH_BLOCK] channel=wa_warm deal_id=", deal_id, "phone=", phone, "reason=", decision.get("reason"))
-            continue
-        if apply:
-            log_event("WA_WARM_TRIGGER", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
-
-        if not apply:
+        if not apply or not send:
+            if apply and not send:
+                print(LOG_PREFIX,"DRY_RUN_NO_MUTATION",deal_id,phone,"step",next_step)
             continue
 
-        if not send:
-            print(LOG_PREFIX,"DRY_RUN_NO_MUTATION",deal_id,phone,"step",next_step)
+        state[deal_id]={
+            "origin":origin,
+            "phone":phone,
+            "step":next_step,
+            "pending_step":next_step,
+            "status":"pending_send",
+            "wa1_sent": bool(next_step == 1 or rec.get("wa1_sent")),
+            "last_sent_step_whatsapp": rec.get("last_sent_step_whatsapp"),
+            "last_sent_at":rec.get("last_sent_at"),
+            "pending_at":now().strftime("%Y-%m-%d %H:%M:%S"),
+            "title":title,
+        }
+        save_state(state)
+
+        ok=send_wa(phone,msgs[next_step])
+        if not ok:
+            print(LOG_PREFIX,"FALHA_ENVIO",deal_id,phone)
+            state[deal_id]["send_failed_at"]=now().strftime("%Y-%m-%d %H:%M:%S")
+            save_state(state)
             continue
 
-        inflight_ok, inflight_reason = acquire_inflight(deal_id, "whatsapp")
-        if not inflight_ok:
-            print("[INFLIGHT_BLOCK]", "deal_id=", deal_id, "channel=whatsapp", "reason=", inflight_reason)
-            continue
-        try:
-            send_result=send_wa(phone,msg)
-            if not send_result.get("ok"):
-                print(LOG_PREFIX,"FALHA_ENVIO",deal_id,phone,send_result.get("status"))
-                if send_result.get("status") == "pending_unconfirmed":
-                    pending_rec=dict(rec)
-                    pending_rec.update({
-                        "origin": origin,
-                        "phone": phone,
-                        "send_status": "pending_unconfirmed",
-                        "needs_manual_check": True,
-                        "message_id": send_result.get("message_id") or "",
-                        "last_attempt_at": now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "require_reply_before_next_step": True,
-                        "do_not_advance_without_inbound": True,
-                        "title": title,
-                    })
-                    state[deal_id]=pending_rec
-                    save_state(state)
-                continue
-        finally:
-            release_inflight(deal_id, "whatsapp")
-
-        new_rec=dict(rec)
-        new_rec.update({
+        state[deal_id]={
             "origin":origin,
             "phone":phone,
             "step":next_step,
             "wa1_sent": bool(next_step == 1 or rec.get("wa1_sent")),
             "last_sent_step_whatsapp": next_step,
             "last_sent_at":now().strftime("%Y-%m-%d %H:%M:%S"),
-            "last_message_preview": msg[:180],
-            "message_id": send_result.get("message_id") or "",
-            "send_status": "sent_confirmed",
-            "require_reply_before_next_step": True,
-            "do_not_advance_without_inbound": True,
-            "stopped": bool(next_step >= MAX_WARM_STEP),
             "title":title,
-        })
-        state[deal_id]=new_rec
-        state_changed=True
-        print("[WA_WARM_STEP_ADVANCE]", "deal_id=", deal_id, "phone=", phone, "from_step=", current_step, "to_step=", next_step)
-        if next_step >= MAX_WARM_STEP:
-            print("[WA_WARM_CADENCE_DONE]", "deal_id=", deal_id, "phone=", phone, "step=", next_step)
-        update_deal_state(
-            deal_id,
-            phone=phone,
-            origin=origin,
-            cadence_wa_active=next_step < MAX_WARM_STEP,
-            last_sender="whatsapp_warm_cadence",
-            last_sent_step_whatsapp=next_step,
-            last_outbound_at=now().isoformat(timespec="seconds"),
-        )
+            "status":"sent",
+        }
+        save_state(state)
 
-        pd("POST","/notes",{
-            "deal_id":int(deal_id),
-            "content":f"[WA_CADENCE_{origin.upper()}_STEP_{next_step}] WhatsApp etapa {next_step}/{MAX_WARM_STEP} enviada."
-        })
-        log_event("WA_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
-        print("[WA_SENT]", "deal_id=", deal_id, "phone=", phone, "origin=", origin, "step=", next_step)
-        mark_warm(strategy_state, deal_id, phone, reason=f"{origin}_sent_step_{next_step}")
-        strategy_changed=True
-        log_event("WA_WARM_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
+        try:
+            update_deal_state(
+                deal_id,
+                phone=phone,
+                origin=origin,
+                cadence_wa_active=next_step < 6,
+                last_sender="whatsapp_warm_cadence",
+                last_sent_step_whatsapp=next_step,
+                last_outbound_at=now().isoformat(timespec="seconds"),
+            )
+        except Exception as exc:
+            print(LOG_PREFIX,"CRM_UPDATE_FAIL_AFTER_SEND",deal_id,str(exc))
+
+        try:
+            pd("POST","/notes",{
+                "deal_id":int(deal_id),
+                "content":f"[WA_CADENCE_{origin.upper()}_STEP_{next_step}] WhatsApp etapa {next_step}/6 enviada."
+            })
+        except Exception as exc:
+            print(LOG_PREFIX,"CRM_NOTE_FAIL_AFTER_SEND",deal_id,str(exc))
+
+        try:
+            log_event("WA_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
+            mark_warm(strategy_state, deal_id, phone, reason=f"{origin}_sent_step_{next_step}")
+            log_event("WA_WARM_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
+        except Exception as exc:
+            print(LOG_PREFIX,"LOCAL_POST_SEND_LOG_FAIL",deal_id,str(exc))
 
         if int(d.get("stage_id") or 0)==STAGE_PRONTO:
-            pd("PUT",f"/deals/{deal_id}",{"stage_id":STAGE_TENTATIVA})
-            print("[ORCH_STAGE_MOVE] deal_id=", deal_id, "stage_id=", STAGE_TENTATIVA)
+            try:
+                pd("PUT",f"/deals/{deal_id}",{"stage_id":STAGE_TENTATIVA})
+            except Exception as exc:
+                print(LOG_PREFIX,"CRM_STAGE_FAIL_AFTER_SEND",deal_id,str(exc))
 
-        save_state(state)
-        state_changed=False
-        if strategy_changed:
-            save_strategy_state(strategy_state)
+        save_strategy_state(strategy_state)
         sent_count += 1
-        batch_sent_phones.add(phone_clean(phone))
         time.sleep(8)
 
         if sent_count >= limit:
             print(LOG_PREFIX,"LIMIT_ATINGIDO",limit)
             break
 
-    if apply and state_changed:
+    if apply and send:
         save_state(state)
-    if strategy_changed:
         save_strategy_state(strategy_state)
 
 if __name__=="__main__":
