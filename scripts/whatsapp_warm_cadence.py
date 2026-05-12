@@ -394,7 +394,8 @@ def due_for_step(record, next_step):
     last=record.get("last_sent_at")
     if not last:
         return True
-    last_dt=datetime.strptime(last,"%Y-%m-%d %H:%M:%S")
+    last_norm = str(last).replace("T", " ").split(".")[0].strip()
+    last_dt=datetime.strptime(last_norm,"%Y-%m-%d %H:%M:%S")
     return now() >= last_dt + timedelta(days=INTERVALS_DAYS.get(next_step, 99))
 
 def sent_today(record):
