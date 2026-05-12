@@ -2,12 +2,49 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 STATE_FILE = Path(os.getenv("WA_STRATEGY_STATE_FILE") or BASE_DIR / "data" / "wa_strategy_state.json")
+
+
+@contextmanager
+def locked_json_file(path, timeout=10):
+    lock_path = Path(str(path) + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = None
+    started_at = time.time()
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            os.write(fd, str(os.getpid()).encode("ascii", errors="ignore"))
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock_path.stat().st_mtime > 300:
+                    lock_path.unlink()
+                    continue
+            except Exception:
+                pass
+            if time.time() - started_at >= timeout:
+                raise TimeoutError(str(lock_path))
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+        try:
+            lock_path.unlink()
+        except Exception:
+            pass
 
 
 def strategy_key(deal_id, phone, strategy=""):
@@ -19,19 +56,21 @@ def strategy_key(deal_id, phone, strategy=""):
 
 def load_strategy_state():
     try:
-        if STATE_FILE.exists():
-            payload = json.loads(STATE_FILE.read_text(encoding="utf-8") or "{}")
-            return payload if isinstance(payload, dict) else {}
+        with locked_json_file(STATE_FILE):
+            if STATE_FILE.exists():
+                payload = json.loads(STATE_FILE.read_text(encoding="utf-8") or "{}")
+                return payload if isinstance(payload, dict) else {}
     except Exception as exc:
         print(f"[WA_STRATEGY_STATE_READ_FAIL] {exc}")
     return {}
 
 
 def save_strategy_state(state):
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
-    tmp.write_text(json.dumps(state if isinstance(state, dict) else {}, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(STATE_FILE)
+    with locked_json_file(STATE_FILE):
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
+        tmp.write_text(json.dumps(state if isinstance(state, dict) else {}, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(STATE_FILE)
 
 
 def get_record(state, deal_id, phone, strategy=""):

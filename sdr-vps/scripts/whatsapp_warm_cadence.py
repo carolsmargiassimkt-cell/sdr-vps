@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from core.sdr_state import STAGE_TENTATIVA_CONTATO, log_event, update_deal_state
-from core.wa_strategy_state import load_strategy_state, mark_warm, save_strategy_state
+from core.wa_strategy_state import load_strategy_state, locked_json_file, mark_warm, save_strategy_state
 
 load_dotenv("/root/sdr-vps/.env")
 
@@ -121,20 +121,41 @@ def now():
     return datetime.now()
 
 def load_state():
-    if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text())
-    return {}
+    with locked_json_file(STATE_FILE):
+        if STATE_FILE.exists():
+            return json.loads(STATE_FILE.read_text())
+        return {}
 
 def save_state(state):
-    STATE_FILE.parent.mkdir(exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+    with locked_json_file(STATE_FILE):
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(STATE_FILE)
 
 def pd(method,path,json_body=None,params=None):
     params=params or {}
     params["api_token"]=TOKEN
-    r=requests.request(method, API+path, params=params, json=json_body, timeout=30)
-    r.raise_for_status()
-    return r.json()
+    last_exc = None
+    for attempt in range(3):
+        try:
+            r=requests.request(method, API+path, params=params, json=json_body, timeout=30)
+            if r.status_code == 429 or 500 <= r.status_code < 600:
+                if attempt < 2:
+                    wait = min(int(r.headers.get("Retry-After", "5") or 5), 60)
+                    print(LOG_PREFIX,"PIPEDRIVE_RETRY",r.status_code,"wait",wait,"path",path)
+                    time.sleep(wait)
+                    continue
+            r.raise_for_status()
+            return r.json()
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt >= 2:
+                break
+            wait = 2 * (attempt + 1)
+            print(LOG_PREFIX,"PIPEDRIVE_RETRY","request_error","wait",wait,"path",path)
+            time.sleep(wait)
+    raise last_exc
 
 def phone_clean(v):
     nums=re.sub(r"\D","",v or "")
@@ -275,8 +296,48 @@ def due_for_step(record, next_step):
     last=record.get("last_sent_at")
     if not last:
         return True
-    last_dt=datetime.strptime(last,"%Y-%m-%d %H:%M:%S")
+    last_dt=parse_state_datetime(last)
     return now() >= last_dt + timedelta(days=INTERVALS_DAYS.get(next_step, 99))
+
+def parse_state_datetime(value):
+    raw=str(value or "").strip()
+    if not raw:
+        raise ValueError("empty datetime")
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        pass
+    return datetime.strptime(raw.replace("T"," "),"%Y-%m-%d %H:%M:%S")
+
+class WarmCadenceLock:
+    def __init__(self):
+        self.path = STATE_FILE.with_suffix(".global.lock")
+        self.handle = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = open(self.path, "w", encoding="utf-8")
+        try:
+            import fcntl
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("[WA_WARM_LOCK_BUSY]")
+            self.handle.close()
+            self.handle = None
+            return False
+        self.handle.write(str(os.getpid()))
+        self.handle.flush()
+        return True
+
+    def __exit__(self, exc_type, exc, tb):
+        if not self.handle:
+            return
+        try:
+            import fcntl
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            self.handle.close()
+            self.handle = None
 
 def send_wa(phone,text):
     r=requests.post("http://127.0.0.1:3000/send",json={"number":phone,"text":text},timeout=60)
@@ -284,6 +345,12 @@ def send_wa(phone,text):
     return r.ok and '"sent"' in r.text
 
 def main(apply=False, send=False, limit=10):
+    with WarmCadenceLock() as locked:
+        if not locked:
+            return
+        return _main_locked(apply=apply, send=send, limit=limit)
+
+def _main_locked(apply=False, send=False, limit=10):
     if not is_brazil_business_hours():
         print(LOG_PREFIX, "FORA_HORARIO_COMERCIAL_BR")
         return
@@ -304,11 +371,13 @@ def main(apply=False, send=False, limit=10):
 
         if d.get("_skip_reason")=="blocklist":
             print(LOG_PREFIX,"SKIP_BLOCKLIST",deal_id,phone)
-            log_event("WA_SKIP_BLOCKLIST", deal_id=deal_id, phone=phone)
+            if apply and send:
+                log_event("WA_SKIP_BLOCKLIST", deal_id=deal_id, phone=phone)
             continue
         if d.get("_skip_reason")=="dup_batch":
             print(LOG_PREFIX,"SKIP_PHONE_DUP_BATCH",deal_id,phone)
-            log_event("WA_SKIP_DUP", deal_id=deal_id, phone=phone, reason="phone_dup_batch")
+            if apply and send:
+                log_event("WA_SKIP_DUP", deal_id=deal_id, phone=phone, reason="phone_dup_batch")
             continue
 
         if not phone:
@@ -319,11 +388,16 @@ def main(apply=False, send=False, limit=10):
         if deal_id in stopped_index or f"phone:{phone}" in stopped_index:
             reason=(stopped_index.get(deal_id) or stopped_index.get(f"phone:{phone}") or {}).get("reason")
             print(LOG_PREFIX,"WA_STOPPED",deal_id,phone,reason or "stopped_index")
-            log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason=reason or "stopped_index")
+            if apply and send:
+                log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason=reason or "stopped_index")
             continue
         if rec.get("stopped"):
             print(LOG_PREFIX,"WA_STOPPED",deal_id,phone)
-            log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason="state_stopped")
+            if apply and send:
+                log_event("WA_STOPPED", deal_id=deal_id, phone=phone, reason="state_stopped")
+            continue
+        if rec.get("status") == "pending_send":
+            print(LOG_PREFIX,"WA_PENDING_RECONCILE_REQUIRED",deal_id,phone,"step",rec.get("step") or rec.get("pending_step"))
             continue
         current_step=int(rec.get("step") or 0)
         next_step=current_step+1
@@ -331,8 +405,6 @@ def main(apply=False, send=False, limit=10):
         labs=labels_of(d)
         origin="trafego" if LABEL_LEAD_TRAFEGO in labs else "warm"
         msgs=MSG_TRAFEGO if origin=="trafego" else MSG_WARM
-        mark_warm(strategy_state, deal_id, phone, reason=f"{origin}_target")
-        log_event("WA_WARM_TRIGGER", deal_id=deal_id, phone=phone, origin=origin)
 
         if next_step > 6:
             print(LOG_PREFIX,"SKIP_FINALIZADO",deal_id,title)
@@ -343,19 +415,31 @@ def main(apply=False, send=False, limit=10):
             continue
 
         print(LOG_PREFIX,"ALVO",deal_id,"origem",origin,"step",next_step,title,"phone",phone)
-        log_event("WA_TARGET", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
 
-        if not apply:
+        if not apply or not send:
+            if apply and not send:
+                print(LOG_PREFIX,"DRY_RUN_NO_MUTATION",deal_id,phone,"step",next_step)
             continue
 
-        if not send:
-            print(LOG_PREFIX,"DRY_RUN_NO_MUTATION",deal_id,phone,"step",next_step)
-            save_strategy_state(strategy_state)
-            continue
+        state[deal_id]={
+            "origin":origin,
+            "phone":phone,
+            "step":next_step,
+            "pending_step":next_step,
+            "status":"pending_send",
+            "wa1_sent": bool(next_step == 1 or rec.get("wa1_sent")),
+            "last_sent_step_whatsapp": rec.get("last_sent_step_whatsapp"),
+            "last_sent_at":rec.get("last_sent_at"),
+            "pending_at":now().strftime("%Y-%m-%d %H:%M:%S"),
+            "title":title,
+        }
+        save_state(state)
 
         ok=send_wa(phone,msgs[next_step])
         if not ok:
             print(LOG_PREFIX,"FALHA_ENVIO",deal_id,phone)
+            state[deal_id]["send_failed_at"]=now().strftime("%Y-%m-%d %H:%M:%S")
+            save_state(state)
             continue
 
         state[deal_id]={
@@ -366,29 +450,44 @@ def main(apply=False, send=False, limit=10):
             "last_sent_step_whatsapp": next_step,
             "last_sent_at":now().strftime("%Y-%m-%d %H:%M:%S"),
             "title":title,
+            "status":"sent",
         }
-        update_deal_state(
-            deal_id,
-            phone=phone,
-            origin=origin,
-            cadence_wa_active=next_step < 6,
-            last_sender="whatsapp_warm_cadence",
-            last_sent_step_whatsapp=next_step,
-            last_outbound_at=now().isoformat(timespec="seconds"),
-        )
+        save_state(state)
 
-        pd("POST","/notes",{
-            "deal_id":int(deal_id),
-            "content":f"[WA_CADENCE_{origin.upper()}_STEP_{next_step}] WhatsApp etapa {next_step}/6 enviada."
-        })
-        log_event("WA_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
-        mark_warm(strategy_state, deal_id, phone, reason=f"{origin}_sent_step_{next_step}")
-        log_event("WA_WARM_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
+        try:
+            update_deal_state(
+                deal_id,
+                phone=phone,
+                origin=origin,
+                cadence_wa_active=next_step < 6,
+                last_sender="whatsapp_warm_cadence",
+                last_sent_step_whatsapp=next_step,
+                last_outbound_at=now().isoformat(timespec="seconds"),
+            )
+        except Exception as exc:
+            print(LOG_PREFIX,"CRM_UPDATE_FAIL_AFTER_SEND",deal_id,str(exc))
+
+        try:
+            pd("POST","/notes",{
+                "deal_id":int(deal_id),
+                "content":f"[WA_CADENCE_{origin.upper()}_STEP_{next_step}] WhatsApp etapa {next_step}/6 enviada."
+            })
+        except Exception as exc:
+            print(LOG_PREFIX,"CRM_NOTE_FAIL_AFTER_SEND",deal_id,str(exc))
+
+        try:
+            log_event("WA_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
+            mark_warm(strategy_state, deal_id, phone, reason=f"{origin}_sent_step_{next_step}")
+            log_event("WA_WARM_SENT", deal_id=deal_id, phone=phone, origin=origin, step=next_step)
+        except Exception as exc:
+            print(LOG_PREFIX,"LOCAL_POST_SEND_LOG_FAIL",deal_id,str(exc))
 
         if int(d.get("stage_id") or 0)==STAGE_PRONTO:
-            pd("PUT",f"/deals/{deal_id}",{"stage_id":STAGE_TENTATIVA})
+            try:
+                pd("PUT",f"/deals/{deal_id}",{"stage_id":STAGE_TENTATIVA})
+            except Exception as exc:
+                print(LOG_PREFIX,"CRM_STAGE_FAIL_AFTER_SEND",deal_id,str(exc))
 
-        save_state(state)
         save_strategy_state(strategy_state)
         sent_count += 1
         time.sleep(8)
@@ -397,8 +496,9 @@ def main(apply=False, send=False, limit=10):
             print(LOG_PREFIX,"LIMIT_ATINGIDO",limit)
             break
 
-    save_state(state)
-    save_strategy_state(strategy_state)
+    if apply and send:
+        save_state(state)
+        save_strategy_state(strategy_state)
 
 if __name__=="__main__":
     import sys
