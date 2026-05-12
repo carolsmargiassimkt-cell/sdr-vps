@@ -51,7 +51,7 @@ BLOCKLIST_FILES=[
 ]
 LOG_PREFIX="[WA_WARM_CADENCE]"
 
-MAX_WARM_STEP=4
+MAX_WARM_STEP=3
 
 def br_tz():
     try:
