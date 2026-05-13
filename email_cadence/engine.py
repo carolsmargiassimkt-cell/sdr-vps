@@ -92,6 +92,16 @@ def save(rows) -> None:
     save_json(DATA, rows if isinstance(rows, list) else [])
 
 
+def save_queue_confirmed(rows, row, step) -> None:
+    try:
+        save(rows)
+    except Exception as exc:
+        print("[EMAIL_QUEUE_SAVE_FAIL]", row.get("deal_id"), step, type(exc).__name__, str(exc)[:200])
+        log_event("EMAIL_QUEUE_SAVE_FAIL", deal_id=row.get("deal_id"), step=step, error=str(exc)[:200])
+        raise
+    print("[EMAIL_QUEUE_SAVE_CONFIRMED]", row.get("deal_id"), step)
+
+
 def load_events() -> list[dict[str, Any]]:
     rows = load_json(EVENTS, [])
     return rows if isinstance(rows, list) else []
@@ -274,26 +284,13 @@ def send_smtp(row, subject, body):
         return {"ok": False, "error": "smtp_send_failed"}
 
     print("[SMTP_SEND_CONFIRMED]", to, row.get("deal_id"), row.get("step"))
-    try:
-        update_sdr_fields(row.get("deal_id"), {
-            "event_id": f"email_sent:{row.get('deal_id')}:{row.get('step')}",
-            "type": "email_sent",
-            "channel": "email",
-            "source": "email_cadence",
-            "step": row.get("step"),
-            "cadence_step": row.get("step"),
-            "automation_status": "email_sent",
-            "status_sdr": "em_cadencia_email",
-            "increment_attempt": True,
-        })
-    except Exception as exc:
-        print("[SDR_FIELDS_EMAIL_SENT_FAIL]", row.get("deal_id"), exc)
     return {"ok": True, "dry_run": False}
 
 
 def advance_after_send(row, step, sent_at):
     row["last_sent_step_email"] = int(step)
     row["last_sent_at"] = sent_at
+    row.pop("hold_reason", None)
     if step >= 6:
         row["status"] = "done"
         row["next_send"] = None
@@ -329,6 +326,7 @@ def tick():
         step = max(1, min(6, int(row.get("step") or 1)))
         if int(row.get("last_sent_step_email") or 0) >= step or event_exists(row.get("deal_id"), step):
             advance_after_send(row, step, now())
+            print("[EMAIL_QUEUE_ADVANCED]", row.get("deal_id"), step, "idempotent")
             changed = True
             continue
         subject, body = template(step, row)
@@ -336,16 +334,29 @@ def tick():
         if not (isinstance(result, dict) and result.get("ok")):
             continue
         sent_at = now()
+        advance_after_send(row, step, sent_at)
+        print("[EMAIL_QUEUE_ADVANCED]", row.get("deal_id"), step)
+        save_queue_confirmed(rows, row, step)
+        changed = True
         if not result.get("dry_run"):
-            if not record_sent_event(row, step, subject, sent_at):
-                advance_after_send(row, step, sent_at)
-                changed = True
-                continue
-            log_event("EMAIL_SENT", deal_id=row.get("deal_id"), email=row.get("email"), step=step, subject=subject)
+            if record_sent_event(row, step, subject, sent_at):
+                log_event("EMAIL_SENT", deal_id=row.get("deal_id"), email=row.get("email"), step=step, subject=subject)
+            try:
+                update_sdr_fields(row.get("deal_id"), {
+                    "event_id": f"email_sent:{row.get('deal_id')}:{step}",
+                    "type": "email_sent",
+                    "channel": "email",
+                    "source": "email_cadence",
+                    "step": step,
+                    "cadence_step": step,
+                    "automation_status": "email_sent",
+                    "status_sdr": "em_cadencia_email",
+                    "increment_attempt": True,
+                })
+            except Exception as exc:
+                print("[SDR_FIELDS_EMAIL_SENT_FAIL]", row.get("deal_id"), exc)
             sent_today += 1
             time.sleep(MIN_DELAY_SECONDS)
-        advance_after_send(row, step, sent_at)
-        changed = True
     if changed:
         save(rows)
     print("[CADENCE_TICK_OK]")
