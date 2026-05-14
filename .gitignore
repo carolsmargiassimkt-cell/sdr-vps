@@ -1,0 +1,16 @@
+﻿node_modules/
+dist/
+build/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+coverage/
+.next/
+.cache/
+*.log
+auth_info_baileys/
+runtime/
+tmp/
